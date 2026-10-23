@@ -1,0 +1,15 @@
+project_id = "nzhbfeahymmyqerzjgbt"
+
+# MCP-adjacent functions: the Supabase gateway cannot verify harness PATs
+# as JWTs, so the gateway check stays off and requireUser (+PAT fallback)
+# inside each function is the real gate. mcp-token keeps the default
+# gateway check (Settings-issued JWTs only).
+
+[functions.mcp-server]
+verify_jwt = false
+
+[functions.mcp-auth]
+verify_jwt = false
+
+[functions.mcp-oauth]
+verify_jwt = false

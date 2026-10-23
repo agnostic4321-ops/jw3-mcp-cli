@@ -1,0 +1,608 @@
+{
+ "sweep": [
+  {
+   "tp": 0.004,
+   "leverage": 10.0,
+   "hold_bars": 16,
+   "ev_pct": -0.18119743750723288,
+   "excess_pct": 0.1289608486109995,
+   "t": -6.420771390426774,
+   "clusters": 262,
+   "liq_share": 0.007222302470027445,
+   "verdict": "candidate"
+  },
+  {
+   "tp": 0.004,
+   "leverage": 10.0,
+   "hold_bars": 32,
+   "ev_pct": -0.17780237396550114,
+   "excess_pct": 0.13235591215273124,
+   "t": -4.662072073605386,
+   "clusters": 132,
+   "liq_share": 0.012518657614714237,
+   "verdict": "candidate"
+  },
+  {
+   "tp": 0.008,
+   "leverage": 10.0,
+   "hold_bars": 16,
+   "ev_pct": -0.11752387939984038,
+   "excess_pct": 0.192634406718392,
+   "t": -2.8182690816216556,
+   "clusters": 262,
+   "liq_share": 0.008594539939332659,
+   "verdict": "candidate"
+  },
+  {
+   "tp": 0.008,
+   "leverage": 10.0,
+   "hold_bars": 32,
+   "ev_pct": -0.10113626403146529,
+   "excess_pct": 0.20902202208676707,
+   "t": -1.7816777075101213,
+   "clusters": 132,
+   "liq_share": 0.016081660166594444,
+   "verdict": "candidate"
+  },
+  {
+   "tp": 0.012,
+   "leverage": 10.0,
+   "hold_bars": 16,
+   "ev_pct": -0.0974638265112597,
+   "excess_pct": 0.21269445960697267,
+   "t": -1.8143783748138267,
+   "clusters": 262,
+   "liq_share": 0.010111223458038422,
+   "verdict": "candidate"
+  },
+  {
+   "tp": 0.012,
+   "leverage": 10.0,
+   "hold_bars": 32,
+   "ev_pct": -0.070333683517567,
+   "excess_pct": 0.23982460260066538,
+   "t": -0.9473239941696661,
+   "clusters": 132,
+   "liq_share": 0.019644662718474648,
+   "verdict": "candidate"
+  },
+  {
+   "tp": 0.02,
+   "leverage": 10.0,
+   "hold_bars": 16,
+   "ev_pct": -0.08849480021042519,
+   "excess_pct": 0.22166348590780718,
+   "t": -1.170996451422148,
+   "clusters": 262,
+   "liq_share": 0.011940873417112042,
+   "verdict": "candidate"
+  },
+  {
+   "tp": 0.02,
+   "leverage": 10.0,
+   "hold_bars": 32,
+   "ev_pct": -0.039406151181552225,
+   "excess_pct": 0.27075213493668016,
+   "t": -0.38811446614134526,
+   "clusters": 132,
+   "liq_share": 0.02407434156675815,
+   "verdict": "candidate"
+  },
+  {
+   "tp": 0.03,
+   "leverage": 10.0,
+   "hold_bars": 16,
+   "ev_pct": -0.09129681844333139,
+   "excess_pct": 0.218861467674901,
+   "t": -0.9843271402159098,
+   "clusters": 262,
+   "liq_share": 0.012927921421349126,
+   "verdict": "candidate"
+  },
+  {
+   "tp": 0.03,
+   "leverage": 10.0,
+   "hold_bars": 32,
+   "ev_pct": -0.04001679607294714,
+   "excess_pct": 0.2701414900452852,
+   "t": -0.15481065048953074,
+   "clusters": 132,
+   "liq_share": 0.0262891809908999,
+   "verdict": "candidate"
+  },
+  {
+   "tp": 0.004,
+   "leverage": 5.0,
+   "hold_bars": 16,
+   "ev_pct": -0.1555902197003996,
+   "excess_pct": 0.15456806641783277,
+   "t": -5.717635599148514,
+   "clusters": 262,
+   "liq_share": 0.0008426019548365353,
+   "verdict": "candidate"
+  },
+  {
+   "tp": 0.004,
+   "leverage": 5.0,
+   "hold_bars": 32,
+   "ev_pct": -0.1410951008343951,
+   "excess_pct": 0.16906318528383726,
+   "t": -3.7305249892399446,
+   "clusters": 132,
+   "liq_share": 0.0018055756175068612,
+   "verdict": "candidate"
+  },
+  {
+   "tp": 0.008,
+   "leverage": 5.0,
+   "hold_bars": 16,
+   "ev_pct": -0.08902910030098686,
+   "excess_pct": 0.2211291858172455,
+   "t": -2.10895953636959,
+   "clusters": 262,
+   "liq_share": 0.001131494053637633,
+   "verdict": "candidate"
+  },
+  {
+   "tp": 0.008,
+   "leverage": 5.0,
+   "hold_bars": 32,
+   "ev_pct": -0.05807296995646874,
+   "excess_pct": 0.25208531616176366,
+   "t": -1.0708583737135506,
+   "clusters": 132,
+   "liq_share": 0.0024315084982425733,
+   "verdict": "candidate"
+  },
+  {
+   "tp": 0.012,
+   "leverage": 5.0,
+   "hold_bars": 16,
+   "ev_pct": -0.06317393482080638,
+   "excess_pct": 0.246984351297426,
+   "t": -1.0792205618697652,
+   "clusters": 262,
+   "liq_share": 0.00130001444460494,
+   "verdict": "candidate"
+  },
+  {
+   "tp": 0.012,
+   "leverage": 5.0,
+   "hold_bars": 32,
+   "ev_pct": -0.013805617240655741,
+   "excess_pct": 0.2963526688775766,
+   "t": -0.21194891832554194,
+   "clusters": 132,
+   "liq_share": 0.0028648466464442197,
+   "verdict": "candidate"
+  },
+  {
+   "tp": 0.02,
+   "leverage": 5.0,
+   "hold_bars": 16,
+   "ev_pct": -0.04505804809528122,
+   "excess_pct": 0.26510023802295113,
+   "t": -0.40996112297114534,
+   "clusters": 262,
+   "liq_share": 0.0015648322018392796,
+   "verdict": "candidate"
+  },
+  {
+   "tp": 0.02,
+   "leverage": 5.0,
+   "hold_bars": 32,
+   "ev_pct": 0.03628366085995074,
+   "excess_pct": 0.3464419469781831,
+   "t": 0.365756064631124,
+   "clusters": 132,
+   "liq_share": 0.0032741104530791083,
+   "verdict": "candidate"
+  },
+  {
+   "tp": 0.03,
+   "leverage": 5.0,
+   "hold_bars": 16,
+   "ev_pct": -0.040942086286476206,
+   "excess_pct": 0.26921619983175615,
+   "t": -0.17366764856873856,
+   "clusters": 262,
+   "liq_share": 0.0017092782512398287,
+   "verdict": "candidate"
+  },
+  {
+   "tp": 0.03,
+   "leverage": 5.0,
+   "hold_bars": 32,
+   "ev_pct": 0.04619613969342191,
+   "excess_pct": 0.3563544258116543,
+   "t": 0.5932598861339775,
+   "clusters": 132,
+   "liq_share": 0.0036592999181472388,
+   "verdict": "candidate"
+  },
+  {
+   "tp": 0.004,
+   "leverage": 3.0,
+   "hold_bars": 16,
+   "ev_pct": -0.15389367345595334,
+   "excess_pct": 0.15626461266227903,
+   "t": -5.700093225710104,
+   "clusters": 262,
+   "liq_share": 0.0002888920988010978,
+   "verdict": "candidate"
+  },
+  {
+   "tp": 0.004,
+   "leverage": 3.0,
+   "hold_bars": 32,
+   "ev_pct": -0.13372399412808306,
+   "excess_pct": 0.17643429199014932,
+   "t": -3.661532842356946,
+   "clusters": 132,
+   "liq_share": 0.00043333814820164666,
+   "verdict": "candidate"
+  },
+  {
+   "tp": 0.008,
+   "leverage": 3.0,
+   "hold_bars": 16,
+   "ev_pct": -0.08757052040091833,
+   "excess_pct": 0.22258776571731403,
+   "t": -2.0946012114013186,
+   "clusters": 262,
+   "liq_share": 0.00040926380663488854,
+   "verdict": "candidate"
+  },
+  {
+   "tp": 0.008,
+   "leverage": 3.0,
+   "hold_bars": 32,
+   "ev_pct": -0.0460627844385823,
+   "excess_pct": 0.26409550167965007,
+   "t": -0.8100227368204643,
+   "clusters": 132,
+   "liq_share": 0.0005777841976021956,
+   "verdict": "candidate"
+  },
+  {
+   "tp": 0.012,
+   "leverage": 3.0,
+   "hold_bars": 16,
+   "ev_pct": -0.061967471798978595,
+   "excess_pct": 0.24819081431925377,
+   "t": -1.076883112003359,
+   "clusters": 262,
+   "liq_share": 0.00045741248976840485,
+   "verdict": "candidate"
+  },
+  {
+   "tp": 0.012,
+   "leverage": 3.0,
+   "hold_bars": 32,
+   "ev_pct": 0.002648089587298599,
+   "excess_pct": 0.312806375705531,
+   "t": 0.08780987621487685,
+   "clusters": 132,
+   "liq_share": 0.00065000722230247,
+   "verdict": "candidate"
+  },
+  {
+   "tp": 0.02,
+   "leverage": 3.0,
+   "hold_bars": 16,
+   "ev_pct": -0.0418639229391291,
+   "excess_pct": 0.26829436317910327,
+   "t": -0.3811912379688101,
+   "clusters": 262,
+   "liq_share": 0.00048148683133516297,
+   "verdict": "candidate"
+  },
+  {
+   "tp": 0.02,
+   "leverage": 3.0,
+   "hold_bars": 32,
+   "ev_pct": 0.0551306998363196,
+   "excess_pct": 0.36528898595455195,
+   "t": 0.6495209529086439,
+   "clusters": 132,
+   "liq_share": 0.0006981559054359863,
+   "verdict": "candidate"
+  },
+  {
+   "tp": 0.03,
+   "leverage": 3.0,
+   "hold_bars": 16,
+   "ev_pct": -0.03601875994249132,
+   "excess_pct": 0.27413952617574106,
+   "t": -0.1228478248460524,
+   "clusters": 262,
+   "liq_share": 0.00048148683133516297,
+   "verdict": "candidate"
+  },
+  {
+   "tp": 0.03,
+   "leverage": 3.0,
+   "hold_bars": 32,
+   "ev_pct": 0.06992241727999464,
+   "excess_pct": 0.380080703398227,
+   "t": 0.8825274823077229,
+   "clusters": 132,
+   "liq_share": 0.0007703789301362608,
+   "verdict": "candidate"
+  }
+ ],
+ "generatedAt": "2026-10-22T08:38:26.835784+00:00",
+ "feeFloorPct": 0.12777284826974267,
+ "arms": {
+  "SHIPPED     tp0.40% sl0.90% x40": {
+   "label": "SHIPPED     tp0.40% sl0.90% x40",
+   "n": 124614,
+   "clusters": 262,
+   "cluster_mean_pct": -18.916575610594975,
+   "cluster_se_pct": 1.383733075833652,
+   "t": -13.670682547787177,
+   "ev_pct": -0.3101582861182324,
+   "kinds": {
+    "tp": 92395,
+    "liquidation": 20946,
+    "time": 11273
+   },
+   "liq_share": 0.1680870528191054,
+   "excess_pct": 0.0
+  },
+  "NOSTOP-L20  tp0.40% liq      x20": {
+   "label": "NOSTOP-L20  tp0.40% liq      x20",
+   "n": 124614,
+   "clusters": 262,
+   "cluster_mean_pct": -12.307532265863937,
+   "cluster_se_pct": 1.6343410174934145,
+   "t": -7.530577850111095,
+   "ev_pct": -0.21132378048332526,
+   "kinds": {
+    "tp": 97516,
+    "liquidation": 5046,
+    "time": 22052
+   },
+   "liq_share": 0.04049304251528721,
+   "excess_pct": 0.09883450563490712
+  },
+  "NOSTOP-L10  tp0.40% liq      x10": {
+   "label": "NOSTOP-L10  tp0.40% liq      x10",
+   "n": 124614,
+   "clusters": 262,
+   "cluster_mean_pct": -10.258248037556058,
+   "cluster_se_pct": 1.5976659833818216,
+   "t": -6.420771390426774,
+   "ev_pct": -0.18119743750723288,
+   "kinds": {
+    "tp": 98272,
+    "time": 25442,
+    "liquidation": 900
+   },
+   "liq_share": 0.007222302470027445,
+   "excess_pct": 0.1289608486109995
+  },
+  "NOSTOP-L5   tp0.40% liq      x5 ": {
+   "label": "NOSTOP-L5   tp0.40% liq      x5 ",
+   "n": 124614,
+   "clusters": 262,
+   "cluster_mean_pct": -8.698647957620862,
+   "cluster_se_pct": 1.5213715191846588,
+   "t": -5.717635599148514,
+   "ev_pct": -0.1555902197003996,
+   "kinds": {
+    "tp": 98518,
+    "time": 25991,
+    "liquidation": 105
+   },
+   "liq_share": 0.0008426019548365353,
+   "excess_pct": 0.15456806641783277
+  },
+  "NOSTOP-L3   tp0.40% liq      x3 ": {
+   "label": "NOSTOP-L3   tp0.40% liq      x3 ",
+   "n": 124614,
+   "clusters": 262,
+   "cluster_mean_pct": -8.62024022188284,
+   "cluster_se_pct": 1.512298111722366,
+   "t": -5.700093225710104,
+   "ev_pct": -0.15389367345595334,
+   "kinds": {
+    "tp": 98539,
+    "time": 26039,
+    "liquidation": 36
+   },
+   "liq_share": 0.0002888920988010978,
+   "excess_pct": 0.15626461266227903
+  },
+  "NOSTOP-L10-DCA0.8%-AVG": {
+   "label": "NOSTOP-L10-DCA0.8%-AVG",
+   "n": 124614,
+   "clusters": 262,
+   "cluster_mean_pct": -17.044570180945666,
+   "cluster_se_pct": 3.1312814060554146,
+   "t": -5.443321110643106,
+   "ev_pct": -0.3166620133946455,
+   "kinds": {
+    "tp": 107074,
+    "time": 17447,
+    "liquidation": 93
+   },
+   "liq_share": 0.0007463045885695026,
+   "excess_pct": -0.006503727276413129
+  },
+  "NOSTOP-L5-DCA0.8%-AVG ": {
+   "label": "NOSTOP-L5-DCA0.8%-AVG ",
+   "n": 124614,
+   "clusters": 262,
+   "cluster_mean_pct": -18.22602171210178,
+   "cluster_se_pct": 3.263777368210108,
+   "t": -5.584333628153422,
+   "ev_pct": -0.3375896450872502,
+   "kinds": {
+    "tp": 107113,
+    "time": 17483,
+    "liquidation": 18
+   },
+   "liq_share": 0.0001444460494005489,
+   "excess_pct": -0.027431358969017827
+  },
+  "NOSTOP-L10-DCA0.3%-AVG": {
+   "label": "NOSTOP-L10-DCA0.3%-AVG",
+   "n": 124614,
+   "clusters": 262,
+   "cluster_mean_pct": -29.61271290366389,
+   "cluster_se_pct": 3.9254892163421395,
+   "t": -7.543699975122513,
+   "ev_pct": -0.5271816811083135,
+   "kinds": {
+    "tp": 105388,
+    "time": 19139,
+    "liquidation": 87
+   },
+   "liq_share": 0.0006981559054359863,
+   "excess_pct": -0.21702339499008116
+  },
+  "NOSTOP-L5-DCA0.3%-AVG ": {
+   "label": "NOSTOP-L5-DCA0.3%-AVG ",
+   "n": 124614,
+   "clusters": 262,
+   "cluster_mean_pct": -30.778138137988925,
+   "cluster_se_pct": 4.032856888298801,
+   "t": -7.631844865928831,
+   "ev_pct": -0.5482413047846102,
+   "kinds": {
+    "tp": 105427,
+    "time": 19175,
+    "liquidation": 12
+   },
+   "liq_share": 9.62973662670326e-05,
+   "excess_pct": -0.23808301866637782
+  },
+  "NOSTOP-L3-DCA0.3%-AVG ": {
+   "label": "NOSTOP-L3-DCA0.3%-AVG ",
+   "n": 124614,
+   "clusters": 262,
+   "cluster_mean_pct": -31.414694656352115,
+   "cluster_se_pct": 4.115791617346274,
+   "t": -7.632722347738116,
+   "ev_pct": -0.5607652296666419,
+   "kinds": {
+    "tp": 105427,
+    "time": 19187
+   },
+   "liq_share": 0.0,
+   "excess_pct": -0.2506069435484095
+  },
+  "NOSTOP-L10-DCA0.3%-REC": {
+   "label": "NOSTOP-L10-DCA0.3%-REC",
+   "n": 124614,
+   "clusters": 262,
+   "cluster_mean_pct": -16.602438654768708,
+   "cluster_se_pct": 4.027534561406046,
+   "t": -4.122233689528578,
+   "ev_pct": -0.29456591585991004,
+   "kinds": {
+    "tp": 105388,
+    "time": 19139,
+    "liquidation": 87
+   },
+   "liq_share": 0.0006981559054359863,
+   "excess_pct": 0.01559237025832233
+  },
+  "NOSTOP-L5-DCA0.3%-REC ": {
+   "label": "NOSTOP-L5-DCA0.3%-REC ",
+   "n": 124614,
+   "clusters": 262,
+   "cluster_mean_pct": -17.752903084174275,
+   "cluster_se_pct": 4.126779269692514,
+   "t": -4.301878516874744,
+   "ev_pct": -0.315399053466192,
+   "kinds": {
+    "tp": 105427,
+    "time": 19175,
+    "liquidation": 12
+   },
+   "liq_share": 9.62973662670326e-05,
+   "excess_pct": -0.005240767347959641
+  },
+  "NOSTOP-L3-DCA0.3%-REC ": {
+   "label": "NOSTOP-L3-DCA0.3%-REC ",
+   "n": 124614,
+   "clusters": 262,
+   "cluster_mean_pct": -18.389459602537457,
+   "cluster_se_pct": 4.206697341861477,
+   "t": -4.371471990518829,
+   "ev_pct": -0.3279229783482237,
+   "kinds": {
+    "tp": 105427,
+    "time": 19187
+   },
+   "liq_share": 0.0,
+   "excess_pct": -0.01776469222999133
+  },
+  "NOSTOP-L5-DCA0.8%-REC ": {
+   "label": "NOSTOP-L5-DCA0.8%-REC ",
+   "n": 124614,
+   "clusters": 262,
+   "cluster_mean_pct": 0.37030733959021056,
+   "cluster_se_pct": 3.3447818869378843,
+   "t": 0.11071195435383781,
+   "ev_pct": -0.020539777473456484,
+   "kinds": {
+    "tp": 107113,
+    "time": 17483,
+    "liquidation": 18
+   },
+   "liq_share": 0.0001444460494005489,
+   "excess_pct": 0.2896185086447759
+  },
+  "NOSTOP-L5-WIDE1.0%-REC": {
+   "label": "NOSTOP-L5-WIDE1.0%-REC",
+   "n": 124614,
+   "clusters": 262,
+   "cluster_mean_pct": -14.238811216507047,
+   "cluster_se_pct": 6.67181078174737,
+   "t": -2.1341749162703105,
+   "ev_pct": -0.2858618033010493,
+   "kinds": {
+    "tp": 74440,
+    "time": 50147,
+    "liquidation": 27
+   },
+   "liq_share": 0.00021666907410082333,
+   "excess_pct": 0.02429648281718305
+  },
+  "NOSTOP-L3-WIDE1.0%-REC": {
+   "label": "NOSTOP-L3-WIDE1.0%-REC",
+   "n": 124614,
+   "clusters": 262,
+   "cluster_mean_pct": -15.239896505453022,
+   "cluster_se_pct": 6.797860076375235,
+   "t": -2.2418667542770696,
+   "ev_pct": -0.3033326239769646,
+   "kinds": {
+    "tp": 74440,
+    "time": 50168,
+    "liquidation": 6
+   },
+   "liq_share": 4.81486831335163e-05,
+   "excess_pct": 0.006825662141267785
+  },
+  "NOSTOP-L5-WIDE1.0%-NO DCA": {
+   "label": "NOSTOP-L5-WIDE1.0%-NO DCA",
+   "n": 124614,
+   "clusters": 262,
+   "cluster_mean_pct": -3.398694167957418,
+   "cluster_se_pct": 2.452059177148379,
+   "t": -1.3860571554027208,
+   "ev_pct": -0.07257201170437279,
+   "kinds": {
+    "tp": 67762,
+    "time": 56705,
+    "liquidation": 147
+   },
+   "liq_share": 0.0011796427367711494,
+   "excess_pct": 0.2375862744138596
+  }
+ }
+}

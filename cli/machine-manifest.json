@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "exchange": "kucoin",
+  "pairs": ["SOL/USDT", "ETH/USDT", "LINK/USDT", "AVAX/USDT", "DOGE/USDT"],
+  "heartbeatSec": 15,
+  "killSwitchPollSec": 15,
+  "maxRestarts": 20,
+  "maxLogBytes": 5242880,
+  "maxLogFiles": 3,
+  "drainTimeoutSec": 30,
+  "errorWindow": 50,
+  "health": {
+    "heartbeatWarnSec": 30,
+    "heartbeatStaleSec": 90,
+    "failWarnCount": 2,
+    "failTripCount": 5,
+    "errorRateWarn": 0.2,
+    "errorRateTrip": 0.5,
+    "minFreeUsd": 25,
+    "maxOpenPositions": 2
+  },
+  "children": [
+    {
+      "name": "monitor",
+      "role": "monitor",
+      "command": "monitor",
+      "args": ["--exchange", "kucoin"],
+      "live": false,
+      "enabled": true
+    },
+    {
+      "name": "watchdog",
+      "role": "monitor",
+      "command": "watchdog",
+      "args": ["run", "--exchange", "kucoin", "--poll-sec", "15"],
+      "live": false,
+      "enabled": true
+    }
+  ]
+}
