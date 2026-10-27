@@ -198,11 +198,19 @@ jw3d supervise …                   same supervisor via the jw3d alias (24/7 en
 ## Auth
 
 PAT `jw3_mcp_…` (Settings → Harness Access) or SIWX JWT as bearer.
-Precedence: `--pat` flag > `JW3_MCP_PAT` env > `~/.config/jw3/`
-`credentials.json` (0600, `JW3_CONFIG_HOME` override).
-Endpoint defaults to the prod Supabase project
-(`JW3_SUPABASE_URL` override). `login` verifies via `initialize`
+Precedence: `JW3_MCP_PAT` env > `~/.config/jw3/`
+`credentials.json` (0600, `JW3_CONFIG_HOME` override). `--pat` is
+debug-only: the secret leaks via shell history and the process list, so
+the defaults are pipe (`echo "$PAT" | jw3 auth login`), env, or browser
+login (`jw3 auth login --browser`). `login` verifies via `initialize`
 before storing; `status` never prints the secret.
+Endpoint defaults to the prod Supabase project
+(`JW3_SUPABASE_URL` override).
+
+Backups: `~/.config/jw3` holds secrets (`credentials.json`), so exclude
+it from dotfile sync, Time Machine, and repo backups - or at minimum
+exclude `credentials.json` (and any `*.key` / `*.pat` files). On a new
+machine re-run `jw3 auth login` instead of copying the file.
 
 ## Verify
 
@@ -229,5 +237,6 @@ server: no paste, the PAT arrives via the code exchange and is stored
 
 Non-interactive: `echo "$PAT" | node dist/index.js auth login`.
 One-shot without storing: `JW3_MCP_PAT=… node dist/index.js risk`.
+`--pat` also works one-shot but is debug-only (shell history, `ps`).
 Optional global link: `npm link` (needs Node on PATH), then `jw3 …`
 directly.

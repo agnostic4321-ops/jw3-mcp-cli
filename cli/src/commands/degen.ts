@@ -33,8 +33,9 @@
  * Real money: NOTHING sends without --yes (dry run prints the full
  * ticket and sends zero bytes). `--yes` needs a PAT with the
  * trade:execute scope; the server re-checks YOLO/kill-switch/caps.
- * Shorts arm TP-only via `set_exits` + a manual kill watch — short
- * SL legs are UNPROVEN and never trusted here.
+ * Success needs a guarded position: the fire arms a venue-native stop
+ * (the plan kill line) together with the TP, or `--trail` runs the trail
+ * supervisor inline as the guard. A TP-only arm never counts as success.
  *
  * Paper mode (`--paper`, see PAPER_MODE.md): the same screen → oracle →
  * heat → plan pipeline against a SEPARATE paper book, then simulated fills
@@ -75,7 +76,7 @@ import {
   bounceRequiredVeto,
   type PrefilterCtx,
 } from "../blocking-rules.js";
-import { extractOpenOrders, type TradeCall } from "./trade.js";
+import { extractOpenOrders, makeIntentKey, ACTOR_MACHINE, type TradeCall } from "./trade.js";
 import {
   loadStore,
   normalizeVotePair,
@@ -298,30 +299,54 @@ export function degenExecuteArgs(o: {
   leverage: number;
   /** Contract multiplier — one contract IS `multiplier` base units. */
   multiplier?: number;
+  /** Explicit per-intent idempotency key (manual override; auto-derived when omitted). */
+  idempotencyKey?: string;
+  /** Explicit actor (machine strategy path; defaults to "machine"). */
+  actor?: string;
 }): Record<string, unknown> {
+  const amount = String(contractsToAmountBaseUnits(o.contracts, o.multiplier ?? 1));
+  const price = String(o.price);
+  const side = o.side === "long" ? "buy" : "sell";
   return {
     exchange: o.exchange,
     pair: o.pair,
-    side: o.side === "long" ? "buy" : "sell",
+    side,
     // BASE units, not contracts. `execute_trade` divides by the contract
     // multiplier server-side; sending the contract count oversizes the
     // position by that multiplier (12 contracts on IRYS, mult 100, became
     // 1200 base units = 12 lots — a 100x oversize).
-    amount: String(contractsToAmountBaseUnits(o.contracts, o.multiplier ?? 1)),
-    price: String(o.price),
+    amount,
+    price,
     market: "futures",
     leverage: o.leverage,
     marginMode: "isolated",
+    // Per-INTENT key (mirror live.ts): the same fire retried carries the
+    // same key, so the server dedupes instead of double-filling. Derived
+    // from the intent shape, never a timestamp.
+    idempotency_key: o.idempotencyKey?.trim() ? o.idempotencyKey.trim() : makeIntentKey(
+      "degen",
+      [o.exchange, o.pair, side, amount, price, o.leverage].join("|"),
+    ),
+    // Machine strategy path (see ACTOR MAP in trade.ts).
+    actor: o.actor?.trim() ? o.actor.trim() : ACTOR_MACHINE,
   };
 }
 
-/** SINGLE construction site for the degen TP arm (TP-only, never short SL). */
+/** SINGLE construction site for the degen exit arm (stop + TP, venue-native). */
 export function degenExitsArgs(o: {
   exchange: string;
   pair: string;
   tpPrice: number;
+  /** Venue-native stop (the plan kill line). Omit only for TP-only callers. */
+  slPrice?: number;
 }): Record<string, unknown> {
-  return { exchange: o.exchange, pair: o.pair, tpPrice: o.tpPrice, market: "futures" };
+  return {
+    exchange: o.exchange,
+    pair: o.pair,
+    tpPrice: o.tpPrice,
+    ...(o.slPrice !== undefined ? { slPrice: o.slPrice } : {}),
+    market: "futures",
+  };
 }
 
 export type DegenArgs = {
@@ -667,17 +692,37 @@ export async function cmdDegen(
     return;
   }
   let tpArmed = false;
+  let stopArmed = false;
   try {
-    await call("set_exits", degenExitsArgs({ exchange: a.exchange, pair, tpPrice: tp1Price }), pat, opts.url);
+    // Venue-native stop + TP in one arm: the stop is the plan kill line,
+    // so a filled entry is protected even when nobody watches the tape.
+    await call("set_exits", degenExitsArgs({ exchange: a.exchange, pair, tpPrice: tp1Price, slPrice: plan.killPrice }), pat, opts.url);
     tpArmed = true;
-    console.log(`TP ARMED @ ${px(tp1Price)} (step-1 TP; move to averaged ${px(tp2Price)} via exits once step-2 fills)`);
+    stopArmed = true;
+    console.log(`TP ARMED @ ${px(tp1Price)} (step-1 TP; move to averaged ${px(tp2Price)} via exits once step-2 fills) + STOP ARMED @ kill ${px(plan.killPrice)}`);
   } catch (e) {
-    console.error(`TP arm failed — entry is live WITHOUT a take-profit: ${e instanceof Error ? e.message : String(e)}`);
+    // The combined arm failed: fall back to the TP-only arm (the old
+    // doctrine) so the take-profit is not lost with the stop. A TP-only
+    // arm is NOT a success on its own (see the gate below).
+    console.error(`Stop+TP arm failed, falling back to TP-only: ${e instanceof Error ? e.message : String(e)}`);
+    try {
+      await call("set_exits", degenExitsArgs({ exchange: a.exchange, pair, tpPrice: tp1Price }), pat, opts.url);
+      tpArmed = true;
+      console.log(`TP ARMED @ ${px(tp1Price)} (step-1 TP; move to averaged ${px(tp2Price)} via exits once step-2 fills)`);
+    } catch (e2) {
+      console.error(`TP arm failed: entry is live WITHOUT a take-profit: ${e2 instanceof Error ? e2.message : String(e2)}`);
+    }
+  }
+  if (!stopArmed && !a.trail) {
+    // No venue-native stop and no inline trail guard: the entry is live
+    // without automatic protection. Report it honestly instead of as a
+    // success with a TP-only arm.
+    console.error(`NO-STOP: entry is live WITHOUT a venue-native stop (kill ${px(plan.killPrice)}) and no --trail guard runs inline. Refusing to report success. Arm the stop by hand or re-run with --trail.`);
   }
   const runState = {
     kind: "degen", exchange: a.exchange, pair, base, side, leverage: a.leverage,
     step1: { ...step1, orderId: step1Id }, step2: { ...step2, orderId: step2Id },
-    avg2: ticket.avg2, tp1Price, tp2Price, tpArmed,
+    avg2: ticket.avg2, tp1Price, tp2Price, tpArmed, stopArmed,
     killPrice: plan.killPrice, killLossUsd: plan.killLossUsd,
     trail: ticket.trail, createdAt: new Date(nowMs).toISOString(),
   };
@@ -705,7 +750,9 @@ export async function cmdDegen(
   }
   console.log(`Kill line ${px(plan.killPrice)} (≈ -$${plan.killLossUsd.toFixed(2)}) — thesis break scratches everything; close the loop with \`degen record --pair ${pair} --outcome win|loss|stop|scratch\`.`);
   if (finetune) console.log(`FINETUNE-READY: ${finetune} learning windows banked — re-score the oracle holdout.`);
-  if (failed > 0 || !tpArmed) process.exitCode = 1;
+  // Success needs a guarded position: a venue-native stop, or the trail
+  // supervisor running inline. A TP-only arm never counts.
+  if (failed > 0 || !tpArmed || (!stopArmed && !a.trail)) process.exitCode = 1;
 }
 
 /** Pure: simulated fill ids for a paper ticket (never venue order ids). */

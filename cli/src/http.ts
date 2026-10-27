@@ -22,15 +22,28 @@
 
 export const JW3_UA = "jw3-cli/0.1";
 
+/**
+ * Pure: redact bearer-like substrings before logging/errors. Covers
+ * `jw3_mcp_...` secrets, `Bearer <token>` header echoes, and JSON
+ * `access_token` values. Structure-preserving (still valid JSON) so
+ * envelope detection on scrubbed bodies keeps working.
+ */
+export function scrubBearer(s: string): string {
+  return s
+    .replace(/jw3_mcp_[A-Za-z0-9_-]+/g, "jw3_mcp_[REDACTED]")
+    .replace(/Bearer\s+[A-Za-z0-9_.~+/=-]+/gi, "Bearer [REDACTED]")
+    .replace(/("access_token"\s*:\s*")[^"]*(")/g, "$1[REDACTED]$2");
+}
+
 /** Thrown for non-OK HTTP after retries are exhausted (or not applicable). */
 export class HttpError extends Error {
   status: number;
   body: string;
   constructor(status: number, body: string, url: string) {
-    super(`upstream ${status} on ${url}${body ? `: ${body.slice(0, 160)}` : ""}`);
+    super(`upstream ${status} on ${scrubBearer(url)}${body ? `: ${scrubBearer(body).slice(0, 160)}` : ""}`);
     this.name = "HttpError";
     this.status = status;
-    this.body = body;
+    this.body = scrubBearer(body);
   }
 }
 

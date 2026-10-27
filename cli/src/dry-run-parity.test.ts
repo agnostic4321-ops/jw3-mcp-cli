@@ -17,6 +17,7 @@ import {
   cmdExits,
   executeToolArgs,
   exitsToolArgs,
+  makeIntentKey,
   type TradeCall,
 } from "./commands/trade.js";
 
@@ -54,14 +55,38 @@ afterEach(() => {
 
 describe("ticket builders (single construction site)", () => {
   it("execute builds the exact venue ticket", () => {
+    const t1 = executeToolArgs({ exchange: "kucoin", pair: "BTC/USDT", side: "BUY", amount: 2, market: "Futures", leverage: 2, marginMode: "Isolated", stop: 1, tp: 2 });
     assert.deepEqual(
-      executeToolArgs({ exchange: "kucoin", pair: "BTC/USDT", side: "BUY", amount: 2, market: "Futures", leverage: 2, marginMode: "Isolated", stop: 1, tp: 2 }),
-      { exchange: "kucoin", pair: "BTC/USDT", side: "buy", amount: "2", market: "futures", leverage: 2, marginMode: "isolated", stop: 1, tp: 2 },
+      { ...t1, idempotency_key: undefined },
+      { exchange: "kucoin", pair: "BTC/USDT", side: "buy", amount: "2", market: "futures", leverage: 2, marginMode: "isolated", stop: 1, tp: 2, idempotency_key: undefined },
     );
+    // The key is auto-derived from the intent (never a timestamp): the same
+    // ticket reproduces the same key, a different ticket a different one.
+    assert.match(String(t1.idempotency_key), /^jw3-ex-[0-9a-f]{8}$/);
+    assert.equal(executeToolArgs({ exchange: "kucoin", pair: "BTC/USDT", side: "buy", amount: 2, market: "futures", leverage: 2, marginMode: "isolated", stop: 1, tp: 2 }).idempotency_key, t1.idempotency_key);
+    assert.notEqual(
+      executeToolArgs({ exchange: "kucoin", pair: "BTC/USDT", side: "buy", amount: 3, market: "futures", leverage: 2, marginMode: "isolated", stop: 1, tp: 2 }).idempotency_key,
+      t1.idempotency_key,
+    );
+    // An explicit key always wins; an explicit actor rides the ticket.
+    assert.equal(
+      executeToolArgs({ exchange: "kucoin", pair: "BTC/USDT", side: "buy", amount: 2, idempotencyKey: "op-key-1", actor: "owner" }).idempotency_key,
+      "op-key-1",
+    );
+    assert.equal(
+      executeToolArgs({ exchange: "kucoin", pair: "BTC/USDT", side: "buy", amount: 2, actor: "owner" }).actor,
+      "owner",
+    );
+    // No actor claim means no actor field: the server attributes the call to
+    // the authenticated subject (never a silent client-side default).
+    assert.equal("actor" in t1, false);
+    const t2 = executeToolArgs({ exchange: "kucoin", pair: "BTC/USDT", side: "sell", riskUsd: 50 });
     assert.deepEqual(
-      executeToolArgs({ exchange: "kucoin", pair: "BTC/USDT", side: "sell", riskUsd: 50 }),
-      { exchange: "kucoin", pair: "BTC/USDT", side: "sell", risk_usd: 50 },
+      { ...t2, idempotency_key: undefined },
+      { exchange: "kucoin", pair: "BTC/USDT", side: "sell", risk_usd: 50, idempotency_key: undefined },
     );
+    assert.match(String(t2.idempotency_key), /^jw3-ex-[0-9a-f]{8}$/);
+    assert.notEqual(t2.idempotency_key, t1.idempotency_key);
   });
   it("close/exits/cancel build exact tickets", () => {
     assert.deepEqual(
@@ -130,6 +155,15 @@ describe("live fire matches the preview ticket", () => {
     assert.deepEqual(calls[1], { name: "set_exits", args: exitsToolArgs({ exchange: "kucoin", pair: "BTC/USDT", sl: 1, tp: 2 }) });
     assert.deepEqual(calls[2], { name: "cancel_order", args: cancelToolArgs({ exchange: "kucoin", orderId: "o9", pair: "BTC/USDT" }) });
     assert.equal(process.exitCode, 0);
+  });
+});
+
+describe("makeIntentKey: per-intent, per-namespace, no timestamps", () => {
+  it("is stable for the same intent and distinct across namespaces and shapes", () => {
+    assert.equal(makeIntentKey("ex", "a|b"), makeIntentKey("ex", "a|b"));
+    assert.notEqual(makeIntentKey("ex", "a|b"), makeIntentKey("degen", "a|b"));
+    assert.notEqual(makeIntentKey("ex", "a|b"), makeIntentKey("ex", "a|c"));
+    assert.match(makeIntentKey("ex", "a|b"), /^jw3-ex-[0-9a-f]{8}$/);
   });
 });
 

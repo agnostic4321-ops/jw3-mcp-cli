@@ -11,11 +11,38 @@ import { fail, needPat } from "./market.js";
 
 export type ExecuteTpLeg = { price: number; share: number };
 
+/**
+ * ACTOR MAP: every fund-moving `execute_trade` call claims its author.
+ *
+ * - Machine-originated strategy paths (live fire, degen fire, grid start,
+ *   bounce trigger) send actor "machine". These orders are placed by an
+ *   automated loop, and without the claim the reconciler books them
+ *   against the owner's manual trading on the same shared account.
+ * - Interactive one-shot paths (`execute`, including its `--chase` mode)
+ *   send the operator's actor: the explicit `--actor` value when given,
+ *   otherwise the field is omitted and the server attributes the call to
+ *   the authenticated PAT subject (the human at the keyboard). The server
+ *   default is unchanged; the client never assumes a value for it.
+ * - Protective/unwind calls (`close_position`, `cancel_order`, `set_exits`)
+ *   carry no actor claim: they reduce or arm existing exposure rather than
+ *   opening a new attributed position, so the server-side caller
+ *   attribution stands.
+ */
+export const ACTOR_MACHINE = "machine";
+
 export type ExecuteArgs = {
+  /**
+   * Explicit actor for this ticket. Machine strategy paths pass "machine";
+   * interactive paths pass the operator's `--actor`. Omit it and the field
+   * stays off the wire (the server attributes the call to the
+   * authenticated subject).
+   */
+  actor?: string;
   /**
    * The per-INTENT idempotency key. A retry of the same intent carries
    * the same key, so the server dedupes it instead of double-filling.
-   * Omit it and the server has no way to tell a retry from a new order.
+   * Omit it and the builder derives one from the intent (see
+   * `makeIntentKey`); an explicit value always wins.
    */
   idempotencyKey?: string;
 
@@ -99,6 +126,29 @@ export type TradeDeps = { call?: TradeCall };
  * dry run literally cannot diverge from what --yes would send. Covered by
  * dry-run parity tests: same input → same toolArgs, zero calls without --yes.
  */
+
+/**
+ * Per-INTENT idempotency key for builders that carry no session/turn
+ * (the live path scopes its key by session+turn; see live.ts
+ * `makeIdempotencyKey`). Derived from the intent's own shape, never from a
+ * timestamp: a retry after a timeout reproduces the SAME key, so the
+ * server dedupes instead of double-filling. Two DIFFERENT intents must
+ * produce different keys, hence the per-builder namespace.
+ */
+export function makeIntentKey(namespace: string, shape: string): string {
+  const clean = String(namespace ?? "")
+    .replace(/[^A-Za-z0-9_-]/g, "")
+    .slice(0, 12);
+  // FNV-1a: short, stable, dependency-free. A dedupe tag, not a security
+  // primitive: it only has to be unique per intent.
+  let h = 0x811c9dc5;
+  for (let i = 0; i < shape.length; i++) {
+    h ^= shape.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return `jw3-${clean}-${h.toString(16).padStart(8, "0")}`.slice(0, 64);
+}
+
 export function executeToolArgs(a: ExecuteArgs): Record<string, unknown> {
   const toolArgs: Record<string, unknown> = {
     exchange: a.exchange,
@@ -117,8 +167,31 @@ export function executeToolArgs(a: ExecuteArgs): Record<string, unknown> {
   // The per-INTENT idempotency key. A retry of the SAME intent carries
   // the SAME key, so the server dedupes it and never double-fills. The
   // client owns the key's uniqueness; the server owns the dedupe.
+  //
+  // An explicit key always wins (the manual `--idempotency-key` override).
+  // Otherwise the builder derives one from the intent's own shape, so a
+  // retried command reproduces the same key without the operator pasting
+  // anything. Derived from intent fields only, never a timestamp.
   if (a.idempotencyKey !== undefined && a.idempotencyKey.trim() !== "") {
     toolArgs.idempotency_key = a.idempotencyKey.trim();
+  } else {
+    const legs = (a.tpLegs ?? []).map((l) => `${l.price}:${l.share}`).join(",");
+    toolArgs.idempotency_key = makeIntentKey(
+      "ex",
+      [
+        a.exchange, a.pair, a.side.toLowerCase(),
+        a.amount ?? "", a.price ?? "", a.market?.toLowerCase() ?? "",
+        a.leverage ?? "", a.marginMode?.toLowerCase() ?? "",
+        a.stop ?? "", a.tp ?? "", legs, a.riskUsd ?? "",
+      ].join("|"),
+    );
+  }
+  // Explicit actor only (see ACTOR MAP above). Machine paths pass
+  // "machine"; interactive paths pass the operator's --actor. Omitted here
+  // means omitted on the wire: the server attributes the call to the
+  // authenticated subject.
+  if (a.actor !== undefined && a.actor.trim() !== "") {
+    toolArgs.actor = a.actor.trim();
   }
   return toolArgs;
 }
@@ -220,6 +293,8 @@ export async function cmdExecute(
     ["leverage", args.leverage !== undefined ? `${args.leverage}x` : "—"],
     ["stop", args.stop !== undefined ? `${args.stop}` : "—"],
     ["take-profit", args.tpLegs?.length ? args.tpLegs.map((l) => `${l.price} (${l.share}%)`).join(", ") : args.tp !== undefined ? `${args.tp}` : "—"],
+    ["idempotency-key", String(toolArgs.idempotency_key)],
+    ...(toolArgs.actor !== undefined ? [["actor", String(toolArgs.actor)] as [string, string]] : []),
   ]);
   if (!gate(opts.yes, lines)) return;
   try {

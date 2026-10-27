@@ -207,6 +207,41 @@ describe("runChase", () => {
     await assert.rejects(runChase("buy", CFG, deps), /no usable touch/);
     assert.equal(s.placed.length, 0);
   });
+  it("pair gate: a foreign working order aborts flat instead of stacking", async () => {
+    const { deps, s } = script([T(100, 100.1), T(101, 101.1)]);
+    deps.pairOrdersFn = async () => [...s.working, "stale-tp"];
+    const r = await runChase("buy", { ...CFG, secs: 60 }, deps);
+    assert.equal(r.outcome, "aborted");
+    assert.match(String(r.note), /foreign/);
+    assert.equal(s.placed.length, 1, "no replace stacked beside the foreign order");
+    assert.deepEqual(s.cancelled, ["o1"], "ours cancelled on the way out");
+  });
+  it("pair gate: our order already gone reads as filled, nothing cancelled", async () => {
+    const { deps, s } = script([T(100, 100.1), T(101, 101.1)]);
+    deps.pairOrdersFn = async () => [];
+    const r = await runChase("buy", { ...CFG, secs: 60 }, deps);
+    assert.equal(r.outcome, "filled");
+    assert.match(String(r.note), /filled/);
+    assert.equal(s.placed.length, 1);
+    assert.deepEqual(s.cancelled, []);
+  });
+  it("pair gate: an unreadable pair book aborts flat, never stacks blind", async () => {
+    const { deps, s } = script([T(100, 100.1), T(101, 101.1)]);
+    deps.pairOrdersFn = async () => { throw new Error("venue down"); };
+    const r = await runChase("buy", { ...CFG, secs: 60 }, deps);
+    assert.equal(r.outcome, "aborted");
+    assert.match(String(r.note), /pair working-order read failed/);
+    assert.equal(s.placed.length, 1);
+  });
+  it("pair gate failure to cancel still reports stuck, never masks it", async () => {
+    const { deps, s } = script([T(100, 100.1), T(101, 101.1)], { cancelFails: ["o1"] });
+    deps.pairOrdersFn = async () => [...s.working, "stale-tp"];
+    const r = await runChase("buy", { ...CFG, secs: 60 }, deps);
+    assert.equal(r.outcome, "stuck");
+    assert.equal(r.orderId, "o1");
+    assert.ok(r.cancelError);
+    assert.equal(s.placed.length, 1);
+  });
 });
 
 describe("cmdExecuteChase dry run", () => {
@@ -231,5 +266,91 @@ describe("cmdExecuteChase dry run", () => {
     assert.deepEqual(calls, []);
     assert.ok(lines.some((l) => /CHASE PLAN/.test(l)));
     assert.equal(process.exitCode, exitBefore);
+  });
+});
+
+describe("cmdExecuteChase fire", () => {
+  const liveBook = (): {
+    call: (name: string, args: Record<string, unknown>) => Promise<unknown>;
+    seen: Record<string, unknown>[];
+    live: Set<string>;
+  } => {
+    const seen: Record<string, unknown>[] = [];
+    const live = new Set<string>();
+    let n = 0;
+    const call = async (name: string, args: Record<string, unknown>): Promise<unknown> => {
+      if (name === "execute_trade") {
+        const id = `o${++n}`;
+        seen.push(args);
+        live.add(id);
+        return { orderId: id };
+      }
+      if (name === "cancel_order") {
+        live.delete(String(args.orderId));
+        return {};
+      }
+      if (name === "list_open_orders") {
+        return [...live].map((orderId) => ({ orderId, symbol: "BTC/USDT" }));
+      }
+      return {};
+    };
+    return { call, seen, live };
+  };
+
+  it("every place and replace carries its own idempotency key", async () => {
+    const { call, seen } = liveBook();
+    const touches: Touch[] = [T(100, 100.1), T(100.5, 100.6), T(100.5, 100.6), T(100.5, 100.6)];
+    let now = 0;
+    const origLog = console.log;
+    console.log = () => {};
+    try {
+      await cmdExecuteChase(
+        { exchange: "kucoin", pair: "BTC/USDT", side: "buy", amount: 0.01 },
+        { enabled: true, secs: 60, pollSecs: 2, take: false },
+        { yes: true, json: true, pat: "p" },
+        {
+          call: call as never,
+          touchFn: async () => touches.shift() ?? { bestBid: 100.5, bestAsk: 100.6 },
+          sleepMs: async (ms: number) => { now += ms; },
+          nowMs: () => now,
+          onEvent: () => {},
+        },
+      );
+    } finally {
+      console.log = origLog;
+    }
+    assert.ok(seen.length >= 2, `expected a place plus a replace, got ${seen.length}`);
+    const keys = seen.map((a) => String(a.idempotency_key));
+    for (const k of keys) assert.match(k, /^jw3-chase-[0-9a-f]{8}$/);
+    assert.equal(new Set(keys).size, keys.length, "no two places share a key");
+    // Interactive path with no --actor: no actor field, the server resolves
+    // the authenticated subject.
+    for (const a of seen) assert.equal("actor" in a, false);
+  });
+
+  it("forwards the operator actor when given", async () => {
+    const { call, seen } = liveBook();
+    let now = 0;
+    const origLog = console.log;
+    console.log = () => {};
+    try {
+      await cmdExecuteChase(
+        { exchange: "kucoin", pair: "BTC/USDT", side: "buy", amount: 0.01, actor: "op" },
+        { enabled: true, secs: 4, pollSecs: 2, take: false },
+        { yes: true, json: true, pat: "p" },
+        {
+          call: call as never,
+          touchFn: async () => ({ bestBid: 100, bestAsk: 100.1 }),
+          sleepMs: async (ms: number) => { now += ms; },
+          nowMs: () => now,
+          onEvent: () => {},
+        },
+      );
+    } finally {
+      console.log = origLog;
+    }
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0]?.actor, "op");
+    assert.match(String(seen[0]?.idempotency_key), /^jw3-chase-[0-9a-f]{8}$/);
   });
 });

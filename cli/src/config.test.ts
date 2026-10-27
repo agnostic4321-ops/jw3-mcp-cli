@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { baseUrl, credPath, resolvePat } from "./config.js";
+import { baseUrl, credPath, maskBearerArgs, resolvePat } from "./config.js";
 
 describe("config", () => {
   it("strips trailing slashes + honors override", () => {
@@ -30,5 +30,27 @@ describe("config", () => {
       if (savedHome === undefined) delete process.env.JW3_CONFIG_HOME;
       else process.env.JW3_CONFIG_HOME = savedHome;
     }
+  });
+});
+
+describe("maskBearerArgs", () => {
+  it("masks --pat values in both spellings", () => {
+    assert.deepEqual(maskBearerArgs(["trail", "--pat", "jw3_mcp_secret", "--pair", "SOL/USDT"]), [
+      "trail",
+      "--pat",
+      "[REDACTED]",
+      "--pair",
+      "SOL/USDT",
+    ]);
+    assert.deepEqual(maskBearerArgs(["--pat=jw3_mcp_secret"]), ["--pat=[REDACTED]"]);
+  });
+  it("masks bare tokens and leaves ordinary args alone", () => {
+    assert.deepEqual(maskBearerArgs(["loop", "jw3_mcp_abc123"]), ["loop", "[REDACTED]"]);
+    assert.deepEqual(maskBearerArgs(["--pair", "SOL/USDT", "--size", "1"]), ["--pair", "SOL/USDT", "--size", "1"]);
+  });
+  it("does not mutate the input array", () => {
+    const argv = ["--pat", "jw3_mcp_x"];
+    maskBearerArgs(argv);
+    assert.deepEqual(argv, ["--pat", "jw3_mcp_x"]);
   });
 });

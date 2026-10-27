@@ -1,6 +1,5 @@
 /** `jw3 auth login|logout|status` — PAT is verified before it is stored. */
-import { createInterface } from "node:readline";
-import { clearPat, mcpEndpoint, resolvePat, savePat } from "../config.js";
+import { baseUrl, clearPat, mcpEndpoint, resolvePat, savePat } from "../config.js";
 import { McpError, initialize } from "../mcp.js";
 import { cmdBrowserLogin } from "../browser-auth.js";
 
@@ -16,14 +15,68 @@ function readStdin(): Promise<string | null> {
   });
 }
 
+/** No-echo TTY read for the interactive PAT prompt (never readline echo). */
 function promptPat(): Promise<string | null> {
   return new Promise((resolve) => {
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
-    rl.question("PAT (jw3_mcp_…): ", (answer) => {
-      rl.close();
-      resolve(answer.trim() || null);
-    });
+    const stdin = process.stdin;
+    if (!stdin.isTTY || typeof stdin.setRawMode !== "function") return resolve(null);
+    process.stdout.write("PAT (jw3_mcp_...): ");
+    stdin.setRawMode(true);
+    stdin.resume();
+    let buf = "";
+    const finish = (v: string | null): void => {
+      stdin.removeListener("data", onData);
+      try {
+        stdin.setRawMode(false);
+      } catch {
+        // best-effort; raw mode already applied above
+      }
+      stdin.pause();
+      process.stdout.write("\n");
+      resolve(v);
+    };
+    const onData = (chunk: Buffer): void => {
+      for (const ch of chunk.toString("utf8")) {
+        if (ch === "\r" || ch === "\n" || ch === "\u0004") {
+          finish(buf.trim() || null);
+          return;
+        }
+        if (ch === "\u0003") {
+          finish(null); // Ctrl+C aborts, nothing stored
+          return;
+        }
+        if (ch === "\u007f" || ch === "\b") {
+          buf = buf.slice(0, -1);
+          continue;
+        }
+        if (ch < " ") continue; // ignore other control chars
+        buf += ch;
+      }
+    };
+    stdin.on("data", onData);
   });
+}
+
+/**
+ * Best-effort server revocation of the current PAT. The mcp-auth token
+ * endpoint (action=revoke, confirm required) exists, but token management
+ * is SIWX-JWT-only server-side: harness PATs get 403 by design
+ * (edge-functions/mcp-auth/token.ts) and the CLI never learns the token
+ * id. So this attempt is opportunistic only; failure is expected and the
+ * caller always prints the manual rotation path plus deletes locally.
+ */
+async function tryServerRevoke(pat: string, url?: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${baseUrl(url)}/functions/v1/mcp-auth`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${pat}` },
+      body: JSON.stringify({ action: "revoke", confirm: true }),
+      signal: AbortSignal.timeout(8000),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
 }
 
 export async function cmdAuth(
@@ -31,7 +84,18 @@ export async function cmdAuth(
   opts: { pat?: string; url?: string; browser?: boolean; scope?: string; timeoutSec?: number },
 ): Promise<void> {
   if (sub === "logout") {
-    console.log(clearPat() ? "Logged out — stored PAT removed." : "No stored PAT found.");
+    // Best-effort server revocation first, local delete regardless. The
+    // server cannot self-revoke a PAT (JWT-only token management), so the
+    // manual rotation path prints whenever the attempt is not confirmed.
+    const current = resolvePat(opts.pat);
+    if (current) {
+      if (await tryServerRevoke(current, opts.url)) {
+        console.log("Server revocation confirmed.");
+      } else {
+        console.error("Server revocation not confirmed - rotate the PAT at Settings > Harness Access (PATs cannot self-revoke server-side).");
+      }
+    }
+    console.log(clearPat() ? "Logged out - stored PAT removed." : "No stored PAT found.");
     return;
   }
   if (sub === "status") {
@@ -68,7 +132,7 @@ export async function cmdAuth(
     let pat = opts.pat?.trim() || (await readStdin()) || (process.stdin.isTTY ? await promptPat() : null);
     pat = pat?.trim() || null;
     if (!pat) {
-      console.error("No PAT supplied. Pipe it (`echo $PAT | jw3 auth login`), pass --pat, or type it at the prompt.");
+      console.error("No PAT supplied. Pipe it (`echo $PAT | jw3 auth login`), use browser login, or type it at the prompt (--pat is debug-only).");
       process.exitCode = 1;
       return;
     }

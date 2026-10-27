@@ -176,18 +176,38 @@ describe("averaging math", () => {
 });
 
 describe("ticket builders (single construction site)", () => {
-  it("degen entry is an isolated futures limit; TP is TP-only", () => {
+  it("degen entry is an isolated futures limit with key + machine actor; exits arm stop+TP", () => {
+    const entry = degenExecuteArgs({ exchange: "kucoin", pair: "SOL/USDT", side: "long", contracts: 2, price: 100, leverage: 2, multiplier: 1 });
     assert.deepEqual(
-      degenExecuteArgs({ exchange: "kucoin", pair: "SOL/USDT", side: "long", contracts: 2, price: 100, leverage: 2, multiplier: 1 }),
-      { exchange: "kucoin", pair: "SOL/USDT", side: "buy", amount: "2", price: "100", market: "futures", leverage: 2, marginMode: "isolated" },
+      { ...entry, idempotency_key: undefined },
+      { exchange: "kucoin", pair: "SOL/USDT", side: "buy", amount: "2", price: "100", market: "futures", leverage: 2, marginMode: "isolated", idempotency_key: undefined, actor: "machine" },
     );
-    assert.deepEqual(
+    assert.match(String(entry.idempotency_key), /^jw3-degen-[0-9a-f]{8}$/);
+    // Same intent, same key (a retry dedupes); different price, different key.
+    assert.equal(
+      degenExecuteArgs({ exchange: "kucoin", pair: "SOL/USDT", side: "long", contracts: 2, price: 100, leverage: 2, multiplier: 1 }).idempotency_key,
+      entry.idempotency_key,
+    );
+    assert.notEqual(
+      degenExecuteArgs({ exchange: "kucoin", pair: "SOL/USDT", side: "long", contracts: 2, price: 101, leverage: 2, multiplier: 1 }).idempotency_key,
+      entry.idempotency_key,
+    );
+    assert.equal(
       degenExecuteArgs({ exchange: "kucoin", pair: "SOL/USDT", side: "short", contracts: 1, price: 50, leverage: 2, multiplier: 1 }).side,
       "sell",
     );
+    // Explicit key/actor overrides win.
+    const over = degenExecuteArgs({ exchange: "kucoin", pair: "SOL/USDT", side: "long", contracts: 1, price: 50, leverage: 2, idempotencyKey: "k", actor: "owner" });
+    assert.equal(over.idempotency_key, "k");
+    assert.equal(over.actor, "owner");
     assert.deepEqual(
       degenExitsArgs({ exchange: "kucoin", pair: "SOL/USDT", tpPrice: 101 }),
       { exchange: "kucoin", pair: "SOL/USDT", tpPrice: 101, market: "futures" },
+    );
+    // The stop leg rides the same arm (venue-native stop, the kill line).
+    assert.deepEqual(
+      degenExitsArgs({ exchange: "kucoin", pair: "SOL/USDT", tpPrice: 101, slPrice: 99 }),
+      { exchange: "kucoin", pair: "SOL/USDT", tpPrice: 101, slPrice: 99, market: "futures" },
     );
   });
 
@@ -327,6 +347,68 @@ describe("cmdDegen fire (--yes)", () => {
     assert.equal(trails.length, 1);
     assert.equal(trails[0]?.pair, "SOL/USDT");
     assert.equal(trails[0]?.side, "long");
+  });
+  it("arms a venue-native stop with the TP and reports success", async () => {
+    const p = paths();
+    const calls: Call[] = [];
+    await cmdDegen(
+      args({ pair: "SOL/USDT" }),
+      { yes: true, json: false, pat: "test-pat" },
+      { fade: async () => row(), oracle: longOracle, spec, call: spyCall(calls), ...p },
+    );
+    assert.equal(process.exitCode, undefined);
+    const arms = calls.filter((c) => c.name === "set_exits");
+    assert.equal(arms.length, 1);
+    assert.ok(Number(arms[0]?.args.slPrice) > 0, "the arm carries a venue-native stop (the kill line)");
+    assert.ok(Number(arms[0]?.args.tpPrice) > 0, "the arm carries the take-profit");
+    const fires = calls.filter((c) => c.name === "execute_trade");
+    assert.equal(fires.length, 2);
+    for (const f of fires) {
+      assert.match(String(f.args.idempotency_key), /^jw3-degen-[0-9a-f]{8}$/);
+      assert.equal(f.args.actor, "machine");
+    }
+    assert.notEqual(fires[0]?.args.idempotency_key, fires[1]?.args.idempotency_key);
+  });
+  it("refuses success when only TP arms and no --trail guards the position", async () => {
+    const p = paths();
+    const calls: Call[] = [];
+    await cmdDegen(
+      args({ pair: "SOL/USDT" }),
+      { yes: true, json: false, pat: "test-pat" },
+      {
+        fade: async () => row(), oracle: longOracle, spec, ...p,
+        call: spyCall(calls, (c) => {
+          if (c.name === "set_exits" && c.args.slPrice !== undefined) throw new Error("venue rejects the stop leg");
+          if (c.name === "list_open_orders") return [];
+          if (c.name === "execute_trade") return { orderId: `oid-${calls.length}` };
+          return {};
+        }),
+      },
+    );
+    // TP-only fallback armed (second call) but no stop and no trail: not success.
+    assert.equal(calls.filter((c) => c.name === "set_exits").length, 2);
+    assert.match(errs.join("\n"), /NO-STOP/);
+    assert.equal(process.exitCode, 1);
+  });
+  it("--trail counts as the guard when the venue stop will not arm", async () => {
+    const p = paths();
+    const calls: Call[] = [];
+    const trails: unknown[] = [];
+    await cmdDegen(
+      args({ pair: "SOL/USDT", trail: true }),
+      { yes: true, json: false, pat: "test-pat" },
+      {
+        fade: async () => row(), oracle: longOracle, spec, runTrail: async (t) => void trails.push(t), ...p,
+        call: spyCall(calls, (c) => {
+          if (c.name === "set_exits" && c.args.slPrice !== undefined) throw new Error("venue rejects the stop leg");
+          if (c.name === "list_open_orders") return [];
+          if (c.name === "execute_trade") return { orderId: `oid-${calls.length}` };
+          return {};
+        }),
+      },
+    );
+    assert.equal(trails.length, 1);
+    assert.equal(process.exitCode, undefined);
   });
 
   it("refuses a SHORT without the +0.4% bounce off the session low", async () => {

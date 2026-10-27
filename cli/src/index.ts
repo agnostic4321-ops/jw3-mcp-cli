@@ -146,7 +146,7 @@ Usage:
   jw3 pnl --exchange kucoin [--pair BTC/USDT] [--days 30] [--limit 100] [--json]
   jw3 pnl-reconcile --exchange kucoin [--days 2] [--json]
   jw3 onchain [--chains ethereum,solana] [--json]
-  jw3 execute --exchange kucoin --pair BTC/USDT --side buy (--amount … | --risk-usd …) [--price …] [--market futures] [--leverage …] [--margin-mode cross|isolated] [--stop …] [--tp … | --tp-legs P1:S1,P2:S2] [--chase SECS [--chase-poll S] [--chase-max N] [--chase-take]] --yes [--json]
+  jw3 execute --exchange kucoin --pair BTC/USDT --side buy (--amount … | --risk-usd …) [--price …] [--market futures] [--leverage …] [--margin-mode cross|isolated] [--stop …] [--tp … | --tp-legs P1:S1,P2:S2] [--chase SECS [--chase-poll S] [--chase-max N] [--chase-take]] [--idempotency-key …] [--actor …] --yes [--json]
   jw3 close --exchange kucoin --pair BTC/USDT --side long|short [--size …] --yes [--json]
   jw3 exits --exchange kucoin --pair BTC/USDT [--sl …] [--tp …] [--market spot|futures] [--quantity …] --yes [--json]
   jw3 cancel --exchange kucoin --order-id … [--pair …] [--market spot|futures] --yes [--json]
@@ -174,10 +174,18 @@ function globals(argv: string[]): Global {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i] as string;
     if (a === "--url") out.url = argv[++i];
-    else if (a === "--pat") out.pat = argv[++i];
+    else if (a === "--pat") {
+      // Debug-only: the value leaks via shell history and the process list.
+      // Warn here (real argv only) so library callers and --json output stay clean.
+      console.error("Note: --pat is debug-only (visible in shell history and ps); prefer pipe, JW3_MCP_PAT env, or browser login.");
+      out.pat = argv[++i];
+    }
     else if (a === "--json") out.json = true;
     else if (a.startsWith("--url=")) out.url = a.slice(6);
-    else if (a.startsWith("--pat=")) out.pat = a.slice(6);
+    else if (a.startsWith("--pat=")) {
+      console.error("Note: --pat is debug-only (visible in shell history and ps); prefer pipe, JW3_MCP_PAT env, or browser login.");
+      out.pat = a.slice(6);
+    }
     else out.rest.push(a);
   }
   return out;
@@ -1322,6 +1330,8 @@ async function main(): Promise<void> {
             tp: numFlag("--tp"),
             tpLegs: tpLegsParsed.legs,
             riskUsd: numFlag("--risk-usd"),
+            idempotencyKey: flagOf(g.rest, "--idempotency-key"),
+            actor: flagOf(g.rest, "--actor"),
           },
           chase.cfg,
           { yes: g.rest.includes("--yes"), json: g.json, url: g.url, pat: g.pat },
@@ -1342,6 +1352,8 @@ async function main(): Promise<void> {
           tp: numFlag("--tp"),
           tpLegs: tpLegsParsed.legs,
           riskUsd: numFlag("--risk-usd"),
+          idempotencyKey: flagOf(g.rest, "--idempotency-key"),
+          actor: flagOf(g.rest, "--actor"),
         },
         { yes: g.rest.includes("--yes"), json: g.json, url: g.url, pat: g.pat },
       );

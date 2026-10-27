@@ -14,12 +14,33 @@
 import { strict as assert } from "node:assert";
 import {
   ANALYZE_MARKET_PARAMETERS,
+  DEFI_BUILD_ACTIONS,
+  DEFI_SLIPPAGE_DEFAULT_BPS,
+  DEFI_SLIPPAGE_MAX_BPS,
+  DEFAULT_TOOL_RATE_LIMIT,
+  IDEMPOTENCY_KEY_MAX_LEN,
+  PROTECTION_TOOL_RATE_LIMIT,
   TOOLS,
+  clampSlippageBps,
+  isEvmTokenAddress,
+  isWalletAddress,
+  normalizeDefiChainId,
+  normalizeIdempotencyKey,
+  parseDefiAmount,
   rpcError,
   rpcOk,
   toolError,
   toolOk,
+  toolRateLimitFor,
+  validateArgsAgainstSchema,
+  validateChainsCsv,
+  validateMarketId,
+  validatePairSymbol,
+  validateTokenId,
+  validateVenueSlug,
+  validateWalletsCsv,
 } from "./tools.ts";
+import { validateExecuteTradeFields } from "./execute.ts";
 import {
   LIST_CONNECTIONS_DESCRIPTION,
   READ_DIARY_DAY_DESCRIPTION,
@@ -197,4 +218,190 @@ Deno.test("mcp tools: every toolError call site carries a label prefix", async (
       }
     }
   }
+});
+
+Deno.test("mcp hardening: heavy tools cost more than default reads", () => {
+  for (const name of ["daily_prep", "analyze_market", "list_fills", "read_closed_pnl", "reconcile_realized_pnl"]) {
+    const b = toolRateLimitFor(name, false);
+    if (b.limit > DEFAULT_TOOL_RATE_LIMIT.limit) {
+      throw new Error(`${name} budget (${b.limit}) is not lower than the default`);
+    }
+    if (b.bucket === DEFAULT_TOOL_RATE_LIMIT.bucket) {
+      throw new Error(`${name} shares the default bucket: heavy fan-out must be isolated`);
+    }
+  }
+  assert.equal(toolRateLimitFor("set_exits", true).bucket, PROTECTION_TOOL_RATE_LIMIT.bucket);
+  assert.equal(toolRateLimitFor("cancel_order", true).bucket, PROTECTION_TOOL_RATE_LIMIT.bucket);
+  assert.equal(toolRateLimitFor("read_live_datum", false).bucket, DEFAULT_TOOL_RATE_LIMIT.bucket);
+});
+
+Deno.test("mcp hardening: selectors are allowlisted and bounded", () => {
+  assert.equal(validateVenueSlug("KuCoin").ok, true);
+  assert.equal(validateVenueSlug("nope").ok, false);
+  const chains = validateChainsCsv("ethereum,bitcoin,solana");
+  if (!chains.ok) throw new Error(`valid chains rejected: ${chains.error}`);
+  assert.equal(chains.chains, "ethereum,btc,solana");
+  assert.equal(validateChainsCsv("nope").ok, false);
+  assert.equal(validateChainsCsv(new Array(11).fill("ethereum").join(",")).ok, false);
+  assert.equal(validateMarketId("0xabc").ok, true);
+  assert.equal(validateMarketId("bad id!").ok, false);
+  assert.equal(validateTokenId("123").ok, true);
+  assert.equal(validateTokenId("").ok, false);
+  assert.equal(validatePairSymbol("BTC/USDT").ok, true);
+  assert.equal(validatePairSymbol("BTC/USDT;DROP").ok, false);
+  assert.equal(validateWalletsCsv(`0x${"ab".repeat(20)}`).ok, true);
+  assert.equal(validateWalletsCsv("not-an-address").ok, false);
+});
+
+Deno.test("mcp hardening: defi builders are allowlisted and bounded", () => {
+  assert.ok(!(DEFI_BUILD_ACTIONS as readonly string[]).includes("drain"));
+  const eth = normalizeDefiChainId("ethereum");
+  if (!eth.ok || eth.chainId !== "1") throw new Error("ethereum slug must map to chain 1");
+  assert.equal(normalizeDefiChainId("999").ok, false);
+  assert.equal(parseDefiAmount("1.5"), 1.5);
+  assert.equal(parseDefiAmount("-1"), null);
+  assert.equal(parseDefiAmount("1e13"), null);
+  assert.equal(clampSlippageBps(5000), DEFI_SLIPPAGE_MAX_BPS);
+  assert.equal(clampSlippageBps(-5), DEFI_SLIPPAGE_DEFAULT_BPS);
+  assert.equal(isWalletAddress(`0x${"ab".repeat(20)}`), true);
+  assert.equal(isWalletAddress("nope"), false);
+  assert.equal(isEvmTokenAddress("0x0000000000000000000000000000000000000000"), true);
+});
+
+Deno.test("mcp hardening: central schema validation rejects bad shapes", () => {
+  const exec = byName("execute_trade").inputSchema;
+  assert.equal(validateArgsAgainstSchema(exec, { exchange: "kucoin", pair: "BTC/USDT", side: "buy" }), null);
+  const missing = validateArgsAgainstSchema(exec, { pair: "BTC/USDT", side: "buy" }) ?? "";
+  assert.match(missing, /exchange/);
+  const unknown = validateArgsAgainstSchema(exec, { exchange: "kucoin", pair: "BTC/USDT", side: "buy", bogus: 1 }) ?? "";
+  assert.match(unknown, /unknown field/);
+  const side = validateArgsAgainstSchema(exec, { exchange: "kucoin", pair: "BTC/USDT", side: "hold" }) ?? "";
+  assert.match(side, /side/);
+  const lev = validateArgsAgainstSchema(exec, { exchange: "kucoin", pair: "BTC/USDT", side: "buy", leverage: "high" }) ?? "";
+  assert.match(lev, /leverage/);
+});
+
+Deno.test("mcp hardening: execute_trade declares every handled field", () => {
+  const props = Object.keys(byName("execute_trade").inputSchema.properties ?? {});
+  for (const f of ["actor", "leverage", "marginMode", "clientOid", "idempotency_key", "type"]) {
+    if (!props.includes(f)) throw new Error(`execute_trade lost declared field: ${f}`);
+  }
+});
+
+Deno.test("mcp hardening: execute_trade field validators reject unknowns", () => {
+  const good = validateExecuteTradeFields({
+    exchange: "kucoin", pair: "BTC/USDT", side: "buy", actor: "machine",
+    leverage: 5, marginMode: "cross", clientOid: "abc-123", type: "market", idempotency_key: "k1",
+  });
+  if (!good.ok) throw new Error(`valid fields rejected: ${good.error}`);
+  assert.equal(good.fields.actor, "machine");
+  for (const bad of [
+    { exchange: "kucoin", pair: "BTC/USDT", side: "buy", actor: "someone" },
+    { exchange: "kucoin", pair: "BTC/USDT", side: "buy", leverage: 1000 },
+    { exchange: "kucoin", pair: "BTC/USDT", side: "buy", marginMode: "wild" },
+    { exchange: "kucoin", pair: "BTC/USDT", side: "buy", clientOid: "bad oid!" },
+    { exchange: "kucoin", pair: "BTC/USDT", side: "buy", type: "stop" },
+    { exchange: "kucoin", pair: "BTC/USDT", side: "buy", idempotency_key: "bad key!" },
+    { exchange: "kucoin", pair: "BTC/USDT", side: "hold" },
+    { exchange: "nope", pair: "BTC/USDT", side: "buy" },
+  ]) {
+    if (validateExecuteTradeFields(bad).ok) {
+      throw new Error(`invalid fields accepted: ${JSON.stringify(bad)}`);
+    }
+  }
+});
+
+Deno.test("mcp hardening: idempotency keys normalize deterministically", () => {
+  assert.equal(normalizeIdempotencyKey("  k1  "), "k1");
+  assert.equal(normalizeIdempotencyKey(""), null);
+  assert.equal(normalizeIdempotencyKey("   "), null);
+  const long = "a".repeat(200);
+  const norm = normalizeIdempotencyKey(long);
+  assert.ok(norm !== null && norm.length === IDEMPOTENCY_KEY_MAX_LEN, "overlong keys truncate to the indexed length");
+  assert.equal(normalizeIdempotencyKey(long), norm, "normalization is deterministic");
+});
+
+Deno.test("mcp hardening: idempotency is honored end to end", async () => {
+  const { handleExecuteTrade } = await import("./execute.ts");
+  const orderArgs = {
+    exchange: "kucoin", pair: "BTC/USDT", side: "buy", amount: "0.01",
+    type: "market", actor: "machine", leverage: 5, marginMode: "cross",
+    clientOid: "abc-123", idempotency_key: "test-key-1",
+  };
+  const makeAdmin = (priorRows: Array<{ status: string; result: unknown }>) => {
+    const calls: Array<{ table: string; op: string; payload?: unknown }> = [];
+    const chain = (data: unknown, error: unknown = null): Record<string, unknown> => {
+      const self: Record<string, unknown> = { data, error };
+      for (const m of ["select", "eq", "gte", "filter", "order", "limit", "single", "maybeSingle", "in"]) {
+        self[m] = (..._a: unknown[]) => self;
+      }
+      return self;
+    };
+    const admin = {
+      calls,
+      from(table: string) {
+        return {
+          select: (..._a: unknown[]) => {
+            if (table === "exchange_connections") {
+              return chain([{ id: "c1", exchange: "kucoin", status: "active" }]);
+            }
+            if (table === "agent_action_log") return chain(priorRows);
+            if (table === "risk_limits") return chain(null);
+            return chain([]);
+          },
+          insert: (payload: unknown) => {
+            calls.push({ table, op: "insert", payload });
+            return chain({ id: "setup-1" });
+          },
+          update: (payload: unknown) => {
+            calls.push({ table, op: "update", payload });
+            return chain([]);
+          },
+        };
+      },
+    };
+    return admin;
+  };
+  // First submit dispatches once, forwards the key, logs it top level.
+  const edgeCalls: Array<{ slug: string; body: unknown }> = [];
+  const callEdge = (_base: string, _auth: string, slug: string, body: Record<string, unknown>, _ms?: number) => {
+    edgeCalls.push({ slug, body });
+    return Promise.resolve({ ok: true, orderId: "order-1" });
+  };
+  const admin1 = makeAdmin([]);
+  const ctx1 = {
+    admin: admin1 as never, userId: "u1", supaUrl: "https://x",
+    authHeader: "Bearer t", viaPat: false, scopes: [], callEdge: callEdge as never,
+  };
+  const res1 = await handleExecuteTrade(ctx1, "id-1", { ...orderArgs }) as Response;
+  assert.equal(res1.status, 200);
+  const text1 = (await res1.json() as { result: { content: Array<{ text: string }> } }).result.content[0]!.text;
+  JSON.parse(text1);
+  assert.equal(edgeCalls.length, 1, "first submit must dispatch exactly once");
+  const sent = edgeCalls[0]!.body as Record<string, unknown>;
+  assert.equal(sent.idempotency_key, "test-key-1");
+  assert.equal(sent.actor, "machine");
+  assert.equal(sent.leverage, 5);
+  assert.equal(sent.marginMode, "cross");
+  assert.equal(sent.clientOid, "abc-123");
+  assert.equal(sent.type, "market");
+  const logInsert = admin1.calls.find((c) => c.table === "agent_action_log" && c.op === "insert");
+  assert.ok(logInsert, "execution must be logged");
+  assert.equal((logInsert!.payload as { params: Record<string, unknown> }).params.idempotency_key, "test-key-1");
+  // Second submit under the same key replays without dispatching again.
+  const edgeCalls2: Array<{ slug: string; body: unknown }> = [];
+  const callEdge2 = (_base: string, _auth: string, slug: string, body: Record<string, unknown>, _ms?: number) => {
+    edgeCalls2.push({ slug, body });
+    return Promise.resolve({ ok: true, orderId: "order-1" });
+  };
+  const admin2 = makeAdmin([{ status: "executed", result: { orderId: "order-1" } }]);
+  const ctx2 = {
+    admin: admin2 as never, userId: "u1", supaUrl: "https://x",
+    authHeader: "Bearer t", viaPat: false, scopes: [], callEdge: callEdge2 as never,
+  };
+  const res2 = await handleExecuteTrade(ctx2, "id-2", { ...orderArgs }) as Response;
+  const text2 = (await res2.json() as { result: { content: Array<{ text: string }> } }).result.content[0]!.text;
+  const replay = JSON.parse(text2) as Record<string, unknown>;
+  assert.equal(replay.deduped, true);
+  assert.equal(edgeCalls2.length, 0, "replay must not dispatch again");
 });

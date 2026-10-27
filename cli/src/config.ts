@@ -38,7 +38,9 @@ export function credPath(): string {
 }
 
 export function resolvePat(flag?: string): string | null {
-  if (flag && flag.trim()) return flag.trim();
+  if (flag && flag.trim()) {
+    return flag.trim();
+  }
   const env = process.env.JW3_MCP_PAT;
   if (env && env.trim()) return env.trim();
   try {
@@ -70,4 +72,42 @@ export function clearPat(): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Pure: redact bearer-like args for log lines. Masks the value after
+ * `--pat`/`--token`/secret-ish flags, `--flag=value` forms, and bare
+ * `jw3_mcp_...` tokens. For supervise/daemon child-argv START lines:
+ * log `maskBearerArgs(argv).join(" ")`, never the raw argv, whenever a
+ * bearer flag may be present.
+ */
+const BEARER_FLAGS = new Set([
+  "--pat",
+  "--token",
+  "--bearer",
+  "--password",
+  "--secret",
+  "--api-key",
+  "--apikey",
+]);
+
+const BEARER_EQ_FLAG = /^(--(?:pat|token|bearer|password|secret|api-key|apikey))=(.*)$/;
+const BARE_PAT = /^jw3_mcp_[A-Za-z0-9_-]+$/;
+
+export function maskBearerArgs(argv: string[]): string[] {
+  const out = [...argv];
+  for (let i = 0; i < out.length; i++) {
+    const a = out[i] as string;
+    if (BEARER_FLAGS.has(a)) {
+      if (i + 1 < out.length) out[i + 1] = "[REDACTED]";
+      continue;
+    }
+    const eq = a.match(BEARER_EQ_FLAG);
+    if (eq) {
+      out[i] = `${eq[1]}=[REDACTED]`;
+      continue;
+    }
+    if (BARE_PAT.test(a)) out[i] = "[REDACTED]";
+  }
+  return out;
 }

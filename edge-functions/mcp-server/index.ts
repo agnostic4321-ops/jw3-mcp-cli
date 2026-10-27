@@ -25,7 +25,7 @@ import { withHandler, fail, readJson } from "../_shared/respond.ts";
 import { planRealizedPnlReconcile, lossFromPnl } from "../_shared/realized-pnl-reconcile.ts";
 import { recordRealizedLossOnly, rollDailyWindowIfExpired } from "../_shared/risk-gate.ts";
 import { requireUser } from "../_shared/auth.ts";
-import { checkRateLimit } from "../_shared/rate-limit.ts";
+import { checkRateLimit, ipFromRequest } from "../_shared/rate-limit.ts";
 import { getServiceClient } from "../_shared/clients.ts";
 import { resolveOrderTarget } from "../_shared/order-resolve.ts";
 // Boundary cast at call sites: the untyped service client skips the deep
@@ -36,6 +36,29 @@ import { cacheGet, cacheSet } from "../_shared/cache.ts";
 import { JEV_TTL_MS, jevCacheKey } from "../_shared/jev-cache.ts";
 import { requireYoloEligible } from "../_shared/execute-guard.ts";
 import { TOOLS, callEdge, rpcError, rpcOk, toolError, toolOk } from "./tools.ts";
+import {
+  DEFI_BUILD_ACTIONS,
+  GATEWAY_RATE_LIMIT,
+  MAX_DEFI_AMOUNT,
+  clampSlippageBps,
+  internalErrorText,
+  isEvmTokenAddress,
+  isWalletAddress,
+  logServer,
+  newCorrelationId,
+  normalizeDefiChainId,
+  parseDefiAmount,
+  toolRateLimitFor,
+  upstreamErrorText,
+  validateArgsAgainstSchema,
+  validateChainsCsv,
+  validateMarketId,
+  validatePairSymbol,
+  validateTokenId,
+  validateVenueSlug,
+  validateWalletsCsv,
+  type MiniSchema,
+} from "./tools.ts";
 import { handleDailyPrep } from "./daily-prep.ts";
 import { handleExecuteTrade } from "./execute.ts";
 import { handleReserveSweep } from "./reserve.ts";
@@ -69,26 +92,58 @@ type RpcReq = { jsonrpc?: string; id?: unknown; method?: string; params?: Record
 
 
 Deno.serve(withHandler("mcp-server", async (req) => {
+  const corr = newCorrelationId();
   try {
     if (req.method !== "POST") return fail(405, "validation", "MCP Streamable HTTP: POST JSON-RPC only.");
+    const admin = getServiceClient();
+
+    // ── PRE-AUTH GATEWAY BUCKET (per IP, before anything parses) ──
+    // Unauthenticated callers share the user's budget otherwise: a blind
+    // flood would eat the per-user minute before requireUser rejects it.
+    // Fail closed: when the limiter itself is down, refuse rather than
+    // hand out a free pass. No request id exists yet (nothing parsed),
+    // so this is the one rate-limit path that answers id null.
+    try {
+      const gw = await checkRateLimit(admin, {
+        bucket: GATEWAY_RATE_LIMIT.bucket,
+        subject: `ip:${ipFromRequest(req)}`,
+        limit: GATEWAY_RATE_LIMIT.limit,
+        windowSec: GATEWAY_RATE_LIMIT.windowSec,
+        failClosed: true,
+      });
+      if (!gw.ok) {
+        logServer(corr, `gateway rate-limited: ${gw.error}`);
+        return rpcError(null, -32002, `rate_limited: gateway busy (ref ${corr})`);
+      }
+    } catch (e) {
+      logServer(corr, "gateway limiter failed:", e instanceof Error ? e.message : e);
+      return rpcError(null, -32002, `rate_limited: limiter unavailable (ref ${corr})`);
+    }
+
+    // Capped read: unbounded req.json() burns isolate memory with zero
+    // limiter cost. Invalid/over-cap bodies fall back to {} so the
+    // JSON-RPC Invalid Request envelope below is preserved (id null:
+    // nothing parseable to echo).
+    const jr = await readJson<RpcReq>(req, undefined, { maxBytes: 256 * 1024 });
+    const body = (jr.ok ? jr.value : {}) as RpcReq;
+    // Echo the caller's id on auth/rate-limit errors whenever a body
+    // parsed (null only when nothing parseable arrived).
+    const reqId = (jr.ok && body && typeof body === "object" && "id" in body ? body.id : null) ?? null;
+    if (body?.jsonrpc !== "2.0" || typeof body?.method !== "string") {
+      return rpcError(reqId, -32600, "Invalid Request: expected JSON-RPC 2.0 with method.");
+    }
+    // Non-object params are a protocol error, not a tool error.
+    if (body.params !== undefined && (typeof body.params !== "object" || body.params === null || Array.isArray(body.params))) {
+      return rpcError(reqId, -32602, "Invalid params: params must be an object.");
+    }
     const authResult = await requireUser(req);
-    if (!authResult.ok) return rpcError(undefined, -32001, `unauthorized: ${authResult.error}`);
+    if (!authResult.ok) {
+      logServer(corr, `auth rejected: status=${authResult.status}`);
+      return rpcError(reqId, -32001, `unauthorized: bad credentials (ref ${corr})`);
+    }
     const { userId, authHeader } = authResult;
     const scopes = authResult.scopes ?? [];
     const viaPat = authResult.via === "pat";
-    const admin = getServiceClient();
-
-    // The rate limit is applied AFTER the body is read, because the tool
-    // name decides which budget applies. See the budget table below.
-    //
-    // Capped read: unbounded req.json() burns isolate memory with zero
-    // limiter cost. Invalid/over-cap bodies fall back to {} so the
-    // JSON-RPC Invalid Request envelope below is preserved.
-    const jr = await readJson<RpcReq>(req, undefined, { maxBytes: 256 * 1024 });
-    const body = (jr.ok ? jr.value : {}) as RpcReq;
-    if (body?.jsonrpc !== "2.0" || typeof body?.method !== "string") {
-      return rpcError(body?.id, -32600, "Invalid Request: expected JSON-RPC 2.0 with method.");
-    }
     const params = body.params ?? {};
     const supaUrl = Deno.env.get("SUPABASE_URL") || "";
 
@@ -111,18 +166,30 @@ Deno.serve(withHandler("mcp-server", async (req) => {
     // position can ALWAYS be protected no matter how noisy the reads
     // were. The read budget stays tight, because reads are what a
     // scanner burns.
+    //
+    // Heavy fan-outs (daily_prep, analyze_market, list_fills,
+    // read_closed_pnl, reconcile_realized_pnl) get their own LOWER
+    // budgets via toolRateLimitFor: one expensive call must not eat the
+    // minute the protection path may need.
     const toolName = typeof params?.name === "string" ? params.name : "";
     const isProtection = toolName === "set_exits" || toolName === "cancel_order";
-    const rl = await checkRateLimit(admin, {
-      bucket: isProtection ? "mcp-server:protection" : "mcp-server",
-      subject: userId,
-      // The protection bucket is generous on purpose: a position must
-      // never be unable to arm its own stop.
-      limit: isProtection ? 120 : 60,
-      windowSec: 60,
-      failClosed: true,
-    });
-    if (!rl.ok) return rpcError(undefined, -32002, `rate_limited: ${rl.error}`);
+    const budget = toolRateLimitFor(toolName, isProtection);
+    try {
+      const rl = await checkRateLimit(admin, {
+        bucket: budget.bucket,
+        subject: userId,
+        limit: budget.limit,
+        windowSec: budget.windowSec,
+        failClosed: true,
+      });
+      if (!rl.ok) {
+        logServer(corr, `per-user rate-limited: tool=${toolName || "?"} bucket=${budget.bucket}`);
+        return rpcError(reqId, -32002, `rate_limited: slow down (ref ${corr})`);
+      }
+    } catch (e) {
+      logServer(corr, "per-user limiter failed:", e instanceof Error ? e.message : e);
+      return rpcError(reqId, -32002, `rate_limited: limiter unavailable (ref ${corr})`);
+    }
 
     // Shared read execution (agent-chat/read-tools.ts is the ONE
     // implementation; this transport keeps only validation wording +
@@ -143,12 +210,13 @@ Deno.serve(withHandler("mcp-server", async (req) => {
       }
     };
     const readDeps: ReadDeps = { admin, userId, supaUrl, authHeader, callEdge: readEdge };
-    // Shared { error } payload → MCP toolError envelope (extra keys ride as data).
-    const readResult = (id: unknown, prefix: string, payload: unknown) => {
+    // Shared { error } payload → generic upstream envelope with a ref.
+    // The full detail goes to the server log under the same ref; raw
+    // downstream text never reaches the wire.
+    const readResult = (id: unknown, label: string, payload: unknown) => {
       if (payload && typeof payload === "object" && "error" in payload) {
-        const { error, ...rest } = payload as { error: unknown; [k: string]: unknown };
-        const data = Object.keys(rest).length > 0 ? rest : undefined;
-        return toolError(id, prefix ? `${prefix}: ${String(error)}` : String(error), data);
+        logServer(corr, `${label || "read"} failed:`, JSON.stringify(payload).slice(0, 2000));
+        return toolError(id, upstreamErrorText(corr));
       }
       return toolOk(id, payload);
     };
@@ -172,7 +240,19 @@ Deno.serve(withHandler("mcp-server", async (req) => {
     }
     if (body.method === "tools/call") {
       const name = params.name as string | undefined;
-      const args = (params.arguments ?? {}) as Record<string, unknown>;
+      // Arguments ride next to the method name: a non-object there is a
+      // protocol error, rejected before any dispatch or validation wording.
+      const rawArgs = params.arguments ?? {};
+      if (typeof rawArgs !== "object" || rawArgs === null || Array.isArray(rawArgs)) {
+        return rpcError(reqId, -32602, "Invalid params: arguments must be an object.");
+      }
+      let args = { ...(rawArgs as Record<string, unknown>) };
+      // Central inputSchema check at the same point: closed schemas stay
+      // closed even when a handler branch forgets its own shape check.
+      const toolDef = (TOOLS as Array<{ name: string; inputSchema?: MiniSchema }>).find((t) => t.name === name);
+      if (!toolDef) return toolError(body.id, `validation: Unknown tool: ${name ?? "(missing)"}`);
+      const schemaErr = validateArgsAgainstSchema(toolDef.inputSchema, args);
+      if (schemaErr) return rpcError(reqId, -32602, `Invalid params: ${schemaErr}.`);
       // PATs without mcp:read get nothing — JWT callers keep legacy read access.
       if (viaPat && !scopes.includes("mcp:read") && !scopes.includes("trade:execute") && !scopes.includes("trade:propose")) {
         return toolError(body.id, "auth: PAT needs the mcp:read scope for reads (mint it in Settings → Harness Access)");
@@ -185,21 +265,41 @@ Deno.serve(withHandler("mcp-server", async (req) => {
             // one venue slug, or every connection (capped) — merged with
             // per-venue provenance. Matches the shared schema text ("omit
             // to read every active connection").
-            return readResult(body.id, "", await executePositionsBalancesRead(kind, args, readDeps));
+            if (typeof args.exchange === "string" && args.exchange.trim() !== "") {
+              const venueCheck = validateVenueSlug(args.exchange);
+              if (!venueCheck.ok) return toolError(body.id, `validation: read_live_datum ${kind}: ${venueCheck.error}`);
+            }
+            return readResult(body.id, `${kind} read`, await executePositionsBalancesRead(kind, args, readDeps));
           }
           if (kind === "market") {
-            const exchange = typeof args.exchange === "string" ? args.exchange : "";
-            const symbol = typeof args.symbol === "string" ? args.symbol : "";
-            if (!exchange || !symbol) return toolError(body.id, "validation: read_live_datum market requires exchange and symbol");
-            return readResult(body.id, "upstream: market read failed", await executeMarketRead(exchange, symbol, readDeps));
+            const venueCheck = validateVenueSlug(args.exchange);
+            if (!venueCheck.ok) return toolError(body.id, `validation: read_live_datum market: ${venueCheck.error}`);
+            const symCheck = validatePairSymbol(args.symbol, "symbol");
+            if (!symCheck.ok) return toolError(body.id, `validation: read_live_datum market: ${symCheck.error}`);
+            let marketOut: unknown;
+            try {
+              marketOut = await executeMarketRead(venueCheck.venue, symCheck.value, readDeps);
+            } catch (e) {
+              logServer(corr, "market read threw:", e instanceof Error ? e.message : e);
+              return toolError(body.id, upstreamErrorText(corr));
+            }
+            return readResult(body.id, "market read", marketOut);
           }
           if (kind === "screener") {
             // Shared bulk-tickers reader (same slimming as agent-chat).
-            return readResult(body.id, "upstream: screener read failed", await executeScreenerRead(args, readDeps));
+            if (typeof args.exchange === "string" && args.exchange.trim() !== "") {
+              const venueCheck = validateVenueSlug(args.exchange);
+              if (!venueCheck.ok) return toolError(body.id, `validation: read_live_datum screener: ${venueCheck.error}`);
+              args = { ...args, exchange: venueCheck.venue };
+            }
+            return readResult(body.id, "screener read", await executeScreenerRead(args, readDeps));
           }
           if (kind === "onchain") {
             // Shared wallet-scope reader (same fetch + aggregate as agent-chat).
-            return readResult(body.id, "upstream: onchain read failed", await fetchOnchainSnapshot(args.chains, readDeps));
+            const chainsCheck = validateChainsCsv(args.chains);
+            if (!chainsCheck.ok) return toolError(body.id, `validation: read_live_datum onchain: ${chainsCheck.error}`);
+            const chainsArg = chainsCheck.chains || args.chains;
+            return readResult(body.id, "onchain read", await fetchOnchainSnapshot(chainsArg, readDeps));
           }
           if (kind === "order") {
             // Single-order status ("did my order fill?"). connectionId is
@@ -213,7 +313,14 @@ Deno.serve(withHandler("mcp-server", async (req) => {
             if (!orderId) return toolError(body.id, "validation: read_live_datum order requires orderId");
             const symbol = typeof args.symbol === "string" ? args.symbol : "";
             const category = typeof args.category === "string" ? args.category : "";
-            return readResult(body.id, "upstream: order read failed", await executeOrderRead({
+            if (symbol.trim() !== "") {
+              const symCheck = validatePairSymbol(symbol, "symbol");
+              if (!symCheck.ok) return toolError(body.id, `validation: read_live_datum order: ${symCheck.error}`);
+            }
+            if (category.trim() !== "" && category.toLowerCase() !== "spot" && category.toLowerCase() !== "linear") {
+              return toolError(body.id, "validation: read_live_datum order category must be spot|linear");
+            }
+            return readResult(body.id, "order read", await executeOrderRead({
               connectionId,
               orderId,
               ...(symbol ? { symbol } : {}),
@@ -224,6 +331,22 @@ Deno.serve(withHandler("mcp-server", async (req) => {
             // Shared prediction reader (same scopes + proxy legs as
             // agent-chat). scope=quote needs a market or token selector —
             // validated here to keep the pinned wording.
+            const venueRaw = typeof args.venue === "string" ? args.venue.trim().toLowerCase() : "";
+            if (venueRaw !== "" && venueRaw !== "polymarket" && venueRaw !== "opinion" && venueRaw !== "all") {
+              return toolError(body.id, "validation: predictions venue must be polymarket|opinion|all");
+            }
+            if (args.market_id !== undefined && args.market_id !== null && String(args.market_id).trim() !== "") {
+              const mid = validateMarketId(args.market_id);
+              if (!mid.ok) return toolError(body.id, `validation: predictions ${mid.error}`);
+            }
+            if (args.token_id !== undefined && args.token_id !== null && String(args.token_id).trim() !== "") {
+              const tid = validateTokenId(args.token_id);
+              if (!tid.ok) return toolError(body.id, `validation: predictions ${tid.error}`);
+            }
+            if (args.wallets !== undefined && args.wallets !== null && String(args.wallets).trim() !== "") {
+              const wal = validateWalletsCsv(args.wallets);
+              if (!wal.ok) return toolError(body.id, `validation: predictions ${wal.error}`);
+            }
             const quoteScope = typeof args.scope === "string" ? args.scope.toLowerCase() : "markets";
             const quoteMarket = typeof args.market_id === "string" ? args.market_id
               : (typeof args.symbol === "string" ? args.symbol : "");
@@ -240,6 +363,18 @@ Deno.serve(withHandler("mcp-server", async (req) => {
           // served from the in-process entry — no candle rebuild, no
           // jev-analyze/Decisions call, no provider cost. Snapshot bytes
           // are NOT part of the key (see _shared/jev-cache.ts).
+          if (String(args.family ?? "") === "cex") {
+            const famVenue = args.venue ?? args.exchange;
+            if (famVenue !== undefined && famVenue !== null && String(famVenue).trim() !== "") {
+              const vc = validateVenueSlug(famVenue);
+              if (!vc.ok) return toolError(body.id, `validation: analyze_market: ${vc.error}`);
+            }
+            const famSym = args.symbol ?? args.pair;
+            if (famSym !== undefined && famSym !== null && String(famSym).trim() !== "") {
+              const sc = validatePairSymbol(famSym, "symbol");
+              if (!sc.ok) return toolError(body.id, `validation: analyze_market: ${sc.error}`);
+            }
+          }
           const family = String(args.family ?? "");
           const venueNorm = String(args.venue ?? args.exchange ?? (family === "prediction" ? "polymarket" : ""));
           const symbolNorm = String(args.symbol ?? args.pair ?? "");
@@ -279,10 +414,16 @@ Deno.serve(withHandler("mcp-server", async (req) => {
           }
           const snapLen = JSON.stringify(snapshot).length;
           if (snapLen > 40000) return toolError(body.id, "validation: snapshot too large (>40KB serialized); send compact feature vectors");
-          const out = await callEdge(supaUrl, authHeader, "jev-analyze", {
-            family: args.family, venue: args.venue ?? args.exchange, symbol: args.symbol ?? args.pair,
-            snapshot, snapshotAt: new Date().toISOString(),
-          });
+          let out: unknown;
+          try {
+            out = await callEdge(supaUrl, authHeader, "jev-analyze", {
+              family: args.family, venue: args.venue ?? args.exchange, symbol: args.symbol ?? args.pair,
+              snapshot, snapshotAt: new Date().toISOString(),
+            });
+          } catch (e) {
+            logServer(corr, "jev-analyze failed:", e instanceof Error ? e.message : e);
+            return toolError(body.id, upstreamErrorText(corr));
+          }
           if (cacheKey && out && typeof out === "object") {
             cacheSet(cacheKey, { ...(out as Record<string, unknown>), cached: false }, JEV_TTL_MS);
           }
@@ -297,7 +438,8 @@ Deno.serve(withHandler("mcp-server", async (req) => {
           try {
             out = await callEdge(supaUrl, authHeader, "diary-day", { day }) as DiaryDayOut;
           } catch (e) {
-            return toolError(body.id, e instanceof Error ? e.message : "diary-day failed");
+            logServer(corr, "diary-day failed:", e instanceof Error ? e.message : e);
+            return toolError(body.id, upstreamErrorText(corr));
           }
           return toolOk(body.id, buildMcpDiaryDayPayload(out, day));
         }
@@ -306,8 +448,9 @@ Deno.serve(withHandler("mcp-server", async (req) => {
           // agent-chat/read-tools.ts); never secrets.
           try {
             return toolOk(body.id, { connections: await fetchConnectionMetadata(admin, userId) });
-          } catch {
-            return toolError(body.id, "upstream: could not list connections");
+          } catch (e) {
+            logServer(corr, "list_connections failed:", e instanceof Error ? e.message : e);
+            return toolError(body.id, upstreamErrorText(corr));
           }
         }
         if (name === "propose_trade") {
@@ -323,6 +466,14 @@ Deno.serve(withHandler("mcp-server", async (req) => {
           const sizeUsd = typeof args.size_usd === "number" ? args.size_usd : null;
           if (!pair || !["buy", "sell", "long", "short"].includes(side)) {
             return toolError(body.id, "validation: propose_trade needs pair + side buy|sell|long|short");
+          }
+          const pairCheck = validatePairSymbol(pair);
+          if (!pairCheck.ok) return toolError(body.id, `validation: propose_trade: ${pairCheck.error}`);
+          let venueNorm: string | null = null;
+          if (typeof args.venue === "string" && args.venue.trim() !== "") {
+            const venueCheck = validateVenueSlug(args.venue);
+            if (!venueCheck.ok) return toolError(body.id, `validation: propose_trade: ${venueCheck.error}`);
+            venueNorm = venueCheck.venue;
           }
           if (!Number.isFinite(entry) || entry <= 0 || !Number.isFinite(stop) || stop <= 0) {
             return toolError(body.id, "validation: propose_trade needs entry > 0 and stop > 0 — never 0/null placeholders");
@@ -354,7 +505,7 @@ Deno.serve(withHandler("mcp-server", async (req) => {
             : null;
           const { data, error } = await admin.from("trade_setups").insert({
             user_id: userId, mode: "live",
-            venue: typeof args.venue === "string" ? args.venue : null,
+            venue: venueNorm,
             asset: typeof args.asset === "string" ? args.asset : pair.split("/")[0] ?? null,
             pair, side: sideNorm, entry, stop,
             timeframe: typeof args.timeframe === "string" ? args.timeframe : null,
@@ -378,7 +529,10 @@ Deno.serve(withHandler("mcp-server", async (req) => {
         if (name === "read_onchain_balances") {
           // Alias of read_live_datum kind=onchain (same reader, same shape).
           // Read-only: mcp:read suffices. Addresses only, never keys.
-          return readResult(body.id, "upstream: onchain read failed", await fetchOnchainSnapshot(args.chains, readDeps));
+          const chainsCheck = validateChainsCsv(args.chains);
+          if (!chainsCheck.ok) return toolError(body.id, `validation: read_onchain_balances: ${chainsCheck.error}`);
+          const chainsArg = chainsCheck.chains || args.chains;
+          return readResult(body.id, "onchain read", await fetchOnchainSnapshot(chainsArg, readDeps));
         }
         // Write tools share one gate: trade:execute PAT + per-call YOLO
         // eligibility via the shared execute guard (same predicate as
@@ -403,6 +557,14 @@ Deno.serve(withHandler("mcp-server", async (req) => {
           const side = typeof args.side === "string" ? args.side.toLowerCase() : "";
           if (side !== "long" && side !== "short") {
             return toolError(body.id, "validation: close_position needs side long|short (the OPEN position's side)");
+          }
+          if (typeof args.exchange === "string" && args.exchange.trim() !== "") {
+            const venueCheck = validateVenueSlug(args.exchange);
+            if (!venueCheck.ok) return toolError(body.id, `validation: close_position: ${venueCheck.error}`);
+          }
+          if (typeof args.pair === "string" && args.pair.trim() !== "") {
+            const pairCheck = validatePairSymbol(args.pair);
+            if (!pairCheck.ok) return toolError(body.id, `validation: close_position: ${pairCheck.error}`);
           }
           const target = await resolveOrderTarget(admin as unknown as ConnectionAdmin, userId, { exchange: args.exchange, connectionId: args.connectionId });
           if (!target.ok) return toolError(body.id, `not_found: order target failed: ${target.error}`);
@@ -460,6 +622,14 @@ Deno.serve(withHandler("mcp-server", async (req) => {
           if (!(sl > 0) && !(tp > 0)) {
             return toolError(body.id, "validation: set_exits needs slPrice and/or tpPrice > 0");
           }
+          if (typeof args.exchange === "string" && args.exchange.trim() !== "") {
+            const venueCheck = validateVenueSlug(args.exchange);
+            if (!venueCheck.ok) return toolError(body.id, `validation: set_exits: ${venueCheck.error}`);
+          }
+          if (typeof args.pair === "string" && args.pair.trim() !== "") {
+            const pairCheck = validatePairSymbol(args.pair);
+            if (!pairCheck.ok) return toolError(body.id, `validation: set_exits: ${pairCheck.error}`);
+          }
           const target = await resolveOrderTarget(admin as unknown as ConnectionAdmin, userId, { exchange: args.exchange, connectionId: args.connectionId });
           if (!target.ok) return toolError(body.id, `not_found: order target failed: ${target.error}`);
           const market = typeof args.market === "string" ? args.market.toLowerCase() : "futures";
@@ -505,6 +675,14 @@ Deno.serve(withHandler("mcp-server", async (req) => {
           );
         }
         if (name === "list_open_orders") {
+          if (typeof args.exchange === "string" && args.exchange.trim() !== "") {
+            const venueCheck = validateVenueSlug(args.exchange);
+            if (!venueCheck.ok) return toolError(body.id, `validation: list_open_orders: ${venueCheck.error}`);
+          }
+          if (typeof args.pair === "string" && args.pair.trim() !== "") {
+            const pairCheck = validatePairSymbol(args.pair);
+            if (!pairCheck.ok) return toolError(body.id, `validation: list_open_orders: ${pairCheck.error}`);
+          }
           const target = await resolveOrderTarget(admin as unknown as ConnectionAdmin, userId, { exchange: args.exchange, connectionId: args.connectionId });
           if (!target.ok) return toolError(body.id, `not_found: order target failed: ${target.error}`);
           const out = await callEdge(supaUrl, authHeader, "cex-proxy", {
@@ -518,6 +696,14 @@ Deno.serve(withHandler("mcp-server", async (req) => {
           // one closed position already yields one NET-pnl row via
           // read_closed_pnl, so fills must not be written as trades).
           // No writeGate here (same as list_open_orders).
+          if (typeof args.exchange === "string" && args.exchange.trim() !== "") {
+            const venueCheck = validateVenueSlug(args.exchange);
+            if (!venueCheck.ok) return toolError(body.id, `validation: list_fills: ${venueCheck.error}`);
+          }
+          if (typeof args.pair === "string" && args.pair.trim() !== "") {
+            const pairCheck = validatePairSymbol(args.pair);
+            if (!pairCheck.ok) return toolError(body.id, `validation: list_fills: ${pairCheck.error}`);
+          }
           const target = await resolveOrderTarget(admin as unknown as ConnectionAdmin, userId, { exchange: args.exchange, connectionId: args.connectionId });
           if (!target.ok) return toolError(body.id, `not_found: order target failed: ${target.error}`);
           const market = typeof args.market === "string" ? args.market.toLowerCase() : "all";
@@ -566,6 +752,14 @@ Deno.serve(withHandler("mcp-server", async (req) => {
         }
         if (name === "read_closed_pnl") {
           // Read-only realized-PnL read (the Diary-sync feed). No writeGate.
+          if (typeof args.exchange === "string" && args.exchange.trim() !== "") {
+            const venueCheck = validateVenueSlug(args.exchange);
+            if (!venueCheck.ok) return toolError(body.id, `validation: read_closed_pnl: ${venueCheck.error}`);
+          }
+          if (typeof args.pair === "string" && args.pair.trim() !== "") {
+            const pairCheck = validatePairSymbol(args.pair);
+            if (!pairCheck.ok) return toolError(body.id, `validation: read_closed_pnl: ${pairCheck.error}`);
+          }
           const target = await resolveOrderTarget(admin as unknown as ConnectionAdmin, userId, { exchange: args.exchange, connectionId: args.connectionId });
           if (!target.ok) return toolError(body.id, `not_found: order target failed: ${target.error}`);
           const days = args.days === undefined ? 30 : Number(args.days);
@@ -600,6 +794,10 @@ Deno.serve(withHandler("mcp-server", async (req) => {
           // cannot fire on it.
           const gate = await writeGate("reconcile_realized_pnl");
           if (!gate.ok) return gate.response;
+          if (typeof args.exchange === "string" && args.exchange.trim() !== "") {
+            const venueCheck = validateVenueSlug(args.exchange);
+            if (!venueCheck.ok) return toolError(body.id, `validation: reconcile_realized_pnl: ${venueCheck.error}`);
+          }
           const target = await resolveOrderTarget(admin as unknown as ConnectionAdmin, userId, { exchange: args.exchange, connectionId: args.connectionId });
           if (!target.ok) return toolError(body.id, `not_found: order target failed: ${target.error}`);
           // ── ROLL AN EXPIRED DAILY WINDOW ──
@@ -634,7 +832,7 @@ Deno.serve(withHandler("mcp-server", async (req) => {
               console.log("[reconcile] the expired daily window was rolled");
             }
           } catch (e) {
-            console.error("[reconcile] the daily window roll failed:", (e as Error)?.message ?? e);
+            logServer(corr, "the daily window roll failed:", (e as Error)?.message ?? e);
           }
           const days = args.days === undefined ? 2 : Number(args.days);
           if (!Number.isFinite(days) || days < 1 || days > 30) {
@@ -694,8 +892,8 @@ Deno.serve(withHandler("mcp-server", async (req) => {
               fillReadDiagnostic += `; ${fillOrderIdsByTrade.size} of ${rawTrades.length} closed trades got their fill order ids`;
             }
           } catch (e) {
-            fillReadDiagnostic = `the fills read FAILED — the window rule decided instead: ${(e as Error)?.message ?? e}`;
-            console.error("[reconcile] the fills read failed; falling back to the window rule:", (e as Error)?.message ?? e);
+            logServer(corr, "the fills read failed; falling back to the window rule:", (e as Error)?.message ?? e);
+            fillReadDiagnostic = `the fills read FAILED, the window rule decided instead (ref ${corr})`;
           }
 
           const venueTrades = rawTrades.map((t) => {
@@ -723,7 +921,10 @@ Deno.serve(withHandler("mcp-server", async (req) => {
             .select("venue_trade_id, pnl_usd, fees_usd")
             .eq("user_id", userId)
             .limit(2000);
-          if (ledgerErr) return toolError(body.id, `internal: ledger read failed: ${ledgerErr.message}`);
+          if (ledgerErr) {
+            logServer(corr, "ledger read failed:", ledgerErr.message);
+            return toolError(body.id, internalErrorText(corr));
+          }
           const ledger = (ledgerRows ?? []).map((r) => ({
             venue_trade_id: String(r.venue_trade_id ?? ""),
             pnl_usd: Number(r.pnl_usd ?? 0),
@@ -763,7 +964,8 @@ Deno.serve(withHandler("mcp-server", async (req) => {
             .eq("actor", "machine")
             .limit(2000);
           if (reservationErr) {
-            return toolError(body.id, `internal: the machine's reservation read failed: ${reservationErr.message}`);
+            logServer(corr, "the machine's reservation read failed:", reservationErr.message);
+            return toolError(body.id, internalErrorText(corr));
           }
           const reservations = (reservationRows ?? []).map((r) => ({
             venue_order_id: String(r.venue_order_id ?? ""),
@@ -799,7 +1001,7 @@ Deno.serve(withHandler("mcp-server", async (req) => {
               .eq("user_id", userId)
               .in("venue_trade_id", ids);
             if (delErr) {
-              console.error(`[reconcile] the misbooked ledger rows could not be deleted: ${delErr.message}`);
+              logServer(corr, `the misbooked ledger rows could not be deleted: ${delErr.message}`);
             } else {
               unbooked = ids.length;
               unbookedLossUsd = plan.misbooked.reduce((a, m) => a + Math.max(0, -Number(m.pnl ?? 0)), 0);
@@ -837,7 +1039,8 @@ Deno.serve(withHandler("mcp-server", async (req) => {
               { onConflict: "user_id,venue_trade_id", ignoreDuplicates: true },
             );
             if (insErr) {
-              recordError = `ledger write failed: ${insErr.message}`;
+              logServer(corr, `ledger write failed: ${insErr.message}`);
+              recordError = internalErrorText(corr);
             } else {
               recorded = plan.toCount.length;
               // The counter stores a POSITIVE loss; the venue reports a
@@ -914,7 +1117,7 @@ Deno.serve(withHandler("mcp-server", async (req) => {
               }
             }
           } catch (e) {
-            console.warn(`[mcp-server] reservation release skipped: ${(e as Error).message.slice(0, 120)}`);
+            logServer(corr, `reservation release skipped: ${(e as Error).message.slice(0, 120)}`);
           }
 
           return toolOk(body.id, {
@@ -954,6 +1157,10 @@ Deno.serve(withHandler("mcp-server", async (req) => {
           if (!gate.ok) return gate.response;
           const orderId = typeof args.orderId === "string" ? args.orderId : "";
           if (!orderId) return toolError(body.id, "validation: cancel_order needs orderId");
+          if (typeof args.exchange === "string" && args.exchange.trim() !== "") {
+            const venueCheck = validateVenueSlug(args.exchange);
+            if (!venueCheck.ok) return toolError(body.id, `validation: cancel_order: ${venueCheck.error}`);
+          }
           const target = await resolveOrderTarget(admin as unknown as ConnectionAdmin, userId, { exchange: args.exchange, connectionId: args.connectionId });
           if (!target.ok) return toolError(body.id, `not_found: order target failed: ${target.error}`);
           const out = await callEdge(supaUrl, authHeader, "cex-proxy", {
@@ -1001,9 +1208,15 @@ Deno.serve(withHandler("mcp-server", async (req) => {
         }
         if (name === "build_defi_tx") {
           const actionRaw = typeof args.action === "string" ? args.action.toLowerCase().trim() : "";
+          if (!(DEFI_BUILD_ACTIONS as readonly string[]).includes(actionRaw)) {
+            return toolError(body.id, `validation: build_defi_tx action must be ${(DEFI_BUILD_ACTIONS as readonly string[]).join("|")}`);
+          }
           const investmentId = typeof args.investmentId === "string" ? args.investmentId.trim() : "";
           if (!investmentId) {
             return toolError(body.id, "validation: build_defi_tx requires investmentId");
+          }
+          if (investmentId.length > 128) {
+            return toolError(body.id, "validation: build_defi_tx investmentId too long (max 128 chars)");
           }
           const actionMap: Record<string, string> = {
             supply: "transaction/deposit",
@@ -1015,30 +1228,48 @@ Deno.serve(withHandler("mcp-server", async (req) => {
           };
           const edgeAction = actionMap[actionRaw];
           if (!edgeAction) {
-            return toolError(body.id, "validation: build_defi_tx action must be supply|redeem|borrow|repay|claim|quote_lp");
+            return toolError(body.id, `validation: build_defi_tx action must be ${(DEFI_BUILD_ACTIONS as readonly string[]).join("|")}`);
           }
           const walletAddress = typeof args.walletAddress === "string" ? args.walletAddress.trim() : "";
           if (edgeAction !== "transaction/lp-add/calculate" && !walletAddress) {
             return toolError(body.id, `validation: build_defi_tx action=${actionRaw} requires walletAddress`);
           }
-          const amount = typeof args.amount === "string" ? args.amount.trim() : "";
-          if (edgeAction !== "transaction/claim" && !amount) {
+          if (walletAddress && !isWalletAddress(walletAddress)) {
+            return toolError(body.id, "validation: build_defi_tx walletAddress must be a 0x address (40 hex) or a base58 Solana address");
+          }
+          const amountRaw = typeof args.amount === "string" ? args.amount.trim()
+            : typeof args.amount === "number" ? args.amount : "";
+          if (edgeAction !== "transaction/claim" && (amountRaw === "" || amountRaw == null)) {
             return toolError(body.id, `validation: build_defi_tx action=${actionRaw} requires amount`);
           }
-          const tokenAddress = typeof args.tokenAddress === "string" && args.tokenAddress.trim()
+          let amount: number | null = null;
+          if (edgeAction !== "transaction/claim") {
+            amount = parseDefiAmount(amountRaw);
+            if (amount === null) {
+              return toolError(body.id, `validation: build_defi_tx amount must be a positive number up to ${MAX_DEFI_AMOUNT}`);
+            }
+          }
+          const tokenIn = typeof args.tokenAddress === "string" && args.tokenAddress.trim()
             ? args.tokenAddress.trim()
             : "0x0000000000000000000000000000000000000000";
-          const binanceChainId = typeof args.chainId === "string" && args.chainId.trim()
-            ? args.chainId.trim()
-            : "1";
-          const slippageBps = typeof args.slippageBps === "number" ? args.slippageBps : 50;
+          if (!isEvmTokenAddress(tokenIn)) {
+            return toolError(body.id, "validation: build_defi_tx tokenAddress must be a 0x address (40 hex)");
+          }
+          const tokenAddress = tokenIn;
+          const chainCheck = normalizeDefiChainId(args.chainId);
+          if (!chainCheck.ok) {
+            return toolError(body.id, `validation: build_defi_tx: ${chainCheck.error}`);
+          }
+          const binanceChainId = chainCheck.chainId;
+          const slippageBps = clampSlippageBps(args.slippageBps);
           const simulate = args.simulate !== false;
+          const amountStr = amount === null ? "" : String(amount);
           const params: Record<string, unknown> =
             edgeAction === "transaction/lp-add/calculate"
               ? {
                   investmentId,
                   tokenAddress,
-                  amount,
+                  amount: amountStr,
                   priceRange: ["0.85", "1.15"],
                 }
               : edgeAction === "transaction/redeem"
@@ -1046,7 +1277,7 @@ Deno.serve(withHandler("mcp-server", async (req) => {
                   address: walletAddress,
                   investmentId,
                   binanceChainId,
-                  token: { tokenAddress, amount },
+                  token: { tokenAddress, amount: amountStr },
                   slippageBps,
                   simulate,
                 }
@@ -1062,7 +1293,7 @@ Deno.serve(withHandler("mcp-server", async (req) => {
                   address: walletAddress,
                   investmentId,
                   binanceChainId,
-                  tokenList: [{ tokenAddress, amount }],
+                  tokenList: [{ tokenAddress, amount: amountStr }],
                   slippageBps,
                   simulate,
                 };
@@ -1071,7 +1302,8 @@ Deno.serve(withHandler("mcp-server", async (req) => {
             params,
           }, 25000);
           if (!buildRes.ok) {
-            return toolError(body.id, `upstream: binance-defi ${edgeAction} failed (${buildRes.status})`, buildRes.json);
+            logServer(corr, `binance-defi ${edgeAction} failed:`, JSON.stringify(buildRes).slice(0, 2000));
+            return toolError(body.id, upstreamErrorText(corr));
           }
           return toolOk(body.id, {
             action: actionRaw,
@@ -1083,11 +1315,17 @@ Deno.serve(withHandler("mcp-server", async (req) => {
         }
         return toolError(body.id, `validation: Unknown tool: ${name ?? "(missing)"}`);
       } catch (e) {
-        return toolError(body.id, `internal: ${e instanceof Error ? e.message : "tool call failed"}`);
+        logServer(corr, "tool call failed:", e instanceof Error ? e.message : e);
+        return toolError(body.id, internalErrorText(corr));
       }
     }
     return rpcError(body.id, -32601, `Method not found: ${body.method}`);
   } catch (e) {
-    return fail(500, "internal", e instanceof Error ? e.message : "mcp-server failed");
+    try {
+      logServer(corr, "handler failed:", e instanceof Error ? e.message : e);
+    } catch {
+      // Logging must never fail the error path.
+    }
+    return fail(500, "internal", internalErrorText(corr));
   }
 }));

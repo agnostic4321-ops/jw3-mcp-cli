@@ -8,6 +8,7 @@ import {
   isRetryableStatus,
   mapPool,
   parseRetryAfterMs,
+  scrubBearer,
 } from "./http.js";
 
 describe("isRetryableStatus", () => {
@@ -158,5 +159,22 @@ describe("mapPool", () => {
   it("handles empty input and wide pools", async () => {
     assert.deepEqual(await mapPool([], async (v: number) => v, 3), []);
     assert.deepEqual(await mapPool([7], async (v) => v + 1, 99), [8]);
+  });
+});
+
+describe("scrubBearer", () => {
+  it("redacts PATs, Bearer echoes, and access_token values", () => {
+    assert.equal(scrubBearer("token jw3_mcp_abc123 leaked"), "token jw3_mcp_[REDACTED] leaked");
+    assert.equal(scrubBearer("Authorization: Bearer secret-token"), "Authorization: Bearer [REDACTED]");
+    const scrubbed = scrubBearer('{"access_token":"tok123","token_type":"bearer"}');
+    assert.ok(!scrubbed.includes("tok123"), scrubbed);
+    assert.ok(JSON.parse(scrubbed) !== null, "stays valid JSON");
+    assert.equal(scrubBearer("clean body, nothing secret"), "clean body, nothing secret");
+  });
+  it("HttpError keeps the 160-char cap with no secret in message or body", () => {
+    const e = new HttpError(401, `denied for jw3_mcp_abc123 ${"x".repeat(300)}`, "https://x/y");
+    assert.ok(!e.message.includes("jw3_mcp_abc123"), e.message);
+    assert.ok(!e.body.includes("jw3_mcp_abc123"), e.body);
+    assert.ok(e.message.includes("jw3_mcp_[REDACTED]"), e.message);
   });
 });

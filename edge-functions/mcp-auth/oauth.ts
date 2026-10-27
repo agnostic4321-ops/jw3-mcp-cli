@@ -36,6 +36,7 @@ import {
   randomSecret as randomId,
   sha256Hex,
 } from "../_shared/mcp-auth.ts";
+import { isValidPkceShape, safeEqualStrings } from "./router.ts";
 const ISSUER = "https://www.jw3.ai/mcp";
 const APPROVE_URL = "https://www.jw3.ai/dashboard/mcp-approve";
 
@@ -102,12 +103,24 @@ export async function handleOAuth(req: Request, fnPath = "/mcp-oauth"): Promise<
     if (req.method === "GET" && tail === "/validate") {
       const client_id = url.searchParams.get("client_id") ?? "";
       const redirect_uri = url.searchParams.get("redirect_uri") ?? "";
-      const rl = await checkRateLimit(admin, { bucket: "mcp-oauth-val", subject: client_id || "unknown", limit: 60, windowSec: 3600, failClosed: true });
+      // Limiter key is IP-led (composite with client_id): a bare client_id
+      // subject lets anyone mint quota buckets per guessed id and probe the
+      // allowlist without sharing quota.
+      const rlSubject = `${ipFromRequest(req) || "unknown"}:${client_id || "unknown"}`;
+      const rl = await checkRateLimit(admin, { bucket: "mcp-oauth-val", subject: rlSubject, limit: 60, windowSec: 3600, failClosed: true });
       if (!rl.ok) return rateLimitedResponse(rl);
-      if (!client_id || !redirect_uri) return fail(400, "validation", "client_id and redirect_uri required.");
+      // Uniform work and shape on every outcome: one DB fetch, one flat
+      // scan of the allowlist, one generic message. Missing params,
+      // unknown client, and redirect mismatch are indistinguishable by
+      // status, body, or timing (no allowlist oracle).
       const { data: client } = await admin.from("mcp_oauth_clients")
         .select("redirect_uris").eq("client_id", client_id).maybeSingle() as { data: { redirect_uris?: string[] } | null };
-      if (!Array.isArray(client?.redirect_uris) || !client!.redirect_uris!.includes(redirect_uri)) {
+      const allowed = Array.isArray(client?.redirect_uris) ? client!.redirect_uris! : [];
+      let found = false;
+      for (const uri of allowed) {
+        if (typeof uri === "string" && safeEqualStrings(uri, redirect_uri)) found = true;
+      }
+      if (!found || redirect_uri.length === 0) {
         return fail(400, "validation", "Unknown client or redirect_uri mismatch.");
       }
       return ok({ ok: true });
@@ -128,6 +141,9 @@ export async function handleOAuth(req: Request, fnPath = "/mcp-oauth"): Promise<
       }
       if (!client_id || !redirect_uri || !challenge || method !== "S256" || !state) {
         return fail(400, "validation", "authorize needs client_id, redirect_uri, code_challenge (S256) and state.");
+      }
+      if (!isValidPkceShape(challenge)) {
+        return fail(400, "validation", "code_challenge must be 43-128 chars ([A-Za-z0-9-._~], S256).");
       }
       const { data: client } = await admin.from("mcp_oauth_clients")
         .select("redirect_uris").eq("client_id", client_id).maybeSingle() as { data: { redirect_uris?: string[] } | null };
@@ -161,6 +177,9 @@ export async function handleOAuth(req: Request, fnPath = "/mcp-oauth"): Promise<
       const challenge = typeof body.code_challenge === "string" ? body.code_challenge : "";
       const scopes = parseScopes(typeof body.scope === "string" ? body.scope : body.scopes);
       if (!client_id || !redirect_uri || !challenge) return fail(400, "validation", "client_id, redirect_uri and code_challenge required.");
+      if (!isValidPkceShape(challenge)) {
+        return fail(400, "validation", "code_challenge must be 43-128 chars ([A-Za-z0-9-._~], S256).");
+      }
       const { data: client } = await admin.from("mcp_oauth_clients")
         .select("redirect_uris").eq("client_id", client_id).maybeSingle() as { data: { redirect_uris?: string[] } | null };
       if (!Array.isArray(client?.redirect_uris) || !client!.redirect_uris!.includes(redirect_uri)) {
@@ -179,7 +198,10 @@ export async function handleOAuth(req: Request, fnPath = "/mcp-oauth"): Promise<
         code_challenge: challenge,
       });
       if (error) return fail(500, "internal", "Could not issue code.");
-      return ok({ code, state: typeof body.state === "string" ? body.state : "" });
+      // Echo the exact redirect_uri and granted scopes: the approve screen
+      // must display both for user confirmation (server-side part; the
+      // client display itself is a sibling concern).
+      return ok({ code, state: typeof body.state === "string" ? body.state : "", client_id, redirect_uri, scopes });
     }
 
     // ---- token: PKCE-bound code → scoped PAT access token ----
@@ -199,6 +221,11 @@ export async function handleOAuth(req: Request, fnPath = "/mcp-oauth"): Promise<
       }
       if (g.grant_type !== "authorization_code" || !g.code || !g.code_verifier || !g.redirect_uri || !g.client_id) {
         return fail(400, "validation", "grant_type=authorization_code with code, code_verifier, redirect_uri, client_id required.", { oauth_error: "invalid_request" });
+      }
+      // Same invalid_grant message as a hash mismatch below: shape must not
+      // be a distinguishable failure (no verifier oracle).
+      if (!isValidPkceShape(g.code_verifier)) {
+        return fail(400, "validation", "PKCE verification failed.", { oauth_error: "invalid_grant" });
       }
       const hash = await sha256Hex(g.code);
       const { data: row } = await admin.from("mcp_auth_codes").select(

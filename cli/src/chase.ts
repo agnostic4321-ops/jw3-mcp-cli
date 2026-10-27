@@ -24,6 +24,7 @@ import {
   cancelToolArgs,
   executeToolArgs,
   extractOpenOrders,
+  makeIntentKey,
   validateExecute,
   type ExecuteArgs,
   type TradeCall,
@@ -143,6 +144,12 @@ export type ChaseResult = {
    * skipped when its cancel fails for the same reason.
    */
   cancelError?: string;
+  /**
+   * Why a replace was refused without a cancel failure (e.g. foreign
+   * working orders on the pair, or our order already gone). Informational:
+   * the run aborted flat rather than stacking blind.
+   */
+  note?: string;
 };
 
 export type ChaseEvent =
@@ -157,6 +164,14 @@ export type ChaseDeps = {
   placeFn: (price: number | undefined) => Promise<string>;
   cancelFn: (orderId: string) => Promise<void>;
   workingFn: (orderId: string) => Promise<boolean>;
+  /**
+   * Pair-level working-order ids (a `list_open_orders` read for the pair).
+   * When present, every cancel-replace is gated on it first (mirror live's
+   * `no_working_orders` gate): our order must still be the working one,
+   * and no foreign order may be working beside it. Absent = the gate is
+   * skipped (the per-order `workingFn` read still applies).
+   */
+  pairOrdersFn?: () => Promise<string[]>;
   sleepMs?: (ms: number) => Promise<void>;
   nowMs?: () => number;
   onEvent?: (e: ChaseEvent) => void;
@@ -203,6 +218,45 @@ export async function runChase(side: ChaseSide, cfg: ChaseConfig, deps: ChaseDep
     const px = chaseTouchFor(side, touch);
     emit({ kind: "poll", working: true, price: Number.isFinite(px) ? px : workingPrice });
     if (!Number.isFinite(px) || !shouldReprice(workingPrice, px) || chases >= maxChases) continue;
+    // PAIR-LEVEL WORKING-ORDER GATE (mirror live's `no_working_orders`).
+    // The poll-top `workingFn` read is already stale here: our order may
+    // have filled between that read and this replace, and a foreign order
+    // (a stale TP/SL from a closed trade) may be working beside ours. A
+    // replace that cancels blind stacks a second live order on top of the
+    // first: re-read the pair and refuse unless our order is still the
+    // only working one. A failed cancel still reports STUCK (never masked
+    // by this gate).
+    if (deps.pairOrdersFn) {
+      let pairIds: string[] | null = null;
+      let gateWhy = "";
+      try {
+        pairIds = await deps.pairOrdersFn();
+      } catch (e) {
+        gateWhy = `pair working-order read failed (${e instanceof Error ? e.message : String(e)}): refusing to stack a replace blind`;
+      }
+      const gone = pairIds !== null && !pairIds.includes(id);
+      const foreign = pairIds === null ? [] : pairIds.filter((other) => other !== id);
+      if (gateWhy === "" && gone) {
+        const r: ChaseResult = { outcome: "filled", orderId: id, chases, note: "our order left the pair book before the replace: treating it as filled, nothing cancelled" };
+        emit({ kind: "done", result: r });
+        return r;
+      }
+      if (gateWhy === "" && foreign.length > 0) {
+        gateWhy = `${foreign.length} foreign order(s) working on this pair (${foreign.join(", ")}): refusing to stack a replace beside them`;
+      }
+      if (gateWhy !== "") {
+        try {
+          await deps.cancelFn(id);
+        } catch (e) {
+          const r: ChaseResult = { outcome: "stuck", orderId: id, chases, cancelError: e instanceof Error ? e.message : String(e), note: gateWhy };
+          emit({ kind: "done", result: r });
+          return r;
+        }
+        const r: ChaseResult = { outcome: "aborted", orderId: id, chases, note: gateWhy };
+        emit({ kind: "done", result: r });
+        return r;
+      }
+    }
     try {
       await deps.cancelFn(id);
     } catch (e) {
@@ -296,7 +350,29 @@ export async function cmdExecuteChase(
     console.log("Dry run — nothing sent. Re-run with --yes to fire (real money).");
     return;
   }
-  const baseTicket = executeToolArgs(args);
+  // Every place AND every replace is its own ticket: a fresh builder call
+  // per fire, never a spread of the first ticket. Spreading would carry the
+  // first place's price AND its idempotency key onto the replace, and the
+  // server would dedupe the replace against the place, and the chase would
+  // silently never move. The chase namespace keeps these keys distinct
+  // from a manual execute of the same shape; the per-run sequence keeps
+  // same-price revisits distinct within one run. An explicit operator
+  // --idempotency-key scopes the family instead of replacing it.
+  let placeSeq = 0;
+  const placeTicket = (price: number | undefined): Record<string, unknown> =>
+    executeToolArgs({
+      ...args,
+      ...(price === undefined ? {} : { price }),
+      idempotencyKey: makeIntentKey(
+        "chase",
+        [
+          args.idempotencyKey ?? "", args.exchange, args.pair, side,
+          price === undefined ? "market" : String(price),
+          args.amount ?? "", args.riskUsd ?? "", args.leverage ?? "",
+          `place-${placeSeq++}`,
+        ].join("|"),
+      ),
+    });
   const touchFn =
     deps?.touchFn ??
     (async (): Promise<Touch> => {
@@ -306,7 +382,7 @@ export async function cmdExecuteChase(
   const placeFn = async (price: number | undefined): Promise<string> => {
     const out = (await call(
       "execute_trade",
-      price === undefined ? { ...baseTicket } : { ...baseTicket, price: String(price) },
+      placeTicket(price),
       pat,
       opts.url,
     )) as { orderId?: string; id?: string };
@@ -324,6 +400,18 @@ export async function cmdExecuteChase(
     workingFn: async (orderId: string) => {
       const listed = await call("list_open_orders", cancelAllListArgs({ exchange: args.exchange, pair: args.pair }), pat, opts.url);
       return isChaseWorking(listed, orderId);
+    },
+    // Pair-level gate before every replace (mirror live's no_working_orders
+    // gate). A separate read from workingFn: this one returns the whole
+    // pair book so the loop can refuse to stack beside a foreign order.
+    pairOrdersFn: async () => {
+      const listed = await call("list_open_orders", cancelAllListArgs({ exchange: args.exchange, pair: args.pair }), pat, opts.url);
+      const ids: string[] = [];
+      for (const row of extractOpenOrders(listed)) {
+        const id = cancelOrderIdOf(row);
+        if (id) ids.push(id);
+      }
+      return ids;
     },
     ...(deps?.sleepMs ? { sleepMs: deps.sleepMs } : {}),
     ...(deps?.nowMs ? { nowMs: deps.nowMs } : {}),

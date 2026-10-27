@@ -112,10 +112,14 @@ export async function handleToken(req: Request, ctx: RequestCtx): Promise<Respon
     }
 
     if (action === "rotate") {
-      // Same-name/same-scope replacement: the old secret dies first so two
-      // live secrets never overlap; the new plaintext is returned ONCE here.
-      // A failed mint after the revoke means re-create (JWT-authed), never
-      // a silently resurrected old secret.
+      // Mint-first-then-revoke: the old secret stays live until the
+      // replacement row exists, so a failed mint never destroys the only
+      // credential (no outage window, unlike revoke-first). No cross-table
+      // transaction/RPC exists for an atomic swap, so ordering plus
+      // residual reporting is the safety net: if the revoke fails, the new
+      // row is rolled back to revoked and the caller is told the old token
+      // is unchanged; if even the rollback fails, both ids are reported,
+      // never hidden.
       if (!body.id) return fail(400, "validation", "Token id required.");
       const { data: cur, error: curErr } = await admin.from("mcp_tokens")
         .select("id,name,scopes").eq("id", body.id).eq("user_id", userId).eq("revoked", false).maybeSingle();
@@ -131,9 +135,6 @@ export async function handleToken(req: Request, ctx: RequestCtx): Promise<Respon
       }
       const exp = resolveExpiry(body);
       if (!exp.ok) return fail(400, "validation", exp.error);
-      const { error: revErr } = await admin.from("mcp_tokens")
-        .update({ revoked: true }).eq("id", row.id).eq("user_id", userId);
-      if (revErr) return fail(500, "internal", "Could not rotate token.");
       const secret = PREFIX + randomSecret(32);
       const hash = await sha256Hex(secret);
       const { data, error } = await admin.from("mcp_tokens").insert({
@@ -141,7 +142,18 @@ export async function handleToken(req: Request, ctx: RequestCtx): Promise<Respon
         scopes, expires_at: exp.value,
       }).select("id,name,prefix,scopes,expires_at,created_at").single();
       if (error || !data) {
-        return fail(500, "internal", "Old token revoked, but the replacement could not be minted. Create a new token.");
+        return fail(500, "internal", "Could not rotate token. The existing token is unchanged.");
+      }
+      const next = data as { id: string };
+      const { error: revErr } = await admin.from("mcp_tokens")
+        .update({ revoked: true }).eq("id", row.id).eq("user_id", userId).eq("revoked", false);
+      if (revErr) {
+        const { error: rbErr } = await admin.from("mcp_tokens")
+          .update({ revoked: true }).eq("id", next.id).eq("user_id", userId);
+        if (rbErr) {
+          return fail(500, "internal", "Rotation incomplete: replacement minted but the old token could not be revoked. Two tokens are live - revoke one manually.", { residual: { old_token_id: row.id, new_token_id: next.id } });
+        }
+        return fail(500, "internal", "Could not rotate token. The existing token is unchanged.");
       }
       return ok({ token: secret, meta: data, rotated_from: row.id });
     }

@@ -7,10 +7,19 @@
 // keep legacy behavior. Behavior identical to the inline block.
 import { buildCexTimeframes } from "../_shared/snapshot.ts";
 import { toolError, toolOk, type ToolCtx } from "./tools.ts";
+import {
+  MAX_DAILY_PREP_CONNECTIONS,
+  MAX_DAILY_PREP_NAMES,
+  internalErrorText,
+  logServer,
+  newCorrelationId,
+  upstreamErrorText,
+} from "./tools.ts";
 
 export async function handleDailyPrep(
   ctx: ToolCtx, id: unknown, args: Record<string, unknown>,
 ): Promise<Response> {
+  const corr = newCorrelationId();
   const { admin, userId, supaUrl, authHeader, viaPat, scopes, callEdge } = ctx;
   // Morning brief: public fan-out + account snapshot + JEV bias per
   // name, composed by daily-prep-lib and recorded as the day's
@@ -33,7 +42,14 @@ export async function handleDailyPrep(
     callEdge(supaUrl, authHeader, "cex-proxy", { action: "tickers", exchange: "binance" }, 30000),
   ]);
   const brief = settled[0].status === "fulfilled" ? settled[0].value as Record<string, unknown> : {};
-  const conns = (settled[1].status === "fulfilled" && !settled[1].value.error ? settled[1].value.data : []) as Array<Record<string, string>>;
+  if (settled[0].status === "rejected") {
+    logServer(corr, "daily-brief fan-out failed:", String(settled[0].reason).slice(0, 500));
+  }
+  const allConns = (settled[1].status === "fulfilled" && !settled[1].value.error ? settled[1].value.data : []) as Array<Record<string, string>>;
+  // Cap the per-connection fan-out: each connection costs two venue reads.
+  const connsTruncated = allConns.length > MAX_DAILY_PREP_CONNECTIONS;
+  const conns = allConns.slice(0, MAX_DAILY_PREP_CONNECTIONS);
+  if (connsTruncated) logServer(corr, `connection fan-out capped at ${MAX_DAILY_PREP_CONNECTIONS} of ${allConns.length}`);
   const rl = (settled[2].status === "fulfilled" && !settled[2].value.error ? settled[2].value.data : null) as Record<string, number | string | boolean | null> | null;
   // Raw cex-proxy tickers need the same normalize step as the screener branch.
   const rawTicks = ((((settled[3].status === "fulfilled" ? settled[3].value : null) as { tickers?: Array<Record<string, unknown>> } | null)?.tickers) ?? []);
@@ -94,7 +110,7 @@ export async function handleDailyPrep(
     { name: "BTC", pair: "BTC/USDT" }, { name: "ETH", pair: "ETH/USDT" },
     { name: "SOL", pair: "SOL/USDT" },
     ...moverPicks.map((m) => ({ name: m.pair.replace("/USDT", ""), pair: m.pair })),
-  ];
+  ].slice(0, MAX_DAILY_PREP_NAMES);
   const { atrPct, prevDayHL } = await import("../_shared/daily-brief-lib.ts");
   const { composeBrief } = await import("../_shared/daily-prep-lib.ts");
   // JEV runs SEQUENTIAL: parallel model calls trip the key's RPM
@@ -138,14 +154,16 @@ export async function handleDailyPrep(
           }
         }
         if (typeof out.error === "string" && out.error) {
-          base.jevError = out.error.slice(0, 120);
+          logServer(corr, `JEV bias failed for ${spec.pair}:`, String(out.error).slice(0, 300));
+          base.jevError = `unavailable (ref ${corr})`;
         } else {
           base.jev = out.verdict?.trend?.verdict ?? "n/a";
           base.jevConf = typeof out.verdict?.trend?.agreement === "number" ? out.verdict.trend.agreement : null;
         }
       }
     } catch (e) {
-      base.jevError = e instanceof Error ? e.message.slice(0, 120) : "failed";
+      logServer(corr, `JEV bias threw for ${spec.pair}:`, e instanceof Error ? e.message : e);
+      base.jevError = `unavailable (ref ${corr})`;
     }
     names.push(base);
   }
@@ -175,13 +193,17 @@ export async function handleDailyPrep(
     }
     const { error } = await admin.from("diary_day_notes")
       .upsert({ user_id: userId, day, body_md: nextBody }, { onConflict: "user_id,day" });
-    if (error) return toolError(id, `upstream: brief built but diary write failed: ${error.message}`);
+    if (error) {
+      logServer(corr, "brief built but diary write failed:", error.message);
+      return toolError(id, internalErrorText(corr));
+    }
     wrote = true;
   }
   return toolOk(id, {
     day, wrote, brief_chars: markdown.length,
     brief_ok: settled[0].status === "fulfilled",
-    ...(settled[0].status === "rejected" ? { brief_error: String(settled[0].reason).slice(0, 300) } : {}),
+    ...(settled[0].status === "rejected" ? { brief_error: upstreamErrorText(corr) } : {}),
+    connections_capped: connsTruncated,
     risk: { kill: rl?.kill_switch_enabled === true, autonomy: rl?.autonomy_level ?? null },
     jev: names.map((n) => ({ name: n.name, jev: n.jev, err: n.jevError ?? null })),
     sections: {

@@ -25,6 +25,7 @@ import {
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { maskBearerArgs } from "../config.js";
 import { classifyStrays, readLocalStates } from "../reconcile.js";
 
 /** Heartbeat cadence default (s). */
@@ -539,7 +540,7 @@ export async function cmdSupervise(a: SuperviseArgs): Promise<void> {
     const delay = k.restarts === 0 ? 0 : backoffMs(k.restarts - 1);
     const go = (): void => {
       if (stopping) return;
-      log(`START ${k.name} (attempt ${k.restarts + 1}) — node ${k.argv.join(" ")}`);
+      log(`START ${k.name} (attempt ${k.restarts + 1}) — node ${maskBearerArgs(k.argv).join(" ")}`);
       let proc: ChildProcess;
       try {
         proc = spawn(process.execPath, [entryPoint(), ...k.argv], { stdio: ["ignore", "pipe", "pipe"] });

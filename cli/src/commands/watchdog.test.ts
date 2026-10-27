@@ -13,6 +13,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   accountSnapshotFromVenue,
+  appendWatchdogDiary,
   applyResume,
   classifyOrderOwnership,
   cmdWatchdog,
@@ -25,10 +26,12 @@ import {
   evaluateWatchdog,
   heartbeatAgeMs,
   loadWatchdogState,
+  makeWatchdogDiaryEntry,
   normalizeSide,
   normalizeWatchdogRiskState,
   parseHeartbeat,
   runWatchdogCycle,
+  watchdogDiaryPath,
   watchdogStatePath,
   WATCHDOG_DEFAULT_MAX_VENUE_ERRORS,
   type WatchdogAccountSnapshot,
@@ -1344,5 +1347,175 @@ describe("a THROTTLED risk-state read is not a tripped switch", () => {
     );
     assert.equal(decision.tripped, true, "a genuine unreadable risk state did NOT fail closed");
     assert.ok(decision.trips.some((t) => t.code === "risk_state_unreadable"));
+  });
+});
+
+describe("watchdog diary: every auto-cancel/auto-close is logged", () => {
+  it("builds a diary line with trip codes plus ownership proof", () => {
+    const e = makeWatchdogDiaryEntry({
+      at: "2026-10-27T00:00:00.000Z",
+      action: "auto-cancel",
+      exchange: "kucoin",
+      pair: "SOL/USDT",
+      orderId: "o1",
+      tripCodes: ["kill_switch"],
+      ownershipReason: "claimed by a local state file",
+      clientOid: "jw3-sess-t1-SOLUSDT",
+      result: "ok",
+    });
+    assert.equal(e.action, "auto-cancel");
+    assert.deepEqual(e.tripCodes, ["kill_switch"]);
+    assert.equal(e.ownershipProof.reason, "claimed by a local state file");
+    assert.equal(e.ownershipProof.clientOid, "jw3-sess-t1-SOLUSDT");
+    assert.equal(e.result, "ok");
+    assert.equal("error" in e, false);
+  });
+
+  it("a cycle appends one line per auto-cancel with trip code and proof", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "watchdog-diary-"));
+    try {
+      const call = (async (name: string, args: Record<string, unknown>) => {
+        if (name === "read_risk_limits") return { risk_limits: { kill_switch_enabled: true } };
+        if (name === "read_live_datum" && args.kind === "positions") return [];
+        if (name === "read_live_datum" && args.kind === "balances") {
+          return { merged: [{ asset: "USDT", free: 400, total: 1000 }] };
+        }
+        if (name === "list_open_orders") return [{ orderId: "o1", symbol: "SOL/USDT", clientOid: "sess-1" }];
+        return { ok: true };
+      }) as never;
+      writeFileSync(join(dir, "scalp_sol.json"), JSON.stringify({ pair: "SOL/USDT", placed: [{ orderId: "o1" }] }));
+      const result = await runWatchdogCycle(
+        { exchange: "kucoin", pat: "p" },
+        {
+          call,
+          listConns: (async () => [{ id: "c1", exchange: "kucoin" }]) as never,
+          stateDir: dir,
+          cfgDir: dir,
+          executorHeartbeatFile: join(dir, "supervise-heartbeat.json"),
+          funding: (async () => null) as never,
+          now: () => 1700000000000,
+        },
+      );
+      assert.equal(result.decision.shouldAct, true);
+      const diary = join(dir, "watchdog-diary.jsonl");
+      assert.equal(existsSync(diary), true);
+      const lines = readFileSync(diary, "utf8").split("\n").filter((l) => l.trim());
+      assert.equal(lines.length, 1);
+      const e = JSON.parse(lines[0] as string) as Record<string, unknown>;
+      assert.equal(e.action, "auto-cancel");
+      assert.equal(e.orderId, "o1");
+      assert.equal(e.pair, "SOL/USDT");
+      assert.ok(Array.isArray(e.tripCodes) && (e.tripCodes as string[]).includes("kill_switch"));
+      assert.match(String((e.ownershipProof as { reason: string }).reason), /local state file/);
+      assert.equal(e.result, "ok");
+      // Append-only: a second trip appends, never overwrites.
+      await runWatchdogCycle(
+        { exchange: "kucoin", pat: "p" },
+        {
+          call,
+          listConns: (async () => [{ id: "c1", exchange: "kucoin" }]) as never,
+          stateDir: dir,
+          cfgDir: dir,
+          executorHeartbeatFile: join(dir, "supervise-heartbeat.json"),
+          funding: (async () => null) as never,
+          now: () => 1700000000000,
+        },
+      );
+      assert.equal(readFileSync(diary, "utf8").split("\n").filter((l) => l.trim()).length, 2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a failed auto-cancel is logged as failed with the venue error", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "watchdog-diary-fail-"));
+    try {
+      const call = (async (name: string, args: Record<string, unknown>) => {
+        if (name === "read_risk_limits") return { risk_limits: { kill_switch_enabled: true } };
+        if (name === "read_live_datum" && args.kind === "positions") return [];
+        if (name === "read_live_datum" && args.kind === "balances") {
+          return { merged: [{ asset: "USDT", free: 400, total: 1000 }] };
+        }
+        if (name === "list_open_orders") return [{ orderId: "o1", symbol: "SOL/USDT" }];
+        if (name === "cancel_order") throw new Error("blocked: Kill switch is ON");
+        return {};
+      }) as never;
+      writeFileSync(join(dir, "scalp_sol.json"), JSON.stringify({ pair: "SOL/USDT", placed: [{ orderId: "o1" }] }));
+      await runWatchdogCycle(
+        { exchange: "kucoin", pat: "p" },
+        {
+          call,
+          listConns: (async () => [{ id: "c1", exchange: "kucoin" }]) as never,
+          stateDir: dir,
+          cfgDir: dir,
+          executorHeartbeatFile: join(dir, "supervise-heartbeat.json"),
+          funding: (async () => null) as never,
+          now: () => 1700000000000,
+        },
+      );
+      const lines = readFileSync(join(dir, "watchdog-diary.jsonl"), "utf8").split("\n").filter((l) => l.trim());
+      assert.equal(lines.length, 1);
+      const e = JSON.parse(lines[0] as string) as Record<string, unknown>;
+      assert.equal(e.result, "failed");
+      assert.match(String(e.error), /Kill switch/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("an auto-close is logged with the position proof", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "watchdog-diary-close-"));
+    try {
+      const call = (async (name: string, args: Record<string, unknown>) => {
+        if (name === "read_risk_limits") return { risk_limits: { kill_switch_enabled: true } };
+        if (name === "read_live_datum" && args.kind === "positions") {
+          return [{ symbol: "SOL/USDT", side: "long", size: 10, markPrice: 12, exits: [] }];
+        }
+        if (name === "read_live_datum" && args.kind === "balances") {
+          return { merged: [{ asset: "USDT", free: 400, total: 1000 }] };
+        }
+        if (name === "list_open_orders") return [];
+        return { ok: true };
+      }) as never;
+      writeFileSync(join(dir, "scalp_sol.json"), JSON.stringify({ pair: "SOL/USDT", placed: [{ orderId: "o1" }] }));
+      // Arm the flatten policy, then opt in for this cycle.
+      await cmdWatchdogArmFlatten({ arm: true }, { cfgDir: dir });
+      const result = await runWatchdogCycle(
+        { exchange: "kucoin", pat: "p", flatten: true },
+        {
+          call,
+          listConns: (async () => [{ id: "c1", exchange: "kucoin" }]) as never,
+          stateDir: dir,
+          cfgDir: dir,
+          executorHeartbeatFile: join(dir, "supervise-heartbeat.json"),
+          funding: (async () => null) as never,
+          now: () => 1700000000000,
+        },
+      );
+      assert.ok(result.executed.some((e) => e.type === "flatten"));
+      const lines = readFileSync(join(dir, "watchdog-diary.jsonl"), "utf8").split("\n").filter((l) => l.trim());
+      assert.equal(lines.length, 1);
+      const e = JSON.parse(lines[0] as string) as Record<string, unknown>;
+      assert.equal(e.action, "auto-close");
+      assert.equal(e.pair, "SOL/USDT");
+      assert.match(String((e.ownershipProof as { reason: string }).reason), /local state file/);
+      assert.equal(e.result, "ok");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("the diary path defaults under the config dir", () => {
+    assert.ok(watchdogDiaryPath("/tmp/x").endsWith("watchdog-diary.jsonl"));
+    assert.equal(appendWatchdogDiary(join(mkdtempSync(join(tmpdir(), "watchdog-diary-unit-")), "d.jsonl"), makeWatchdogDiaryEntry({
+      at: "2026-10-27T00:00:00.000Z",
+      action: "auto-cancel",
+      exchange: "kucoin",
+      pair: "SOL/USDT",
+      orderId: "o1",
+      tripCodes: ["kill_switch"],
+      ownershipReason: "claimed by a local state file",
+      result: "ok",
+    })), null);
   });
 });

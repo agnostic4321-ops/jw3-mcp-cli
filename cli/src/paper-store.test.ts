@@ -4,7 +4,7 @@
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -236,5 +236,13 @@ describe("persistence", () => {
     const wrong = join(dir, "wrong.json");
     writeFileSync(wrong, JSON.stringify({ accounts: null }));
     assert.deepEqual(loadPaperStore(wrong), emptyStore());
+  });
+
+  it("writes the book 0600 under a 0700 dir", () => {
+    assert.equal(createPaperAccount(store, "desk", 5000), null);
+    const path = join(dir, "sub", "paper-accounts.json");
+    savePaperStore(path, store);
+    assert.equal(statSync(path).mode & 0o777, 0o600);
+    assert.equal(statSync(join(dir, "sub")).mode & 0o777, 0o700);
   });
 });

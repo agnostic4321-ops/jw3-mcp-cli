@@ -755,7 +755,7 @@ export function decideWatchdog(input: WatchdogDecisionInput): WatchdogDecision {
         ? `cancelling ${ownedOrders.length} working order(s) this machine placed`
         : "no working order of this machine's to cancel",
     detail: {
-      targets: ownedOrders.map((o) => ({ orderId: o.orderId, pair: o.pair, market: o.market })),
+      targets: ownedOrders.map((o) => ({ orderId: o.orderId, pair: o.pair, market: o.market, ownershipReason: o.ownershipReason, clientOid: o.clientOid })),
       foreignKept: foreignOrders.map((o) => ({ orderId: o.orderId, pair: o.pair })),
     },
   });
@@ -771,6 +771,12 @@ export function decideWatchdog(input: WatchdogDecisionInput): WatchdogDecision {
   const flattenArmed = input.policy.flattenArmed === true;
   const flattenRequested = input.invocation?.flatten === true;
   const ownedPositions = input.account.positions.filter((p) => p.machineOwned);
+  // Ownership proof for the diary: a machine-owned position is claimed by a
+  // local state file on its pair (the only way positions become ours).
+  const positionProof = (pair: string): string =>
+    input.ownership?.ownedPairs.some((claimed) => claimed.toUpperCase() === pair.toUpperCase())
+      ? `pair ${pair} claimed by a local state file`
+      : "machine-owned position on a claimed pair";
   if (flattenArmed && flattenRequested && ownedPositions.length > 0) {
     decision.actions.push({
       type: "flatten",
@@ -783,6 +789,7 @@ export function decideWatchdog(input: WatchdogDecisionInput): WatchdogDecision {
           side: p.side,
           size: p.size,
           notionalUsd: p.notionalUsd,
+          ownershipProof: positionProof(p.pair),
         })),
       },
     });
@@ -1017,6 +1024,98 @@ export function writeHeartbeatFile(path: string, payload: Record<string, unknown
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* diary: append-only record of every automatic unwind                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The watchdog's diary: one JSON line per automatic cancel/close, appended
+ * (never overwritten). Each line carries the trip codes that caused the
+ * unwind plus the ownership proof that made the order/position ours to
+ * touch, so a later audit can answer why the watchdog killed this order
+ * and how it knew the order was the machine's, without trusting memory.
+ */
+export function watchdogDiaryPath(dir?: string): string {
+  return join(dir ?? configDir(), "watchdog-diary.jsonl");
+}
+
+export type WatchdogDiaryEntry = {
+  /** ISO timestamp of the unwind attempt. */
+  at: string;
+  /** What the watchdog did on its own. */
+  action: "auto-cancel" | "auto-close";
+  /** Exchange the call went to. */
+  exchange: string;
+  pair: string;
+  /** Cancel target (auto-cancel only). */
+  orderId?: string;
+  /** Close target side/size (auto-close only). */
+  side?: string | null;
+  size?: number | null;
+  /** Trip codes live when the unwind ran. */
+  tripCodes: WatchdogTripCode[];
+  /** Why this order/position was ours to touch. */
+  ownershipProof: {
+    reason: string;
+    clientOid?: string | null;
+  };
+  result: "ok" | "failed";
+  /** Venue refusal, when the attempt failed. */
+  error?: string;
+};
+
+/**
+ * Pure: one diary line for an automatic cancel/close attempt. Logged for
+ * EVERY attempt, ok or failed: a failed unwind is the line that matters
+ * most.
+ */
+export function makeWatchdogDiaryEntry(o: {
+  at: string;
+  action: "auto-cancel" | "auto-close";
+  exchange: string;
+  pair: string;
+  orderId?: string;
+  side?: string | null;
+  size?: number | null;
+  tripCodes: WatchdogTripCode[];
+  ownershipReason: string;
+  clientOid?: string | null;
+  result: "ok" | "failed";
+  error?: string;
+}): WatchdogDiaryEntry {
+  return {
+    at: o.at,
+    action: o.action,
+    exchange: o.exchange,
+    pair: o.pair,
+    ...(o.orderId !== undefined ? { orderId: o.orderId } : {}),
+    ...(o.side !== undefined ? { side: o.side } : {}),
+    ...(o.size !== undefined ? { size: o.size } : {}),
+    tripCodes: [...o.tripCodes],
+    ownershipProof: {
+      reason: o.ownershipReason,
+      ...(o.clientOid !== undefined ? { clientOid: o.clientOid } : {}),
+    },
+    result: o.result,
+    ...(o.error !== undefined ? { error: o.error } : {}),
+  };
+}
+
+/**
+ * Append one line to the diary. Returns null on success, the error message
+ * when the append failed (the caller surfaces it; the unwind itself is
+ * never retried or rolled back for a logging failure).
+ */
+export function appendWatchdogDiary(path: string, entry: WatchdogDiaryEntry): string | null {
+  try {
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    writeFileSync(path, `${JSON.stringify(entry)}\n`, { flag: "a" });
+    return null;
+  } catch (e) {
+    return e instanceof Error ? e.message : String(e);
+  }
+}
+
 /** Local state files (scalp/grid/trail) → what this machine owns. */
 const STATE_FILE_RE = /^(?:scalp|grid|trail)_([a-z0-9]+)\.json$/i;
 
@@ -1087,6 +1186,8 @@ export type WatchdogDeps = {
   stateDir?: string;
   /** Config dir (state + heartbeat files). */
   cfgDir?: string;
+  /** Diary file (defaults to the config dir; injected in tests). */
+  diaryPath?: string;
   /** Executor heartbeat file (the dead-man source). */
   executorHeartbeatFile?: string;
   /** Alert sink (Telegram paging in production). */
@@ -1337,6 +1438,15 @@ export async function runWatchdogCycle(
   const { decision } = evalResult;
   let state = evalResult.state;
   const executed: WatchdogCycleResult["executed"] = [];
+  // diary: every automatic cancel/close is appended with the live trip
+  // codes and the ownership proof, for later audit. Append-only, best
+  // effort: a logging failure is surfaced, never acted on.
+  const diaryPath = deps?.diaryPath ?? watchdogDiaryPath(cfgDir);
+  const diaryAt = new Date(now).toISOString();
+  const tripCodes = decision.trips.map((t) => t.code);
+  const diaryFail = (err: string | null): void => {
+    if (err) evalResult.errors.push(`watchdog diary append failed: ${err}`);
+  };
 
   if (decision.shouldAct) {
     for (const action of decision.actions) {
@@ -1347,7 +1457,10 @@ export async function runWatchdogCycle(
         continue;
       }
       if (action.type === "cancel_orders") {
-        const targets = (action.detail?.targets ?? []) as { orderId: string; pair: string; market: string }[];
+        const targets = (action.detail?.targets ?? []) as {
+          orderId: string; pair: string; market: string;
+          ownershipReason?: string; clientOid?: string | null;
+        }[];
         const ok: string[] = [];
         const failed: { orderId: string; error: string }[] = [];
         for (const t of targets) {
@@ -1362,6 +1475,22 @@ export async function runWatchdogCycle(
           } catch (e) {
             failed.push({ orderId: t.orderId, error: e instanceof Error ? e.message : String(e) });
           }
+        }
+        const failedById = new Map(failed.map((f) => [f.orderId, f.error]));
+        for (const t of targets) {
+          const error = failedById.get(t.orderId);
+          diaryFail(appendWatchdogDiary(diaryPath, makeWatchdogDiaryEntry({
+            at: diaryAt,
+            action: "auto-cancel",
+            exchange: opts.exchange ?? "",
+            pair: t.pair,
+            orderId: t.orderId,
+            tripCodes,
+            ownershipReason: t.ownershipReason ?? "machine-owned working order",
+            ...(t.clientOid !== undefined ? { clientOid: t.clientOid } : {}),
+            result: error === undefined ? "ok" : "failed",
+            ...(error !== undefined ? { error } : {}),
+          })));
         }
         const detail: Record<string, unknown> = { cancelled: ok, failed };
         if (decision.serverWriteGate === "blocked" && failed.length > 0) {
@@ -1390,6 +1519,7 @@ export async function runWatchdogCycle(
           pair: string;
           side: string | null;
           size: number | null;
+          ownershipProof?: string;
         }[];
         const closed: string[] = [];
         const failed: { pair: string; error: string }[] = [];
@@ -1415,6 +1545,22 @@ export async function runWatchdogCycle(
           } catch (e) {
             failed.push({ pair: p.pair, error: e instanceof Error ? e.message : String(e) });
           }
+        }
+        const failedByPair = new Map(failed.map((f) => [f.pair, f.error]));
+        for (const p of positions) {
+          const error = failedByPair.get(p.pair ?? "");
+          diaryFail(appendWatchdogDiary(diaryPath, makeWatchdogDiaryEntry({
+            at: diaryAt,
+            action: "auto-close",
+            exchange: opts.exchange ?? "",
+            pair: p.pair ?? "",
+            side: p.side,
+            size: p.size,
+            tripCodes,
+            ownershipReason: p.ownershipProof ?? "machine-owned position",
+            result: error === undefined ? "ok" : "failed",
+            ...(error !== undefined ? { error } : {}),
+          })));
         }
         executed.push({ type: "flatten", ok: failed.length === 0, detail: { closed, failed } });
         continue;

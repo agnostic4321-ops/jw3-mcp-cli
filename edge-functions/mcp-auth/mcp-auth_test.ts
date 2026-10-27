@@ -37,6 +37,33 @@ Deno.test("mcpAuthTail: mirrors the oauth tail computation", () => {
   assertEquals(mcpAuthTail("https://x/functions/v1/mcp-oauth/register", "/mcp-oauth"), "/register");
 });
 
+Deno.test("isValidPkceShape: RFC 7636 43-128 unreserved set", async () => {
+  const { isValidPkceShape } = await import("./router.ts");
+  assertEquals(isValidPkceShape("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"), true);
+  assertEquals(isValidPkceShape("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"), true);
+  assertEquals(isValidPkceShape("a".repeat(128)), true);
+  assertEquals(isValidPkceShape("a".repeat(129)), false);
+  assertEquals(isValidPkceShape("a".repeat(42)), false);
+  assertEquals(isValidPkceShape("short"), false);
+  assertEquals(isValidPkceShape(""), false);
+  assertEquals(isValidPkceShape("has space " + "a".repeat(40)), false);
+  assertEquals(isValidPkceShape("has+plus/" + "a".repeat(40)), false);
+  assertEquals(isValidPkceShape("a.b~c_d-e" + "a".repeat(35)), true);
+  assertEquals(isValidPkceShape(undefined), false);
+  assertEquals(isValidPkceShape(null), false);
+  assertEquals(isValidPkceShape(42), false);
+});
+
+Deno.test("safeEqualStrings: exact match only", async () => {
+  const { safeEqualStrings } = await import("./router.ts");
+  assertEquals(safeEqualStrings("https://app.example/cb", "https://app.example/cb"), true);
+  assertEquals(safeEqualStrings("https://app.example/cb", "https://app.example/cbx"), false);
+  assertEquals(safeEqualStrings("https://app.example/cb", "https://app.example/cB"), false);
+  assertEquals(safeEqualStrings("", ""), true);
+  assertEquals(safeEqualStrings("abc", ""), false);
+  assertEquals(safeEqualStrings("", "abc"), false);
+});
+
 Deno.test("handleToken: refuses harness PAT callers (prevents mcp:read -> trade:execute escalation)", async () => {
   const { handleToken } = await import("./token.ts");
   for (const action of ["list", "create", "rotate", "revoke"]) {

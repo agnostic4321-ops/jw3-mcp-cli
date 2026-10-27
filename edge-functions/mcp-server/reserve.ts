@@ -13,6 +13,7 @@ import {
   validateReserveSweepArgs,
 } from "../_shared/reserve.ts";
 import { toolError, toolOk, type ToolCtx } from "./tools.ts";
+import { logServer, newCorrelationId, upstreamErrorText } from "./tools.ts";
 
 type BalancesAll = {
   accounts?: Record<string, Array<{ asset?: unknown; free?: unknown; total?: unknown }>>;
@@ -23,6 +24,7 @@ export async function handleReserveSweep(
   id: unknown,
   args: Record<string, unknown>,
 ): Promise<Response> {
+  const corr = newCorrelationId();
   const { admin, userId, supaUrl, authHeader, callEdge } = ctx;
   const keepRaw = args.keep === undefined ? 10 : Number(args.keep);
   const vErr = validateReserveSweepArgs({ keep: args.keep ?? 10, currency: args.currency ?? "USDT" });
@@ -48,7 +50,8 @@ export async function handleReserveSweep(
       connectionId: target.connectionId,
     }, 45000)) as BalancesAll;
   } catch (e) {
-    return toolError(id, `upstream: reserve_sweep balances read failed: ${e instanceof Error ? e.message : String(e)}`);
+    logServer(corr, "reserve_sweep balances read failed:", e instanceof Error ? e.message : e);
+    return toolError(id, upstreamErrorText(corr));
   }
   const rows = all?.accounts?.futures ?? [];
   let free = 0;
@@ -73,7 +76,8 @@ export async function handleReserveSweep(
       dryRun: false,
     }, 45000));
   } catch (e) {
-    return toolError(id, `upstream: reserve_sweep leg futures-to-main rejected: ${e instanceof Error ? e.message : String(e)}`);
+    logServer(corr, "reserve_sweep leg futures-to-main rejected:", e instanceof Error ? e.message : e);
+    return toolError(id, upstreamErrorText(corr));
   }
   try {
     legs.push(await callEdge(supaUrl, authHeader, "cex-proxy", {
@@ -85,9 +89,10 @@ export async function handleReserveSweep(
       dryRun: false,
     }, 45000));
   } catch (e) {
+    logServer(corr, "reserve_sweep leg main-to-trade rejected (futures-to-main already moved):", e instanceof Error ? e.message : e);
     return toolError(
       id,
-      `upstream: reserve_sweep leg main-to-trade rejected (futures-to-main already moved — reconcile main before retrying): ${e instanceof Error ? e.message : String(e)}`,
+      upstreamErrorText(corr),
     );
   }
   // Audit trail: agent_action_log rides the enum-safe trade_cex type;

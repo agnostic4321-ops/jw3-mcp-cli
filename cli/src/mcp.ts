@@ -1,11 +1,11 @@
 /** Minimal JSON-RPC 2.0 client for the mcp-server Streamable HTTP surface. */
 import { mcpEndpoint } from "./config.js";
-import { fetchText, HttpError } from "./http.js";
+import { fetchText, HttpError, scrubBearer } from "./http.js";
 
 export class McpError extends Error {
   code: number;
   constructor(code: number, message: string) {
-    super(message);
+    super(scrubBearer(message));
     this.name = "McpError";
     this.code = code;
   }

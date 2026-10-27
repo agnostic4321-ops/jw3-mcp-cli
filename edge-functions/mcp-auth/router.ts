@@ -10,6 +10,34 @@
  */
 export type McpAuthRoute = "oauth" | "token";
 
+/**
+ * PKCE shape check (RFC 7636 s4.1): code_verifier and the S256
+ * code_challenge are 43-128 chars from the unreserved set
+ * [A-Z a-z 0-9 - . _ ~]. Enforced at /authorize and /approve
+ * (challenge) and /token (verifier) so malformed values fail fast
+ * instead of reaching the DB or the hash compare.
+ */
+const PKCE_SHAPE_RE = /^[A-Za-z0-9\-._~]{43,128}$/;
+
+export function isValidPkceShape(s: unknown): s is string {
+  return typeof s === "string" && PKCE_SHAPE_RE.test(s);
+}
+
+/**
+ * Length-flat string compare for allowlist checks (/validate): walks the
+ * full width of the longer input so match and mismatch take the same path.
+ * This flattens the early-exit oracle between "unknown client" and
+ * "redirect mismatch", not a substitute for hashing secrets.
+ */
+export function safeEqualStrings(a: string, b: string): boolean {
+  const n = Math.max(a.length, b.length, 1);
+  let diff = a.length ^ b.length;
+  for (let i = 0; i < n; i++) {
+    diff |= (i < a.length ? a.charCodeAt(i) : 0) ^ (i < b.length ? b.charCodeAt(i) : 0);
+  }
+  return diff === 0;
+}
+
 const OAUTH_TAILS = new Set([
   "/",
   "/register",

@@ -19,6 +19,7 @@ import {
 } from "../kucoin.js";
 import { fail, listConnections, needPat, pickConnection } from "./market.js";
 import { startupGate } from "../reconcile.js";
+import { makeIntentKey, ACTOR_MACHINE } from "./trade.js";
 
 export type GridArgs = {
   exchange: string;
@@ -107,6 +108,40 @@ export async function cmdGridBacktest(opts: {
 
 export function gridContracts(stepUsd: number, center: number, multiplier: number): number {
   return Math.max(1, Math.round(stepUsd / (multiplier * center)));
+}
+
+/**
+ * SINGLE construction site for grid fire tickets (seed + every level).
+ * Machine strategy path: actor "machine" (see ACTOR MAP in trade.ts), and
+ * a per-INTENT idempotency key derived from the level's own shape (mirror
+ * live.ts), so a retried `grid start` reproduces the same keys instead of
+ * stacking a second ladder.
+ */
+export function gridOrderArgs(o: {
+  exchange: string;
+  pair: string;
+  side: "buy" | "sell";
+  contracts: number;
+  price?: number;
+  leverage: number;
+}): Record<string, unknown> {
+  const amount = String(o.contracts);
+  const price = o.price === undefined ? undefined : String(o.price);
+  return {
+    exchange: o.exchange,
+    pair: o.pair,
+    side: o.side,
+    amount,
+    ...(price !== undefined ? { price } : {}),
+    market: "futures",
+    leverage: o.leverage,
+    marginMode: "isolated",
+    idempotency_key: makeIntentKey(
+      "grid",
+      [o.exchange, o.pair, o.side, amount, price ?? "market", o.leverage].join("|"),
+    ),
+    actor: ACTOR_MACHINE,
+  };
 }
 
 async function freeFuturesUsd(exchange: string, pat: string, url?: string): Promise<number> {
@@ -214,12 +249,12 @@ export async function cmdGrid(
     try {
       const seed = (await callTool(
         "execute_trade",
-        {
+        gridOrderArgs({
           exchange: a.exchange, pair: a.pair,
           side: bias === "long" ? "buy" : "sell",
-          amount: String(ladder.seedContracts),
-          market: "futures", leverage: a.leverage, marginMode: "isolated",
-        },
+          contracts: ladder.seedContracts,
+          leverage: a.leverage,
+        }),
         pat, opts.url,
       )) as { orderId?: string };
       seedOrderId = String(seed.orderId ?? "?");
@@ -237,12 +272,13 @@ export async function cmdGrid(
     try {
       const out = (await callTool(
         "execute_trade",
-        {
+        gridOrderArgs({
           exchange: a.exchange, pair: a.pair,
           side: l.side === "buy" ? "buy" : "sell",
-          amount: String(contracts), price: String(px),
-          market: "futures", leverage: a.leverage, marginMode: "isolated",
-        },
+          contracts,
+          price: px,
+          leverage: a.leverage,
+        }),
         pat, opts.url,
       )) as { orderId?: string };
       placed.push({ side: l.side, price: px, orderId: String(out.orderId ?? "?") });

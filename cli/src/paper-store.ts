@@ -14,7 +14,7 @@
  *  - entry fees sit in totalFeesUsd; they reduce cash but never realizedPnl
  *    (realizedPnl is net of EXIT fees only — see closePaperPosition).
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 
@@ -170,8 +170,15 @@ export function loadPaperStore(path: string): PaperStore {
 }
 
 export function savePaperStore(path: string, store: PaperStore): void {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(store, null, 2) + "\n");
+  // Same 0700 dir / 0600 file discipline as config.ts credentials and
+  // cache.ts verdict files: paper books live under the same config dir.
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  writeFileSync(path, JSON.stringify(store, null, 2) + "\n", { mode: 0o600 });
+  try {
+    chmodSync(path, 0o600);
+  } catch {
+    // best-effort; writeFileSync mode already applied on creation
+  }
 }
 
 export function getAccount(store: PaperStore, name: string): PaperAccount | null {

@@ -19,6 +19,7 @@
 import { callTool } from "./mcp.js";
 import { futuresCenter } from "./kucoin.js";
 import { needPat } from "./commands/market.js";
+import { makeIntentKey, ACTOR_MACHINE } from "./commands/trade.js";
 
 export type BounceSide = "long" | "short";
 
@@ -127,6 +128,43 @@ export function bounceTick(low: number, price: number, bouncePct: number): Bounc
 
 const px = (v: number): string => (v >= 100 ? v.toFixed(2) : String(Number(v.toPrecision(5))));
 
+/**
+ * SINGLE construction site for the bounce trigger ticket. Machine strategy
+ * path: actor "machine" (see ACTOR MAP in trade.ts), and a per-INTENT
+ * idempotency key derived from the trigger's own shape (mirror live.ts),
+ * so a retried trigger reproduces the same key instead of double-firing.
+ */
+export function bounceOrderArgs(o: {
+  exchange: string;
+  pair: string;
+  side: BounceSide;
+  /** Entry size in base units. */
+  size: number;
+  /** Explicit per-intent idempotency key (manual override; auto-derived when omitted). */
+  idempotencyKey?: string;
+  /** Explicit actor (machine strategy path; defaults to "machine"). */
+  actor?: string;
+}): Record<string, unknown> {
+  const entrySide = o.side === "short" ? "sell" : "buy";
+  const amount = String(o.size);
+  return {
+    exchange: o.exchange,
+    pair: o.pair,
+    side: entrySide,
+    // BASE units: `execute_trade` divides by the contract multiplier
+    // server-side. `--size` is therefore base units (e.g. IRYS, multiplier
+    // 100: `--size 1200` = 12 contracts). A size below one lot is refused
+    // by the caller rather than by the venue after the fact.
+    amount,
+    market: "futures",
+    idempotency_key: o.idempotencyKey?.trim() ? o.idempotencyKey.trim() : makeIntentKey(
+      "bounce",
+      [o.exchange, o.pair, entrySide, amount].join("|"),
+    ),
+    actor: o.actor?.trim() ? o.actor.trim() : ACTOR_MACHINE,
+  };
+}
+
 export type BounceDeps = {
   markFn?: (base: string) => Promise<number>;
   sleepMs?: (ms: number) => Promise<void>;
@@ -207,18 +245,15 @@ export async function cmdBounce(
     }
     const pat = needPat(opts.pat);
     if (!pat) return;
-    const entrySide = a.side === "short" ? "sell" : "buy";
-    const toolArgs: Record<string, unknown> = {
+    // `sized` was checked above (unsized returns ticket-only), so a.size is
+    // set here; the builder takes a plain number.
+    const size = a.size as number;
+    const toolArgs: Record<string, unknown> = bounceOrderArgs({
       exchange: a.exchange,
       pair: a.pair,
-      side: entrySide,
-      // BASE units — `execute_trade` divides by the contract multiplier
-      // server-side. `--size` is therefore base units (e.g. IRYS, multiplier
-      // 100: `--size 1200` = 12 contracts). Refuse a size below one lot
-      // rather than letting the venue reject it after the fact.
-      amount: String(a.size),
-      market: "futures",
-    };
+      side: a.side,
+      size,
+    });
     try {
       const call = deps?.call ?? callTool;
       const out = await call("execute_trade", toolArgs, pat, opts.url);

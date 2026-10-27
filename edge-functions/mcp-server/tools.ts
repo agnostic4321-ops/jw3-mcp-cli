@@ -37,6 +37,8 @@ export const ANALYZE_MARKET_PARAMETERS = {
     family: { type: "string", enum: ["cex", "dex_perps", "prediction"], description: "Market family matching the planned trade." },
     venue: { type: "string", description: "Venue slug (e.g. binance, kucoin, polymarket). Required for cex unless the snapshot already carries timeframes; prediction defaults to polymarket." },
     symbol: { type: "string", description: "Pair, ticker, or condition id (e.g. BTC/USDT). Required for cex unless the snapshot already carries timeframes; prediction takes the Polymarket conditionId/slug or Opinion market id." },
+    exchange: { type: "string", description: "Alias of venue (chat compat)." },
+    pair: { type: "string", description: "Alias of symbol (chat compat)." },
     snapshot: { type: "object", description: "Optional override: { timeframes: [{tf, candles: [{o,h,l,c,v?}]}] } for cex/dex_perps, { market, brief: [{title, snippet, url, at}] } for prediction. Omit for CEX — the server builds candles itself; dex_perps/prediction need the snapshot shapes above." },
   },
   required: ["family"], additionalProperties: false,
@@ -133,6 +135,12 @@ export const TOOLS = [
       size_usd: { type: "number", description: "Suggested size in USD, must be > 0" },
       thesis: { type: "string", description: "One-paragraph rationale" },
       timeframe: { type: "string", description: "e.g. 4h" },
+      jev_verdict: { type: "string", description: "Optional caller-supplied JEV verdict captured alongside the proposal" },
+      invalidation: { type: "string", description: "Optional invalidation note captured alongside the proposal" },
+      kronos_direction: { type: "string", enum: ["up", "down", "flat"], description: "Optional Kronos oracle vote direction" },
+      kronos_expected_move_pct: { type: "number", description: "Optional Kronos expected move in percent" },
+      kronos_horizon: { type: "number", description: "Optional Kronos horizon (positive integer)" },
+      kronos_captured_at: { type: "string", description: "Optional ISO timestamp of the Kronos vote" },
     }, required: ["pair", "side", "entry", "stop"], additionalProperties: false },
   },
   {
@@ -151,6 +159,7 @@ export const TOOLS = [
     description: "Close an open CEX futures position (or reduce it) with a reduce-only market order. Real money. Needs the trade:execute scope AND user YOLO eligibility; per-call kill-switch/autonomy check. NEVER touch positions the user marked manual unless explicitly asked.",
     inputSchema: { type: "object", properties: {
       exchange: { type: "string", description: "CEX slug, e.g. kucoin" },
+      connectionId: { type: "string", description: "CEX connection id (see list_connections). Takes precedence over exchange." },
       pair: { type: "string", description: "e.g. BTC/USDT" },
       side: { type: "string", enum: ["long", "short"], description: "Side of the OPEN position" },
       size: { type: "string", description: "Base units to close; omit or full size for entire position" },
@@ -163,6 +172,7 @@ export const TOOLS = [
     description: "Arm or replace venue-native SL and/or TP on an open CEX position (spot or futures across binance, bybit, okx, kucoin, gateio, mexc, bitget, bingx, coinbase, kraken). Clears existing stops on the pair and arms the new legs sized against the live position. Needs trade:execute + YOLO eligibility.",
     inputSchema: { type: "object", properties: {
       exchange: { type: "string", description: "CEX slug, e.g. binance, bybit, okx, kucoin, gateio, mexc, bitget, bingx, coinbase, kraken" },
+      connectionId: { type: "string", description: "CEX connection id (see list_connections). Takes precedence over exchange." },
       pair: { type: "string", description: "e.g. BTC/USDT" },
       slPrice: { type: "number", description: "Stop-loss trigger, must be on the correct side of mark" },
       tpPrice: { type: "number", description: "Take-profit trigger" },
@@ -178,6 +188,7 @@ export const TOOLS = [
     description: "Cancel an open CEX order by order id. Needs trade:execute + YOLO eligibility; per-call kill-switch/autonomy check.",
     inputSchema: { type: "object", properties: {
       exchange: { type: "string", description: "CEX slug, e.g. kucoin" },
+      connectionId: { type: "string", description: "CEX connection id (see list_connections). Takes precedence over exchange." },
       orderId: { type: "string", description: "Venue order id to cancel" },
       pair: { type: "string", description: "e.g. BTC/USDT (helps venue routing)" },
       market: { type: "string", enum: ["spot", "futures"] },
@@ -190,6 +201,7 @@ export const TOOLS = [
     description: "List open orders on a CEX connection (spot + futures). Read-only.",
     inputSchema: { type: "object", properties: {
       exchange: { type: "string", description: "CEX slug, e.g. kucoin" },
+      connectionId: { type: "string", description: "CEX connection id (see list_connections). Takes precedence over exchange." },
       pair: { type: "string", description: "Optional filter, e.g. BTC/USDT" },
     }, required: ["exchange"], additionalProperties: false },
   },
@@ -240,6 +252,7 @@ export const TOOLS = [
     description: "Execute a live CEX order immediately (real money) via stored exchange keys. Needs the trade:execute scope AND user YOLO eligibility (kill switch off, autonomy != propose_only); caps enforced per order. Fee-aware: pass stop to refuse stops that cannot survive round-trip fees (min-move gate), or risk_usd to size from risk (needs stop, else an ATR stop from venue klines). Returns the fee estimate + min-move in the result. CEX spot/futures only — never on-chain.",
     inputSchema: { type: "object", properties: {
       exchange: { type: "string", description: "CEX slug, e.g. kucoin" },
+      connectionId: { type: "string", description: "CEX connection id (see list_connections). Takes precedence over exchange." },
       pair: { type: "string", description: "e.g. BTC/USDT" },
       side: { type: "string", enum: ["buy", "sell"] },
       actor: { type: "string", enum: ["machine", "owner"], description: "WHO is placing the order. 'machine' for the trading machine; 'owner' for the account owner's own manual trading. The account is SHARED, so this is what tells the machine's trades from the owner's when a closed trade is reconciled against the machine's daily loss cap. Defaults to 'owner'." },
@@ -251,6 +264,7 @@ export const TOOLS = [
       marginMode: { type: "string", enum: ["cross", "isolated"], description: "Futures only; isolated bounds max loss to position margin (default cross)" },
       stop: { type: "number", description: "Protective stop price (> 0). Gated server-side: stops inside round-trip fees x factor are refused with the shortfall spelled out, and armed as a venue-native SL exit leg after the entry across all CEX venues." },
       tp: { type: "number", description: "Take-profit price (> 0) armed with the entry as a single 100%-share venue-native TP exit leg across all CEX venues. Must sit on the profit side of the entry (long: above, short: below)." },
+      tpPrice: { type: "number", description: "Deprecated alias of tp." },
       tpLegs: { type: "array", description: "Optional 1-3 split take-profit legs ({ price, share }, where share is 1..100 percent of entry size) armed as venue-native TP orders after the entry.", items: { type: "object", properties: { price: { type: "number" }, share: { type: "number" } }, required: ["price", "share"], additionalProperties: false } },
       risk_usd: { type: "number", description: "Max USD loss at the stop — sizes the order as risk_usd / stop distance (needs stop, else ATR stop from venue klines; capped by max_position_usd + lot step)." },
       clientOid: { type: "string", description: "Optional caller-supplied identity tag for the order (max 36 chars, [A-Za-z0-9_-]). A later session uses it to attribute the order to its owner instead of classifying it as foreign/unknown-origin. Omit it and the server generates a random UUID." },
@@ -295,6 +309,381 @@ export const TOOLS = [
     }, required: ["action", "investmentId"], additionalProperties: false },
   },
 ];
+
+/* ── Hardening: budgets, registries, validators, error hygiene ──
+ *
+ * Central home for the pre-dispatch checks in index.ts and the field
+ * validators in execute.ts, so every path enforces one contract. Pure:
+ * no fetch, no clock (except correlation ids), no DB. Small allowlists
+ * here mirror the edge registries by value (venues, defi chains); the
+ * large modules behind them are not copied.
+ */
+
+/** Pre-auth gateway bucket: per-IP, before requireUser. Fail closed. */
+export const GATEWAY_RATE_LIMIT = { limit: 120, windowSec: 60, bucket: "mcp-server:gateway" };
+/** Default per-user bucket for cheap reads. */
+export const DEFAULT_TOOL_RATE_LIMIT = { limit: 60, windowSec: 60, bucket: "mcp-server" };
+/** Exit-arming bucket: a position must always be able to arm its stop. */
+export const PROTECTION_TOOL_RATE_LIMIT = { limit: 120, windowSec: 60, bucket: "mcp-server:protection" };
+/**
+ * Heavy-tool budgets: each gets its own bucket with a lower limit (and a
+ * longer window for daily_prep) so scanners cannot starve protection and
+ * one expensive fan-out cannot eat the whole minute.
+ */
+export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSec: number; bucket: string }> = {
+  daily_prep: { limit: 5, windowSec: 300, bucket: "mcp-server:daily_prep" },
+  analyze_market: { limit: 20, windowSec: 60, bucket: "mcp-server:analyze_market" },
+  list_fills: { limit: 20, windowSec: 60, bucket: "mcp-server:list_fills" },
+  read_closed_pnl: { limit: 20, windowSec: 60, bucket: "mcp-server:read_closed_pnl" },
+  reconcile_realized_pnl: { limit: 10, windowSec: 60, bucket: "mcp-server:reconcile_realized_pnl" },
+};
+
+export function toolRateLimitFor(
+  toolName: string,
+  isProtection: boolean,
+): { limit: number; windowSec: number; bucket: string } {
+  if (isProtection) return PROTECTION_TOOL_RATE_LIMIT;
+  return TOOL_RATE_LIMITS[toolName] ?? DEFAULT_TOOL_RATE_LIMIT;
+}
+
+/**
+ * CEX venue allowlist, mirrored from _shared/venues.ts CEX_VENUES (same
+ * ten, same order). Unknown slugs are rejected before any fan-out.
+ */
+export const MCP_CEX_VENUES: readonly string[] = [
+  "binance",
+  "bybit",
+  "okx",
+  "kucoin",
+  "gateio",
+  "mexc",
+  "bitget",
+  "bingx",
+  "coinbase",
+  "kraken",
+];
+
+export function validateVenueSlug(raw: unknown): { ok: true; venue: string } | { ok: false; error: string } {
+  const v = String(raw ?? "").trim().toLowerCase();
+  if (!v) return { ok: false, error: "venue is required" };
+  if (!(MCP_CEX_VENUES as readonly string[]).includes(v)) {
+    return { ok: false, error: `unknown venue: ${v.slice(0, 32)}` };
+  }
+  return { ok: true, venue: v };
+}
+
+/**
+ * Onchain chain allowlist for the chains csv filter. Canonical slugs only;
+ * "bitcoin" is accepted as an alias for "btc". Non-EVM slugs match exactly.
+ */
+export const MCP_ONCHAIN_CHAINS: readonly string[] = [
+  "ethereum", "arbitrum", "optimism", "polygon", "base", "bnb",
+  "avalanche", "scroll", "unichain", "ink", "linea", "sonic",
+  "hyperevm", "arc", "robinhood", "solana", "ton", "tron", "btc",
+];
+export const MAX_CHAINS_PER_READ = 10;
+export const MAX_CHAINS_RAW_CHARS = 256;
+
+export function validateChainsCsv(raw: unknown): { ok: true; chains: string } | { ok: false; error: string } {
+  const text = String(raw ?? "").trim();
+  if (!text) return { ok: true, chains: "" };
+  if (text.length > MAX_CHAINS_RAW_CHARS) {
+    return { ok: false, error: `chains filter too long (max ${MAX_CHAINS_RAW_CHARS} chars)` };
+  }
+  const parts = text.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean)
+    .map((s) => (s === "bitcoin" ? "btc" : s));
+  if (parts.length > MAX_CHAINS_PER_READ) {
+    return { ok: false, error: `too many chains (max ${MAX_CHAINS_PER_READ})` };
+  }
+  for (const c of parts) {
+    if (c.length > 32 || !(MCP_ONCHAIN_CHAINS as readonly string[]).includes(c)) {
+      return { ok: false, error: `unknown chain: ${c.slice(0, 32)}` };
+    }
+  }
+  return { ok: true, chains: [...new Set(parts)].join(",") };
+}
+
+/** Length cap + charset for CEX pair/symbol selectors. */
+export const MAX_PAIR_CHARS = 32;
+const PAIR_RE = /^[A-Za-z0-9/._:-]{1,32}$/;
+
+export function validatePairSymbol(raw: unknown, field = "pair"): { ok: true; value: string } | { ok: false; error: string } {
+  const v = String(raw ?? "").trim();
+  if (!v) return { ok: false, error: `${field} is required` };
+  if (v.length > MAX_PAIR_CHARS || !PAIR_RE.test(v)) {
+    return { ok: false, error: `${field} has bad shape (1..32 chars, [A-Za-z0-9/._:-])` };
+  }
+  return { ok: true, value: v };
+}
+
+/** Length cap + charset for prediction market selectors. */
+export const MAX_MARKET_ID_CHARS = 256;
+const MARKET_ID_RE = /^[A-Za-z0-9_./:@-]{1,256}$/;
+export const MAX_TOKEN_ID_CHARS = 128;
+const TOKEN_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
+export function validateMarketId(raw: unknown): { ok: true; value: string } | { ok: false; error: string } {
+  const v = String(raw ?? "").trim();
+  if (!v) return { ok: false, error: "market_id is required" };
+  if (v.length > MAX_MARKET_ID_CHARS || !MARKET_ID_RE.test(v)) {
+    return { ok: false, error: "market_id has bad shape (1..256 chars, [A-Za-z0-9_./:@-])" };
+  }
+  return { ok: true, value: v };
+}
+
+export function validateTokenId(raw: unknown): { ok: true; value: string } | { ok: false; error: string } {
+  const v = String(raw ?? "").trim();
+  if (!v) return { ok: false, error: "token_id is required" };
+  if (v.length > MAX_TOKEN_ID_CHARS || !TOKEN_ID_RE.test(v)) {
+    return { ok: false, error: "token_id has bad shape (1..128 chars, [A-Za-z0-9_-])" };
+  }
+  return { ok: true, value: v };
+}
+
+/** Optional wallets csv for predictions scope=positions: capped at 10, 0x only. */
+export const MAX_PREDICTION_WALLETS = 10;
+const EVM_ADDR_RE = /^0x[0-9a-fA-F]{40}$/;
+
+export function validateWalletsCsv(raw: unknown): { ok: true; wallets: string[] } | { ok: false; error: string } {
+  const text = String(raw ?? "").trim();
+  if (!text) return { ok: true, wallets: [] };
+  const parts = text.split(",").map((s) => s.trim()).filter(Boolean);
+  if (parts.length > MAX_PREDICTION_WALLETS) {
+    return { ok: false, error: `too many wallets (max ${MAX_PREDICTION_WALLETS})` };
+  }
+  for (const w of parts) {
+    if (!EVM_ADDR_RE.test(w)) return { ok: false, error: "wallets must be 0x addresses (40 hex)" };
+  }
+  return { ok: true, wallets: parts };
+}
+
+/* ── build_defi_tx validators ── */
+
+export const DEFI_BUILD_ACTIONS: readonly string[] = [
+  "supply", "redeem", "borrow", "repay", "claim", "quote_lp",
+];
+export const DEFI_SUPPORTED_CHAIN_IDS: readonly string[] = [
+  "1", "10", "56", "137", "4663", "5042", "8453", "42161", "43114", "747474",
+];
+export const DEFI_CHAIN_SLUGS: Record<string, string> = {
+  ethereum: "1", bnb: "56", arbitrum: "42161", base: "8453", polygon: "137",
+  optimism: "10", avalanche: "43114", linea: "59144", sonic: "146", solana: "solana",
+};
+const SOL_ADDR_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+/** Upper bound for a human-unit defi amount: refuses fat-finger fortunes. */
+export const MAX_DEFI_AMOUNT = 1e12;
+export const DEFI_SLIPPAGE_DEFAULT_BPS = 50;
+export const DEFI_SLIPPAGE_MAX_BPS = 1000;
+
+export function normalizeDefiChainId(raw: unknown): { ok: true; chainId: string } | { ok: false; error: string } {
+  const v = String(raw ?? "").trim().toLowerCase();
+  if (!v) return { ok: true, chainId: "1" };
+  if (/^\d+$/.test(v) && (DEFI_SUPPORTED_CHAIN_IDS as readonly string[]).includes(v)) {
+    return { ok: true, chainId: v };
+  }
+  const mapped = DEFI_CHAIN_SLUGS[v];
+  if (mapped) return { ok: true, chainId: mapped };
+  return { ok: false, error: `unknown chainId: ${v.slice(0, 32)}` };
+}
+
+export function isWalletAddress(raw: string): boolean {
+  const v = String(raw ?? "").trim();
+  return EVM_ADDR_RE.test(v) || SOL_ADDR_RE.test(v);
+}
+
+export function isEvmTokenAddress(raw: string): boolean {
+  const v = String(raw ?? "").trim();
+  return EVM_ADDR_RE.test(v) || v.toLowerCase() === ZERO_ADDRESS;
+}
+
+export function parseDefiAmount(raw: unknown): number | null {
+  const n = typeof raw === "number" ? raw : Number(String(raw ?? "").trim());
+  if (!Number.isFinite(n) || n <= 0 || n > MAX_DEFI_AMOUNT) return null;
+  return n;
+}
+
+export function clampSlippageBps(raw: unknown): number {
+  const n = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isFinite(n) || n < 0) return DEFI_SLIPPAGE_DEFAULT_BPS;
+  return Math.min(Math.floor(n), DEFI_SLIPPAGE_MAX_BPS);
+}
+
+/* ── Central inputSchema validation ──
+ *
+ * Shallow structural check (type, required, enum, additionalProperties)
+ * run before dispatch so malformed calls fail with -32602 Invalid params.
+ * Deep semantic checks (ranges, cross-field rules) stay in the handlers.
+ */
+
+export type MiniSchema = {
+  type?: string;
+  properties?: Record<string, { type?: string; enum?: unknown[] }>;
+  required?: string[];
+  additionalProperties?: boolean;
+};
+
+function schemaTypeOf(v: unknown): string {
+  if (Array.isArray(v)) return "array";
+  if (v === null) return "null";
+  if (Number.isInteger(v)) return "integer";
+  return typeof v;
+}
+
+export function validateArgsAgainstSchema(
+  schema:
+    | MiniSchema
+    | { type?: unknown; properties?: Record<string, unknown>; required?: unknown; additionalProperties?: unknown }
+    | undefined,
+  args: Record<string, unknown>,
+): string | null {
+  if (!schema || typeof schema !== "object") return null;
+  const loose = schema as { type?: unknown; properties?: unknown; required?: unknown; additionalProperties?: unknown };
+  if (loose.type !== undefined && loose.type !== "object") return "schema mismatch";
+  const props = (loose.properties ?? {}) as Record<string, unknown>;
+  const required = Array.isArray(loose.required) ? loose.required : [];
+  for (const key of required) {
+    if (typeof key !== "string") continue;
+    if (args[key] === undefined || args[key] === null) return `missing required field: ${key}`;
+  }
+  if (loose.additionalProperties === false) {
+    for (const key of Object.keys(args)) {
+      if (!(key in props)) return `unknown field: ${key}`;
+    }
+  }
+  for (const [key, rawRule] of Object.entries(props)) {
+    const v = args[key];
+    if (v === undefined || v === null) continue;
+    const rule = (rawRule ?? {}) as Record<string, unknown>;
+    if (rule.type !== undefined) {
+      const want = String(rule.type);
+      const got = schemaTypeOf(v);
+      const match = want === got || (want === "number" && got === "integer") ||
+        (want === "integer" && got === "integer");
+      if (!match) return `${key} must be a ${want}`;
+    }
+    if (Array.isArray(rule.enum) && !(rule.enum as unknown[]).includes(v as unknown)) {
+      return `${key} has an unsupported value`;
+    }
+  }
+  return null;
+}
+
+/* ── execute_trade declared-field validators ──
+ *
+ * Every field the schema declares is validated here and forwarded by
+ * toProxyOrder; unknown values are rejected, never silently dropped.
+ */
+
+export function validateActor(raw: unknown): { ok: true; actor: "machine" | "owner" | null } | { ok: false; error: string } {
+  if (raw === undefined || raw === null || raw === "") return { ok: true, actor: null };
+  const v = String(raw).trim().toLowerCase();
+  if (v === "machine" || v === "owner") return { ok: true, actor: v };
+  return { ok: false, error: "actor must be machine|owner" };
+}
+
+export const MAX_LEVERAGE = 125;
+
+export function validateLeverage(raw: unknown): { ok: true; leverage: number | null } | { ok: false; error: string } {
+  if (raw === undefined || raw === null) return { ok: true, leverage: null };
+  const n = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isFinite(n) || n < 1 || n > MAX_LEVERAGE) {
+    return { ok: false, error: `leverage must be 1..${MAX_LEVERAGE}` };
+  }
+  return { ok: true, leverage: n };
+}
+
+export function validateMarginMode(raw: unknown): { ok: true; marginMode: string | null } | { ok: false; error: string } {
+  if (raw === undefined || raw === null || raw === "") return { ok: true, marginMode: null };
+  const v = String(raw).trim().toLowerCase();
+  if (v === "cross" || v === "isolated") return { ok: true, marginMode: v };
+  return { ok: false, error: "marginMode must be cross|isolated" };
+}
+
+const CLIENT_OID_RE = /^[A-Za-z0-9_-]{1,36}$/;
+
+export function validateClientOid(raw: unknown): { ok: true; clientOid: string | null } | { ok: false; error: string } {
+  if (raw === undefined || raw === null || raw === "") return { ok: true, clientOid: null };
+  const v = String(raw).trim();
+  if (!CLIENT_OID_RE.test(v)) {
+    return { ok: false, error: "clientOid must be 1..36 chars of [A-Za-z0-9_-]" };
+  }
+  return { ok: true, clientOid: v };
+}
+
+/** Longest idempotency key the log lookup indexes (matches execute-guard). */
+export const IDEMPOTENCY_KEY_MAX_LEN = 160;
+const IDEMPOTENCY_KEY_RE = /^[A-Za-z0-9_:.=-]{1,160}$/;
+
+function shortHash(s: string): string {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
+  return h.toString(16).padStart(8, "0");
+}
+
+/** Normalize a caller-supplied idempotency key; overlong keys truncate
+ *  with a hash suffix so distinct intents never share a lookup key. */
+export function normalizeIdempotencyKey(key: unknown): string | null {
+  if (typeof key !== "string") return null;
+  const t = key.trim();
+  if (!t) return null;
+  if (t.length > 512) return null;
+  for (let i = 0; i < t.length; i++) {
+    const c = t.charCodeAt(i);
+    if (c < 0x20 || c === 0x7f) return null;
+  }
+  if (t.length <= IDEMPOTENCY_KEY_MAX_LEN) {
+    return IDEMPOTENCY_KEY_RE.test(t) ? t : null;
+  }
+  const head = t.slice(0, IDEMPOTENCY_KEY_MAX_LEN - 9);
+  if (!/^[A-Za-z0-9_:.=-]+$/.test(head)) return null;
+  return `${head}-${shortHash(t)}`;
+}
+
+export function validateOrderType(raw: unknown): { ok: true; type: string | null } | { ok: false; error: string } {
+  if (raw === undefined || raw === null || raw === "") return { ok: true, type: null };
+  const v = String(raw).trim().toLowerCase();
+  if (v === "market" || v === "limit") return { ok: true, type: v };
+  return { ok: false, error: "type must be market|limit" };
+}
+
+export function validateTradeSide(raw: unknown): { ok: true; side: string } | { ok: false; error: string } {
+  const v = String(raw ?? "").trim().toLowerCase();
+  if (v === "buy" || v === "sell") return { ok: true, side: v };
+  return { ok: false, error: "side must be buy|sell" };
+}
+
+/* ── daily_prep caps: one brief run stays bounded ── */
+export const MAX_DAILY_PREP_NAMES = 5;
+export const MAX_DAILY_PREP_CONNECTIONS = 10;
+
+/* ── Error hygiene: generic wire text + correlation id ──
+ *
+ * Wire responses carry only a label and a ref; the full server-side
+ * detail goes to the log under the same ref. Raw DB/downstream text
+ * never reaches the client.
+ */
+
+export function newCorrelationId(): string {
+  try {
+    const id = crypto.randomUUID();
+    return id.slice(0, 8);
+  } catch {
+    return Math.floor(Math.random() * 0xffffffff).toString(16).padStart(8, "0");
+  }
+}
+
+export function internalErrorText(corr: string): string {
+  return `internal: request failed (ref ${corr})`;
+}
+
+export function upstreamErrorText(corr: string): string {
+  return `upstream: dependency failed (ref ${corr})`;
+}
+
+export function logServer(corr: string, ...parts: unknown[]): void {
+  console.error(`[mcp-server][${corr}]`, ...parts);
+}
 
 type RpcReq = { jsonrpc?: string; id?: unknown; method?: string; params?: Record<string, unknown> };
 export type { RpcReq };

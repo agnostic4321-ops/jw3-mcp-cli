@@ -2,6 +2,7 @@ import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import {
   BOUNCE_MAX_LOOKBACK_MIN,
+  bounceOrderArgs,
   bouncePctOffLow,
   bounceTick,
   bounceTriggered,
@@ -150,6 +151,20 @@ function scriptedMarks(mids: number[]): () => Promise<number> {
 
 const noSleep = async (): Promise<void> => {};
 
+describe("bounceOrderArgs: machine ticket with key", () => {
+  it("builds a futures market ticket with key and machine actor", () => {
+    const t = bounceOrderArgs({ exchange: "kucoin", pair: "SOL/USDT", side: "short", size: 1200 });
+    assert.equal(t.side, "sell");
+    assert.equal(t.amount, "1200");
+    assert.equal(t.market, "futures");
+    assert.equal(t.actor, "machine");
+    assert.match(String(t.idempotency_key), /^jw3-bounce-[0-9a-f]{8}$/);
+    assert.equal(bounceOrderArgs({ exchange: "kucoin", pair: "SOL/USDT", side: "short", size: 1200 }).idempotency_key, t.idempotency_key);
+    assert.notEqual(bounceOrderArgs({ exchange: "kucoin", pair: "SOL/USDT", side: "long", size: 1200 }).idempotency_key, t.idempotency_key);
+    assert.equal(bounceOrderArgs({ exchange: "kucoin", pair: "SOL/USDT", side: "short", size: 1200, idempotencyKey: "k", actor: "op" }).idempotency_key, "k");
+  });
+});
+
 describe("cmdBounce", () => {
   it("dry run fires WOULD-SHORT on the bounce and never calls", async () => {
     const calls: unknown[] = [];
@@ -250,6 +265,8 @@ describe("cmdBounce", () => {
     assert.equal(calls[0]?.name, "execute_trade");
     assert.equal(calls[0]?.args.side, "sell");
     assert.equal(calls[0]?.args.market, "futures");
+    assert.equal(calls[0]?.args.actor, "machine");
+    assert.match(String(calls[0]?.args.idempotency_key), /^jw3-bounce-[0-9a-f]{8}$/);
     assert.ok(lines.some((l) => l.includes("FIRED SHORT")), lines.join("\n"));
   });
   it("rejects a bad ticket with exit 2 and never polls", async () => {
