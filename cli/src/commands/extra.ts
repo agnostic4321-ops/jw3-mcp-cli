@@ -117,7 +117,7 @@ export async function cmdDailyPrep(opts: { dry: boolean; day?: string; json: boo
   console.log(JSON.stringify(out, null, 0));
 }
 
-export async function cmdRisk(opts: { json: boolean; url?: string; pat?: string }): Promise<void> {
+export async function cmdRisk(opts: { json: boolean; state?: boolean; url?: string; pat?: string }): Promise<void> {
   const pat = needPat(opts.pat);
   if (!pat) return;
   let out: unknown;
@@ -127,22 +127,126 @@ export async function cmdRisk(opts: { json: boolean; url?: string; pat?: string 
     fail(e);
     return;
   }
+  if (opts.state && !opts.json) {
+    console.log(formatRiskState(out));
+    return;
+  }
   console.log(JSON.stringify(out, null, opts.json ? 0 : 2));
 }
 
+/**
+ * Pure one-screen risk-state summary (same posture the app's Risk settings
+ * display reads: kill switch, autonomy, breaker, caps vs daily usage).
+ * Tolerates both the `{ risk_limits }` envelope and a bare row — unknown
+ * fields read as unknown, never as safe.
+ */
+export function formatRiskState(out: unknown): string {
+  const row = (out && typeof out === "object" && "risk_limits" in (out as Record<string, unknown>)
+    ? (out as { risk_limits?: unknown }).risk_limits
+    : out) as Record<string, unknown> | null;
+  if (!row || typeof row !== "object") return "risk state unreadable (no row)";
+  const str = (v: unknown): string =>
+    v === null || v === undefined ? "?" : typeof v === "string" ? v : JSON.stringify(v);
+  const num = (v: unknown): string =>
+    typeof v === "number" && Number.isFinite(v) ? String(v) : "?";
+  const left = (cap: unknown, used: unknown): string => {
+    if (typeof cap !== "number" || !Number.isFinite(cap)) return "uncapped";
+    if (typeof used !== "number" || !Number.isFinite(used)) return `cap ${cap}`;
+    return `${cap - used} left of ${cap}`;
+  };
+  return [
+    `kill_switch=${str((row as Record<string, unknown>).kill_switch_enabled)} autonomy=${str((row as Record<string, unknown>).autonomy_level)}`,
+    `breaker=${str(row.circuit_breaker_enabled)} tripped_at=${str(row.circuit_breaker_tripped_at)}`,
+    `loss: ${str((row as Record<string, unknown>).daily_realized_loss_usd)}/${str((row as Record<string, unknown>).max_daily_loss_usd)} trades: ${str((row as Record<string, unknown>).daily_trade_count)}/${str((row as Record<string, unknown>).max_trades_per_day)}`,
+    `notional: ${left((row as Record<string, unknown>).max_daily_notional_usd, (row as Record<string, unknown>).daily_notional_usd)} position_cap=${num((row as Record<string, unknown>).max_position_usd)} leverage_cap=${num((row as Record<string, unknown>).max_leverage)}`,
+  ].join("\n");
+}
+
+export type DiaryNoteArgs = {
+  day?: string;
+  body: string;
+  mode?: string;
+};
+
+/** Pure validation so bad notes fail before any network call. */
+export function validateDiaryNote(a: DiaryNoteArgs): string | null {
+  if (a.day !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(a.day)) return "day must be YYYY-MM-DD";
+  if (!a.body || !a.body.trim()) return "body required (1..4000 chars)";
+  if (a.body.length > 4000) return "body must be 1..4000 chars (the server cuts longer bodies)";
+  if (a.mode !== undefined && a.mode !== "append" && a.mode !== "replace") {
+    return "mode must be append|replace";
+  }
+  return null;
+}
+
+export async function cmdDiaryNote(
+  args: DiaryNoteArgs,
+  opts: { json: boolean; url?: string; pat?: string },
+): Promise<void> {
+  const pat = needPat(opts.pat);
+  if (!pat) return;
+  const err = validateDiaryNote(args);
+  if (err) {
+    console.error(`Bad diary note: ${err} — nothing was called.`);
+    process.exitCode = 2;
+    return;
+  }
+  const toolArgs: Record<string, unknown> = { body_md: args.body };
+  if (args.day) toolArgs.day = args.day;
+  if (args.mode) toolArgs.mode = args.mode;
+  let out: unknown;
+  try {
+    out = await callTool("propose_diary_note", toolArgs, pat, opts.url);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (/trade:propose/.test(msg)) {
+      console.error(`Refused: ${msg} (mint the scope in Settings → Harness Access).`);
+    } else {
+      fail(e);
+    }
+    process.exitCode = 1;
+    return;
+  }
+  if (opts.json) {
+    console.log(JSON.stringify(out));
+    return;
+  }
+  const r = out as { day?: string; mode?: string; chars?: number };
+  console.log(`Diary note recorded for ${r.day ?? args.day ?? "today"} (${r.mode ?? args.mode ?? "append"}${typeof r.chars === "number" ? `, ${r.chars} chars` : ""}).`);
+}
+
 /** Pure pair passthrough so bad shapes fail before any network call. */
-export function newsParams(opts: { pair?: string }): { params: Record<string, unknown> } {
+export function newsParams(opts: { pair?: string; source?: string; limit?: number; windowHrs?: number }): { params: Record<string, unknown> } | { error: string } {
   const params: Record<string, unknown> = {};
   if (opts.pair) params.pair = opts.pair;
+  if (opts.source) params.source = opts.source;
+  if (opts.limit !== undefined) {
+    if (!Number.isInteger(opts.limit) || opts.limit < 1 || opts.limit > 12) {
+      return { error: "limit must be an integer 1..12" };
+    }
+    params.limit = opts.limit;
+  }
+  if (opts.windowHrs !== undefined) {
+    if (!Number.isFinite(opts.windowHrs) || opts.windowHrs < 1 || opts.windowHrs > 168) {
+      return { error: "window-hrs must be 1..168" };
+    }
+    params.window_hrs = opts.windowHrs;
+  }
   return { params };
 }
 
-export async function cmdNews(opts: { pair?: string; json: boolean; url?: string; pat?: string }): Promise<void> {
+export async function cmdNews(opts: { pair?: string; source?: string; limit?: number; windowHrs?: number; json: boolean; url?: string; pat?: string }): Promise<void> {
   const pat = needPat(opts.pat);
   if (!pat) return;
+  const built = newsParams({ pair: opts.pair, source: opts.source, limit: opts.limit, windowHrs: opts.windowHrs });
+  if ("error" in built) {
+    console.error(`Bad news filter: ${built.error} — nothing was called.`);
+    process.exitCode = 2;
+    return;
+  }
   let out: unknown;
   try {
-    out = await callTool("read_news_brief", newsParams({ pair: opts.pair }).params, pat, opts.url);
+    out = await callTool("read_news_brief", built.params, pat, opts.url);
   } catch (e) {
     fail(e);
     return;

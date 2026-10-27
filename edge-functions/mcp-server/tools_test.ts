@@ -104,10 +104,22 @@ Deno.test("mcp tools: read_news_brief reuses the shared chat schema (no copy)", 
   // External RSS fetch: open-world read, same as the defi reader.
   assert.equal(news.annotations?.readOnlyHint, true);
   assert.equal(news.annotations?.openWorldHint, true);
-  // Pair is optional — omit it for all three assets.
+  // Pair is optional — omit it for all three assets. Source, limit and
+  // window_hrs are optional narrowers on top (feed filter, per-cluster
+  // items, harvest window).
   assert.deepEqual(news.inputSchema.required ?? [], []);
   const props = Object.keys(news.inputSchema.properties ?? {});
-  assert.deepEqual(props, ["pair"]);
+  assert.deepEqual(props, ["pair", "source", "limit", "window_hrs"]);
+});
+
+Deno.test("mcp tools: propose_diary_note mirrors the chat approval write (no new execution)", () => {
+  const note = byName("propose_diary_note");
+  assert.equal(note.inputSchema.required ?? [], ["body_md"]);
+  const props = Object.keys(note.inputSchema.properties ?? {});
+  assert.deepEqual(props, ["day", "body_md", "mode"]);
+  // A diary write is state-changing (append retries would duplicate text).
+  assert.equal(note.annotations?.readOnlyHint, false);
+  assert.equal(note.annotations?.idempotentHint, false);
 });
 
 Deno.test("mcp tools: analyze_market shares the JEV contract + consult_jev shape", () => {

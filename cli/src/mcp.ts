@@ -106,6 +106,7 @@ const NO_RETRY_TOOLS = new Set([
   "cancel_order",
   "reserve_sweep",
   "propose_trade",
+  "propose_diary_note",
 ]);
 
 /**

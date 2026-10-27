@@ -148,6 +148,17 @@ export const TOOLS = [
     }, required: ["pair", "side", "entry", "stop"], additionalProperties: false },
   },
   {
+    name: "propose_diary_note",
+    title: "Propose diary note",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    description: "Append (default) or replace a markdown note on one diary day (diary_day_notes upsert — the same append/replace write the agent-chat approval path and daily_prep perform). Diary-only: never executes a trade, never moves funds. Needs the trade:propose scope (PAT).",
+    inputSchema: { type: "object", properties: {
+      day: { type: "string", description: "Day in YYYY-MM-DD format (default today UTC)" },
+      body_md: { type: "string", description: "Markdown note content, 1..4000 chars (longer bodies are cut)" },
+      mode: { type: "string", enum: ["append", "replace"], description: "append (default) or replace the day's note" },
+    }, required: ["body_md"], additionalProperties: false },
+  },
+  {
     name: "read_onchain_balances",
     title: "Read onchain balances",
     annotations: { readOnlyHint: true, openWorldHint: true },

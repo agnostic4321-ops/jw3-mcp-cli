@@ -44,7 +44,7 @@ import { cmdOracle } from "./commands/oracle.js";
 import { cmdDegen, cmdDegenRecord, cmdPaperStats } from "./commands/degen.js";
 import { cmdTtm } from "./commands/ttm.js";
 import { cmdSpikes } from "./commands/spikes.js";
-import { cmdConnections, cmdDailyPrep, cmdDiary, cmdNews, cmdPropose, cmdRisk } from "./commands/extra.js";
+import { cmdConnections, cmdDailyPrep, cmdDiary, cmdDiaryNote, cmdNews, cmdPropose, cmdRisk } from "./commands/extra.js";
 import { cmdFills, cmdPnl } from "./commands/fills.js";
 import { cmdPnlReconcile } from "./commands/pnl-reconcile.js";
 import {
@@ -133,9 +133,10 @@ Usage:
   jw3 poly scan [--json]
   jw3 connections [--json]
   jw3 diary [--day YYYY-MM-DD | --start-day YYYY-MM-DD --end-day YYYY-MM-DD] [--json]
+  jw3 diary-note --body "..." [--day YYYY-MM-DD] [--mode append|replace] [--json]
   jw3 daily-prep [--dry] [--day YYYY-MM-DD] [--json]
-  jw3 risk [--json]
-  jw3 news [--pair BTC] [--json]
+  jw3 risk [--state] [--json]
+  jw3 news [--pair BTC] [--source CoinDesk] [--limit 6] [--window-hrs 48] [--json]
   jw3 propose --pair BTC/USDT --side long --entry … --stop … [--asset BTC] [--venue kucoin] [--size-usd …] [--thesis …] [--timeframe 4h] [--json]
   jw3 market --exchange binance --pair BTC/USDT [--json]
   jw3 screener [--exchange binance] [--json]
@@ -1116,6 +1117,18 @@ async function main(): Promise<void> {
       await cmdDiary({ day: flagOf(g.rest, "--day"), startDay: flagOf(g.rest, "--start-day") ?? flagOf(g.rest, "--start"), endDay: flagOf(g.rest, "--end-day") ?? flagOf(g.rest, "--end"), json: g.json, url: g.url, pat: g.pat });
       return;
     }
+    if (cmd === "diary-note") {
+      const g = globals(tail);
+      await cmdDiaryNote(
+        {
+          day: flagOf(g.rest, "--day"),
+          body: flagOf(g.rest, "--body") ?? "",
+          mode: flagOf(g.rest, "--mode"),
+        },
+        { json: g.json, url: g.url, pat: g.pat },
+      );
+      return;
+    }
     if (cmd === "daily-prep") {
       const g = globals(tail);
       await cmdDailyPrep({ dry: tail.includes("--dry"), day: flagOf(g.rest, "--day"), json: g.json, url: g.url, pat: g.pat });
@@ -1123,12 +1136,22 @@ async function main(): Promise<void> {
     }
     if (cmd === "risk") {
       const g = globals(tail);
-      await cmdRisk({ json: g.json, url: g.url, pat: g.pat });
+      await cmdRisk({ json: g.json, state: g.rest.includes("--state"), url: g.url, pat: g.pat });
       return;
     }
     if (cmd === "news") {
       const g = globals(tail);
-      await cmdNews({ pair: flagOf(g.rest, "--pair"), json: g.json, url: g.url, pat: g.pat });
+      const limitRaw = flagOf(g.rest, "--limit");
+      const windowRaw = flagOf(g.rest, "--window-hrs") ?? flagOf(g.rest, "--window");
+      await cmdNews({
+        pair: flagOf(g.rest, "--pair"),
+        source: flagOf(g.rest, "--source"),
+        limit: limitRaw === undefined ? undefined : Number(limitRaw),
+        windowHrs: windowRaw === undefined ? undefined : Number(windowRaw),
+        json: g.json,
+        url: g.url,
+        pat: g.pat,
+      });
       return;
     }
     if (cmd === "propose") {

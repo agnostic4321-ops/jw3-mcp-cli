@@ -69,6 +69,7 @@ import {
   executeDefiRead,
   executeDiaryDayRangeRead,
   executeMarketRead,
+  executeOpenOrdersRead,
   executeNewsBriefRead,
   executeOrderRead,
   executePositionsBalancesRead,
@@ -358,7 +359,21 @@ Deno.serve(withHandler("mcp-server", async (req) => {
             }
             return toolOk(body.id, await executePredictionsRead(args, readDeps));
           }
-          return toolError(body.id, "validation: read_live_datum kind must be positions|balances|market|screener|onchain|order|predictions");
+          if (kind === "open_orders") {
+            // Shared open-orders reader (same targets/slim as agent-chat).
+            const pairRaw = typeof args.symbol === "string" ? args.symbol : (typeof args.pair === "string" ? args.pair : "");
+            if (pairRaw.trim() !== "") {
+              const symCheck = validatePairSymbol(pairRaw, "symbol");
+              if (!symCheck.ok) return toolError(body.id, `validation: read_live_datum open_orders: ${symCheck.error}`);
+              args = { ...args, symbol: symCheck.value };
+            }
+            const catRaw = typeof args.category === "string" ? args.category.toLowerCase() : "";
+            if (catRaw !== "" && catRaw !== "spot" && catRaw !== "linear") {
+              return toolError(body.id, "validation: read_live_datum open_orders category must be spot|linear");
+            }
+            return readResult(body.id, "open_orders read", await executeOpenOrdersRead(args, readDeps));
+          }
+          return toolError(body.id, "validation: read_live_datum kind must be positions|balances|open_orders|market|screener|onchain|order|predictions");
         }
         if (name === "analyze_market") {
           // JEV verdict TTL (15 min per market): a fresh-window read is
@@ -540,6 +555,42 @@ Deno.serve(withHandler("mcp-server", async (req) => {
           }).select("id").single();
           if (error || !data) return toolError(body.id, "upstream: could not record proposal");
           return toolOk(body.id, { setup_id: (data as { id: string }).id, status: "proposed", approve_in: "Diary → setups → Send to ticket" });
+        }
+        if (name === "propose_diary_note") {
+          // Diary-only write (same diary_day_notes append/replace upsert the
+          // agent-chat approval path and daily_prep perform — no new
+          // execution). Reads ride mcp:read; the write needs trade:propose
+          // (PAT) — JWT callers keep legacy behavior, same as daily_prep.
+          if (viaPat && !scopes.includes("trade:propose") && !scopes.includes("trade:execute")) {
+            return toolError(body.id, "auth: propose_diary_note needs the trade:propose scope (mint it in Settings → Harness Access)");
+          }
+          const dayRaw = typeof args.day === "string" ? args.day : "";
+          const day = /^\d{4}-\d{2}-\d{2}$/.test(dayRaw) ? dayRaw : new Date().toISOString().slice(0, 10);
+          const bodyMd = typeof args.body_md === "string" ? args.body_md.slice(0, 4000) : "";
+          if (!bodyMd.trim()) {
+            return toolError(body.id, "validation: propose_diary_note needs body_md (1..4000 chars)");
+          }
+          const mode = args.mode === undefined || args.mode === null || args.mode === "" ? "append" : args.mode;
+          if (mode !== "append" && mode !== "replace") {
+            return toolError(body.id, "validation: propose_diary_note mode must be append|replace");
+          }
+          try {
+            const { data: existing } = await admin.from("diary_day_notes")
+              .select("body_md").eq("user_id", userId).eq("day", day).maybeSingle() as { data: { body_md: string | null } | null };
+            const merged = mode === "replace"
+              ? bodyMd
+              : [existing?.body_md, bodyMd].filter((x) => typeof x === "string" && x).join("\n\n");
+            const { error } = await admin.from("diary_day_notes")
+              .upsert({ user_id: userId, day, body_md: merged }, { onConflict: "user_id,day" });
+            if (error) {
+              logServer(corr, "diary-note write failed:", error.message ?? error);
+              return toolError(body.id, "upstream: could not record diary note");
+            }
+            return toolOk(body.id, { day, mode, chars: merged.length, recorded: true });
+          } catch (e) {
+            logServer(corr, "diary-note write failed:", e instanceof Error ? e.message : e);
+            return toolError(body.id, upstreamErrorText(corr));
+          }
         }
         if (name === "read_onchain_balances") {
           // Alias of read_live_datum kind=onchain (same reader, same shape).
