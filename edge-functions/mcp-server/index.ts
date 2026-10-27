@@ -40,6 +40,11 @@ import {
   DEFI_BUILD_ACTIONS,
   GATEWAY_RATE_LIMIT,
   MAX_DEFI_AMOUNT,
+  MAX_PROPOSAL_ADDRESS_CHARS,
+  MAX_PROPOSAL_JEV_CHARS,
+  MAX_PROPOSAL_QUESTION_CHARS,
+  MAX_PROPOSAL_RATIONALE_CHARS,
+  MAX_PROPOSAL_THESIS_CHARS,
   clampSlippageBps,
   internalErrorText,
   isEvmTokenAddress,
@@ -53,7 +58,12 @@ import {
   validateArgsAgainstSchema,
   validateChainsCsv,
   validateMarketId,
+  validateOptionalPositiveNumber,
   validatePairSymbol,
+  validatePositiveNumber,
+  validatePriceTargets,
+  validateProposalText,
+  validateProposeSide,
   validateTokenId,
   validateVenueSlug,
   validateWalletsCsv,
@@ -591,6 +601,340 @@ Deno.serve(withHandler("mcp-server", async (req) => {
             logServer(corr, "diary-note write failed:", e instanceof Error ? e.message : e);
             return toolError(body.id, upstreamErrorText(corr));
           }
+        }
+        if (name === "propose_trade_ideas") {
+          // Batch of 1–3 personalized ideas. One setup row per idea (so the
+          // Diary can Send-to-ticket each independently) plus one batch trail
+          // row. Approval cards only — nothing here executes or moves funds.
+          if (viaPat && !scopes.includes("trade:propose") && !scopes.includes("trade:execute")) {
+            return toolError(body.id, "auth: propose_trade_ideas needs the trade:propose scope (mint it in Settings → Harness Access)");
+          }
+          const ideasRaw = args.ideas;
+          if (!Array.isArray(ideasRaw) || ideasRaw.length < 1 || ideasRaw.length > 3) {
+            return toolError(body.id, "validation: propose_trade_ideas needs ideas[1..3], best-first");
+          }
+          const rationale = validateProposalText(args.rationale, "rationale", MAX_PROPOSAL_RATIONALE_CHARS);
+          if (!rationale.ok) return toolError(body.id, `validation: propose_trade_ideas: ${rationale.error}`);
+          const jevRaw = typeof args.jev_verdict === "string" ? args.jev_verdict.trim() : "";
+          if (jevRaw.length > MAX_PROPOSAL_JEV_CHARS) {
+            return toolError(body.id, `validation: propose_trade_ideas jev_verdict too long (max ${MAX_PROPOSAL_JEV_CHARS} chars)`);
+          }
+          const batchId = newCorrelationId();
+          const rows: Array<Record<string, unknown>> = [];
+          for (let i = 0; i < ideasRaw.length; i++) {
+            const idea = (ideasRaw[i] ?? {}) as Record<string, unknown>;
+            const tag = `ideas[${i}]`;
+            const pairRaw = typeof idea.pair === "string" ? idea.pair.trim() : "";
+            if (!pairRaw) return toolError(body.id, `validation: propose_trade_ideas ${tag} needs pair (e.g. BTC/USDT)`);
+            const pairCheck = validatePairSymbol(pairRaw);
+            if (!pairCheck.ok) return toolError(body.id, `validation: propose_trade_ideas ${tag}: ${pairCheck.error}`);
+            const side = validateProposeSide(idea.side);
+            if (!side.ok) return toolError(body.id, `validation: propose_trade_ideas ${tag}: ${side.error}`);
+            const entry = validatePositiveNumber(idea.entry, `${tag}.entry`);
+            if (!entry.ok) return toolError(body.id, `validation: ${entry.error}`);
+            const stop = validatePositiveNumber(idea.stop, `${tag}.stop`);
+            if (!stop.ok) return toolError(body.id, `validation: ${stop.error}`);
+            const longSide = side.side === "buy";
+            if (longSide ? stop.value >= entry.value : stop.value <= entry.value) {
+              return toolError(body.id, `validation: propose_trade_ideas ${tag}: stop must sit on the loss side of entry (long: stop<entry, short: stop>entry)`);
+            }
+            const targets = validatePriceTargets(idea.targets, `${tag}.targets`);
+            if (!targets.ok) return toolError(body.id, `validation: ${targets.error}`);
+            for (const t of targets.targets) {
+              if (longSide ? t.price <= entry.value : t.price >= entry.value) {
+                return toolError(body.id, `validation: propose_trade_ideas ${tag}: every target must sit on the profit side of entry`);
+              }
+            }
+            const thesis = validateProposalText(idea.thesis, `${tag}.thesis`, MAX_PROPOSAL_THESIS_CHARS);
+            if (!thesis.ok) return toolError(body.id, `validation: ${thesis.error}`);
+            const sizeRaw = idea.size_hint_usd ?? idea.size_usd;
+            let sizeUsd: number | null = null;
+            if (sizeRaw !== undefined && sizeRaw !== null && sizeRaw !== "") {
+              const sz = validatePositiveNumber(sizeRaw, `${tag}.size_hint_usd`);
+              if (!sz.ok) return toolError(body.id, `validation: ${sz.error}`);
+              sizeUsd = sz.value;
+            }
+            rows.push({
+              user_id: userId, mode: "live",
+              venue: typeof idea.venue === "string" && idea.venue.trim() ? idea.venue.trim().slice(0, 32) : null,
+              exchange: typeof idea.exchange === "string" && idea.exchange.trim() ? idea.exchange.trim().slice(0, 32) : null,
+              asset: typeof idea.asset === "string" && idea.asset.trim() ? idea.asset.trim().slice(0, 32) : pairRaw.split("/")[0] ?? null,
+              pair: pairRaw, side: side.side, entry: entry.value, stop: stop.value,
+              targets: targets.targets,
+              timeframe: typeof idea.timeframe === "string" && idea.timeframe.trim() ? idea.timeframe.trim().slice(0, 16) : null,
+              thesis: thesis.value, size_usd: sizeUsd,
+              indicators: {
+                source: "mcp-harness", proposal_kind: "trade_idea",
+                batch_id: batchId, batch_index: i, batch_total: ideasRaw.length,
+                jev_verdict: jevRaw || null, rationale: rationale.value,
+              },
+              status: "proposed",
+            });
+          }
+          const inserted: string[] = [];
+          for (const row of rows) {
+            const { data, error } = await admin.from("trade_setups").insert(row).select("id").single();
+            if (error || !data) {
+              logServer(corr, "propose_trade_ideas insert failed:", error?.message ?? "no row");
+              return toolError(body.id, "upstream: could not record idea proposals");
+            }
+            inserted.push((data as { id: string }).id);
+          }
+          try {
+            await admin.from("agent_action_log").insert({
+              user_id: userId, action_type: "trade_ideas", status: "proposed",
+              params: { tool: "propose_trade_ideas", args, batch_id: batchId, idea_ids: inserted },
+              decided_via: "mcp-propose",
+            });
+          } catch { /* trail is best-effort; the setup rows already persist */ }
+          return toolOk(body.id, { batch_id: batchId, idea_ids: inserted, count: inserted.length, status: "proposed", approve_in: "Diary → setups → Send to ticket" });
+        }
+        if (name === "propose_bracket") {
+          // Atomic bracket card: one entry + one stop + 1–3 OCO take-profits.
+          // Recorded as a proposed setup row — approval only, never executed.
+          if (viaPat && !scopes.includes("trade:propose") && !scopes.includes("trade:execute")) {
+            return toolError(body.id, "auth: propose_bracket needs the trade:propose scope (mint it in Settings → Harness Access)");
+          }
+          const venueCheck = validateVenueSlug(args.exchange);
+          if (!venueCheck.ok) return toolError(body.id, `validation: propose_bracket: ${venueCheck.error}`);
+          const pairRaw = typeof args.pair === "string" ? args.pair.trim() : "";
+          if (!pairRaw) return toolError(body.id, "validation: propose_bracket needs pair (e.g. BTC/USDT)");
+          const pairCheck = validatePairSymbol(pairRaw);
+          if (!pairCheck.ok) return toolError(body.id, `validation: propose_bracket: ${pairCheck.error}`);
+          const side = validateProposeSide(args.side);
+          if (!side.ok) return toolError(body.id, `validation: propose_bracket: ${side.error}`);
+          const entryTypeRaw = typeof args.entry_type === "string" ? args.entry_type.trim().toLowerCase() : "";
+          if (entryTypeRaw !== "market" && entryTypeRaw !== "limit") {
+            return toolError(body.id, "validation: propose_bracket entry_type must be market|limit");
+          }
+          let entryPrice: number | null = null;
+          const hasEntryPrice = args.entry_price !== undefined && args.entry_price !== null && args.entry_price !== "";
+          if (entryTypeRaw === "limit" || hasEntryPrice) {
+            const ep = validatePositiveNumber(args.entry_price, "entry_price");
+            if (!ep.ok) return toolError(body.id, "validation: propose_bracket needs entry_price > 0 for a limit entry (omit it for a market entry)");
+            entryPrice = ep.value;
+          }
+          const amountRaw = typeof args.amount === "string" ? args.amount.trim() : "";
+          if (!amountRaw || !Number.isFinite(parseFloat(amountRaw)) || parseFloat(amountRaw) <= 0) {
+            return toolError(body.id, "validation: propose_bracket needs amount > 0 in base units");
+          }
+          const stop = validatePositiveNumber(args.stop_price, "stop_price");
+          if (!stop.ok) return toolError(body.id, `validation: propose_bracket: ${stop.error}`);
+          const legs = validatePriceTargets(args.take_profits, "take_profits");
+          if (!legs.ok) return toolError(body.id, `validation: propose_bracket: ${legs.error}`);
+          const fee = validateOptionalPositiveNumber(args.fee_usd, "fee_usd");
+          if (!fee.ok) return toolError(body.id, `validation: propose_bracket: ${fee.error}`);
+          const rationale = validateProposalText(args.rationale, "rationale", MAX_PROPOSAL_RATIONALE_CHARS);
+          if (!rationale.ok) return toolError(body.id, `validation: propose_bracket: ${rationale.error}`);
+          const longSide = side.side === "buy";
+          if (entryPrice !== null) {
+            if (longSide ? stop.value >= entryPrice : stop.value <= entryPrice) {
+              return toolError(body.id, "validation: propose_bracket: stop must sit on the loss side of the entry (long: stop<entry, short: stop>entry)");
+            }
+            for (const t of legs.targets) {
+              if (longSide ? t.price <= entryPrice : t.price >= entryPrice) {
+                return toolError(body.id, "validation: propose_bracket: every take-profit must sit on the profit side of the entry");
+              }
+            }
+          }
+          const { data, error } = await admin.from("trade_setups").insert({
+            user_id: userId, mode: "live",
+            venue: venueCheck.venue, exchange: venueCheck.venue,
+            asset: pairRaw.split("/")[0] ?? null, pair: pairRaw, side: side.side,
+            entry: entryPrice, stop: stop.value, targets: legs.targets,
+            thesis: rationale.value,
+            indicators: {
+              source: "mcp-harness", proposal_kind: "bracket",
+              entry_type: entryTypeRaw, amount: amountRaw, fee_usd: fee.value,
+              rationale: rationale.value,
+            },
+            status: "proposed",
+          }).select("id").single();
+          if (error || !data) {
+            logServer(corr, "propose_bracket insert failed:", error?.message ?? "no row");
+            return toolError(body.id, "upstream: could not record bracket proposal");
+          }
+          const setupId = (data as { id: string }).id;
+          try {
+            await admin.from("agent_action_log").insert({
+              user_id: userId, action_type: "bracket", status: "proposed",
+              params: { tool: "propose_bracket", args, setup_id: setupId },
+              decided_via: "mcp-propose",
+            });
+          } catch { /* trail is best-effort; the setup row already persists */ }
+          return toolOk(body.id, { setup_id: setupId, status: "proposed", approve_in: "Diary → setups → Send to ticket" });
+        }
+        if (name === "propose_predict_market") {
+          // JEV-gated like the chat card: without the family=prediction
+          // verdict there is no grounded edge to propose from — refuse with
+          // the pointer instead of recording a guess.
+          if (viaPat && !scopes.includes("trade:propose") && !scopes.includes("trade:execute")) {
+            return toolError(body.id, "auth: propose_predict_market needs the trade:propose scope (mint it in Settings → Harness Access)");
+          }
+          const marketCheck = validateMarketId(args.market_id);
+          if (!marketCheck.ok) return toolError(body.id, `validation: propose_predict_market: ${marketCheck.error}`);
+          const sideRaw = typeof args.side === "string" ? args.side.trim().toLowerCase() : "";
+          if (sideRaw !== "yes" && sideRaw !== "no") {
+            return toolError(body.id, "validation: propose_predict_market side must be yes|no");
+          }
+          const rationale = validateProposalText(args.rationale, "rationale", MAX_PROPOSAL_RATIONALE_CHARS);
+          if (!rationale.ok) return toolError(body.id, `validation: propose_predict_market: ${rationale.error}`);
+          const jev = validateProposalText(args.jev_verdict, "jev_verdict", MAX_PROPOSAL_JEV_CHARS);
+          if (!jev.ok) {
+            return toolError(body.id, "validation: propose_predict_market needs jev_verdict — run analyze_market family=prediction first and cite its verdict");
+          }
+          const venueRaw = typeof args.venue === "string" ? args.venue.trim().toLowerCase() : "";
+          const venue = venueRaw === "" ? "polymarket" : venueRaw;
+          if (venue !== "polymarket" && venue !== "opinion") {
+            return toolError(body.id, "validation: propose_predict_market venue must be polymarket|opinion");
+          }
+          let amount: number | null = null;
+          if (args.amount !== undefined && args.amount !== null && args.amount !== "") {
+            const a = validatePositiveNumber(args.amount, "amount");
+            if (!a.ok) return toolError(body.id, `validation: propose_predict_market: ${a.error}`);
+            amount = a.value;
+          }
+          let confidence: number | null = null;
+          if (args.confidence !== undefined && args.confidence !== null && args.confidence !== "") {
+            const c = typeof args.confidence === "number" ? args.confidence : Number(args.confidence);
+            if (!Number.isFinite(c) || c < 0 || c > 1) {
+              return toolError(body.id, "validation: propose_predict_market confidence must be 0..1");
+            }
+            confidence = c;
+          }
+          const questionRaw = typeof args.question === "string" ? args.question.trim() : "";
+          if (questionRaw.length > MAX_PROPOSAL_QUESTION_CHARS) {
+            return toolError(body.id, `validation: propose_predict_market question too long (max ${MAX_PROPOSAL_QUESTION_CHARS} chars)`);
+          }
+          const { data, error } = await admin.from("agent_analyses").insert({
+            user_id: userId,
+            asset: marketCheck.value,
+            sentiment: sideRaw === "yes" ? "bullish" : "bearish",
+            confidence,
+            summary: ((questionRaw ? `${questionRaw} — ` : "") + rationale.value).slice(0, 2000),
+            indicators: {
+              source: "mcp-harness", proposal_kind: "predict_market",
+              market_id: marketCheck.value, side: sideRaw, venue,
+              amount, jev_verdict: jev.value,
+            },
+            setup_id: null,
+          }).select("id").single();
+          if (error || !data) {
+            logServer(corr, "propose_predict_market insert failed:", error?.message ?? "no row");
+            return toolError(body.id, "upstream: could not record prediction proposal");
+          }
+          const analysisId = (data as { id: string }).id;
+          try {
+            await admin.from("agent_action_log").insert({
+              user_id: userId, action_type: "predict_market", status: "proposed",
+              params: { tool: "propose_predict_market", args, analysis_id: analysisId },
+              decided_via: "mcp-propose",
+            });
+          } catch { /* trail is best-effort; the analysis row already persists */ }
+          return toolOk(body.id, { analysis_id: analysisId, status: "proposed", approve_in: "Predictions → ticket (proposal recorded — review and place in-app)" });
+        }
+        if (name === "propose_close_all_positions") {
+          // Emergency-flatten proposal. Records the intent only — no order is
+          // placed, nothing is cancelled. The user reviews every leg in-app.
+          if (viaPat && !scopes.includes("trade:propose") && !scopes.includes("trade:execute")) {
+            return toolError(body.id, "auth: propose_close_all_positions needs the trade:propose scope (mint it in Settings → Harness Access)");
+          }
+          const rationale = validateProposalText(args.rationale, "rationale", MAX_PROPOSAL_RATIONALE_CHARS);
+          if (!rationale.ok) return toolError(body.id, `validation: propose_close_all_positions: ${rationale.error}`);
+          let exchange: string | null = null;
+          if (typeof args.exchange === "string" && args.exchange.trim() !== "") {
+            const venueCheck = validateVenueSlug(args.exchange);
+            if (!venueCheck.ok) return toolError(body.id, `validation: propose_close_all_positions: ${venueCheck.error}`);
+            exchange = venueCheck.venue;
+          }
+          let pair: string | null = null;
+          if (typeof args.pair === "string" && args.pair.trim() !== "") {
+            const pairCheck = validatePairSymbol(args.pair.trim());
+            if (!pairCheck.ok) return toolError(body.id, `validation: propose_close_all_positions: ${pairCheck.error}`);
+            pair = pairCheck.value;
+          }
+          const orderTypeRaw = typeof args.order_type === "string" && args.order_type.trim() !== ""
+            ? args.order_type.trim().toLowerCase() : "market";
+          if (orderTypeRaw !== "market" && orderTypeRaw !== "limit") {
+            return toolError(body.id, "validation: propose_close_all_positions order_type must be market|limit");
+          }
+          let limitPrice: string | null = null;
+          const limitRaw = typeof args.limit_price === "string" ? args.limit_price.trim() : "";
+          if (orderTypeRaw === "limit") {
+            if (!limitRaw || !Number.isFinite(parseFloat(limitRaw)) || parseFloat(limitRaw) <= 0) {
+              return toolError(body.id, "validation: propose_close_all_positions needs limit_price > 0 for order_type=limit");
+            }
+            limitPrice = limitRaw;
+          } else if (limitRaw) {
+            return toolError(body.id, "validation: propose_close_all_positions limit_price needs order_type=limit (a market flatten takes no price)");
+          }
+          const { data, error } = await admin.from("agent_action_log").insert({
+            user_id: userId, action_type: "close_position", status: "proposed",
+            params: {
+              tool: "propose_close_all_positions",
+              args: { exchange, pair, order_type: orderTypeRaw, limit_price: limitPrice, rationale: rationale.value },
+            },
+            decided_via: "mcp-propose",
+          }).select("id").single();
+          if (error || !data) {
+            logServer(corr, "propose_close_all_positions insert failed:", error?.message ?? "no row");
+            return toolError(body.id, "upstream: could not record close-all proposal");
+          }
+          return toolOk(body.id, {
+            proposal_id: (data as { id: string }).id, status: "proposed",
+            scope: { exchange, pair },
+            approve_in: "Trading → Positions → Close all (review every leg before approving)",
+          });
+        }
+        if (name === "propose_withdraw") {
+          // CEX-withdrawal proposal. Trade-only keys mean the venue can never
+          // execute this — approval pre-fills the exchange withdrawal form and
+          // the user completes it inside their exchange account. Records the
+          // proposal only; no funds move.
+          if (viaPat && !scopes.includes("trade:propose") && !scopes.includes("trade:execute")) {
+            return toolError(body.id, "auth: propose_withdraw needs the trade:propose scope (mint it in Settings → Harness Access)");
+          }
+          const venueCheck = validateVenueSlug(args.source_exchange);
+          if (!venueCheck.ok) return toolError(body.id, `validation: propose_withdraw: ${venueCheck.error}`);
+          const asset = validateProposalText(args.asset, "asset", 32);
+          if (!asset.ok) return toolError(body.id, `validation: propose_withdraw: ${asset.error}`);
+          const network = validateProposalText(args.network, "network", 32);
+          if (!network.ok) return toolError(body.id, `validation: propose_withdraw: ${network.error}`);
+          const amountRaw = typeof args.amount === "string" ? args.amount.trim() : "";
+          if (!amountRaw || !Number.isFinite(parseFloat(amountRaw)) || parseFloat(amountRaw) <= 0) {
+            return toolError(body.id, "validation: propose_withdraw needs amount > 0 in human units");
+          }
+          const dest = validateProposalText(args.dest_address, "dest_address", MAX_PROPOSAL_ADDRESS_CHARS);
+          if (!dest.ok) return toolError(body.id, `validation: propose_withdraw: ${dest.error}`);
+          if (dest.value.length < 8) {
+            return toolError(body.id, "validation: propose_withdraw dest_address looks truncated (min 8 chars) — pass the full user-confirmed address");
+          }
+          const destChainRaw = typeof args.dest_chain === "string" ? args.dest_chain.trim().toLowerCase() : "";
+          if (destChainRaw.length > 32) {
+            return toolError(body.id, "validation: propose_withdraw dest_chain too long (max 32 chars)");
+          }
+          const rationale = validateProposalText(args.rationale, "rationale", MAX_PROPOSAL_RATIONALE_CHARS);
+          if (!rationale.ok) return toolError(body.id, `validation: propose_withdraw: ${rationale.error}`);
+          const { data, error } = await admin.from("agent_action_log").insert({
+            user_id: userId, action_type: "withdraw", status: "proposed",
+            params: {
+              tool: "propose_withdraw",
+              args: {
+                source_exchange: venueCheck.venue, asset: asset.value, network: network.value,
+                amount: amountRaw, dest_address: dest.value,
+                dest_chain: destChainRaw || null, rationale: rationale.value,
+              },
+            },
+            decided_via: "mcp-propose",
+          }).select("id").single();
+          if (error || !data) {
+            logServer(corr, "propose_withdraw insert failed:", error?.message ?? "no row");
+            return toolError(body.id, "upstream: could not record withdrawal proposal");
+          }
+          return toolOk(body.id, {
+            proposal_id: (data as { id: string }).id, status: "proposed",
+            approve_in: "Exchange withdrawal form — trade-only keys: approval pre-fills the form, you complete it inside your exchange account",
+          });
         }
         if (name === "read_onchain_balances") {
           // Alias of read_live_datum kind=onchain (same reader, same shape).

@@ -19,6 +19,11 @@ import {
   DEFI_SLIPPAGE_MAX_BPS,
   DEFAULT_TOOL_RATE_LIMIT,
   IDEMPOTENCY_KEY_MAX_LEN,
+  MAX_PROPOSAL_ADDRESS_CHARS,
+  MAX_PROPOSAL_JEV_CHARS,
+  MAX_PROPOSAL_QUESTION_CHARS,
+  MAX_PROPOSAL_RATIONALE_CHARS,
+  MAX_PROPOSAL_THESIS_CHARS,
   PROTECTION_TOOL_RATE_LIMIT,
   TOOLS,
   clampSlippageBps,
@@ -35,7 +40,12 @@ import {
   validateArgsAgainstSchema,
   validateChainsCsv,
   validateMarketId,
+  validateOptionalPositiveNumber,
   validatePairSymbol,
+  validatePositiveNumber,
+  validatePriceTargets,
+  validateProposalText,
+  validateProposeSide,
   validateTokenId,
   validateVenueSlug,
   validateWalletsCsv,
@@ -59,7 +69,7 @@ type ToolDef = {
   name: string;
   title?: string;
   description: string;
-  annotations?: { readOnlyHint?: boolean; openWorldHint?: boolean };
+  annotations?: { readOnlyHint?: boolean; openWorldHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean };
   inputSchema: { type: string; properties?: Record<string, unknown>; required?: string[]; additionalProperties?: boolean };
 };
 
@@ -114,12 +124,85 @@ Deno.test("mcp tools: read_news_brief reuses the shared chat schema (no copy)", 
 
 Deno.test("mcp tools: propose_diary_note mirrors the chat approval write (no new execution)", () => {
   const note = byName("propose_diary_note");
-  assert.equal(note.inputSchema.required ?? [], ["body_md"]);
+  assert.deepEqual(note.inputSchema.required ?? [], ["body_md"]);
   const props = Object.keys(note.inputSchema.properties ?? {});
   assert.deepEqual(props, ["day", "body_md", "mode"]);
   // A diary write is state-changing (append retries would duplicate text).
   assert.equal(note.annotations?.readOnlyHint, false);
   assert.equal(note.annotations?.idempotentHint, false);
+});
+
+Deno.test("mcp tools: cycle-05 proposal cards are approval-only (never auto-executed)", () => {
+  const expected: Array<{ name: string; required: string[]; props: string[] }> = [
+    { name: "propose_trade_ideas", required: ["ideas", "rationale"], props: ["ideas", "rationale", "jev_verdict"] },
+    {
+      name: "propose_bracket",
+      required: ["exchange", "pair", "side", "entry_type", "amount", "stop_price", "take_profits", "rationale"],
+      props: ["exchange", "pair", "side", "entry_type", "entry_price", "amount", "stop_price", "fee_usd", "take_profits", "rationale"],
+    },
+    {
+      name: "propose_predict_market",
+      required: ["market_id", "side", "rationale", "jev_verdict"],
+      props: ["market_id", "question", "side", "amount", "venue", "jev_verdict", "confidence", "rationale"],
+    },
+    {
+      name: "propose_close_all_positions",
+      required: ["rationale"],
+      props: ["exchange", "pair", "order_type", "limit_price", "rationale"],
+    },
+    {
+      name: "propose_withdraw",
+      required: ["source_exchange", "asset", "network", "amount", "dest_address", "rationale"],
+      props: ["source_exchange", "asset", "network", "amount", "dest_address", "dest_chain", "rationale"],
+    },
+  ];
+  for (const { name, required, props } of expected) {
+    const tool = byName(name);
+    assert.deepEqual(tool.inputSchema.required ?? [], required);
+    assert.deepEqual(Object.keys(tool.inputSchema.properties ?? {}), props);
+    // Proposal rows are state-changing (retry would duplicate the card).
+    assert.equal(tool.annotations?.readOnlyHint, false, `${name} must not claim readOnlyHint`);
+    assert.equal(tool.annotations?.destructiveHint, false, `${name} moves nothing itself`);
+    assert.equal(tool.annotations?.idempotentHint, false, `${name} is not idempotent`);
+    if (!tool.description.includes("APPROVAL CARD ONLY")) {
+      throw new Error(`${name} description lost the approval-card-only copy`);
+    }
+    if (!tool.description.includes("trade:propose")) {
+      throw new Error(`${name} description lost the trade:propose scope pointer`);
+    }
+  }
+});
+
+Deno.test("mcp hardening: proposal-card validators reject placeholders and bad shapes", () => {
+  // Sides: long|short aliases normalize, anything else refuses.
+  assert.deepEqual(validateProposeSide("long"), { ok: true, side: "buy" });
+  assert.deepEqual(validateProposeSide("SHORT"), { ok: true, side: "sell" });
+  assert.equal(validateProposeSide("flat").ok, false);
+  // Required text: empty refused, overlong refused.
+  assert.equal(validateProposalText("", "rationale", MAX_PROPOSAL_RATIONALE_CHARS).ok, false);
+  assert.equal(validateProposalText("x".repeat(MAX_PROPOSAL_RATIONALE_CHARS + 1), "rationale", MAX_PROPOSAL_RATIONALE_CHARS).ok, false);
+  assert.equal(validateProposalText("ok", "rationale", MAX_PROPOSAL_RATIONALE_CHARS).ok, true);
+  // Positive numbers: 0/null/NaN refused — never a placeholder price.
+  assert.equal(validatePositiveNumber(0, "entry").ok, false);
+  assert.equal(validatePositiveNumber("abc", "entry").ok, false);
+  assert.equal(validatePositiveNumber("65000", "entry").ok, true);
+  assert.deepEqual(validateOptionalPositiveNumber(undefined, "fee_usd"), { ok: true, value: null });
+  // Targets: 1–3 legs, price > 0, weight/fraction 0..1, normalized to weight.
+  const legs = validatePriceTargets([{ price: 65000, fraction: 0.5 }, { price: 66000 }], "take_profits");
+  if (!legs.ok) throw new Error("valid legs refused");
+  assert.deepEqual(legs.targets, [{ price: 65000, weight: 0.5 }, { price: 66000, weight: null }]);
+  const weighted = validatePriceTargets([{ price: 65000, weight: 0.25 }], "targets");
+  if (!weighted.ok) throw new Error("valid weighted leg refused");
+  assert.equal(validatePriceTargets([], "take_profits").ok, false);
+  assert.equal(validatePriceTargets([1, 2, 3, 4].map((price) => ({ price })), "take_profits").ok, false);
+  assert.equal(validatePriceTargets([{ price: 0 }], "take_profits").ok, false);
+  assert.equal(validatePriceTargets([{ price: 65000, weight: 2 }], "take_profits").ok, false);
+  // Caps are the agent-chat slice widths so harness rows read identically.
+  assert.equal(MAX_PROPOSAL_RATIONALE_CHARS, 1000);
+  assert.equal(MAX_PROPOSAL_THESIS_CHARS, 2000);
+  assert.equal(MAX_PROPOSAL_JEV_CHARS, 1000);
+  assert.equal(MAX_PROPOSAL_QUESTION_CHARS, 500);
+  assert.equal(MAX_PROPOSAL_ADDRESS_CHARS, 128);
 });
 
 Deno.test("mcp tools: analyze_market shares the JEV contract + consult_jev shape", () => {

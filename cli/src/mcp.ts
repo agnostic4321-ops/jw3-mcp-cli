@@ -107,6 +107,11 @@ const NO_RETRY_TOOLS = new Set([
   "reserve_sweep",
   "propose_trade",
   "propose_diary_note",
+  "propose_trade_ideas",
+  "propose_bracket",
+  "propose_predict_market",
+  "propose_close_all_positions",
+  "propose_withdraw",
 ]);
 
 /**

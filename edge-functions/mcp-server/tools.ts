@@ -159,6 +159,79 @@ export const TOOLS = [
     }, required: ["body_md"], additionalProperties: false },
   },
   {
+    name: "propose_trade_ideas",
+    title: "Propose trade ideas",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    description: "APPROVAL CARD ONLY — NEVER auto-executed: propose 1–3 personalized trade opportunities (best-first) for in-app approval. Each idea is recorded as a proposed setup row (Diary → setups → Send to ticket) plus one batch trail row. Never executes, never moves funds. Needs the trade:propose scope (PAT).",
+    inputSchema: { type: "object", properties: {
+      ideas: { type: "array", description: "1–3 trade ideas, best-first. Each: pair (e.g. BTC/USDT), side buy|sell, entry > 0, stop > 0 (long: stop<entry, short: stop>entry), targets 1–3x {price>0}, thesis (required)." },
+      rationale: { type: "string", description: "One-sentence why-now for the batch" },
+      jev_verdict: { type: "string", description: "Optional caller-supplied JEV verdict captured alongside the batch (run analyze_market first for a fresh one)" },
+    }, required: ["ideas", "rationale"], additionalProperties: false },
+  },
+  {
+    name: "propose_bracket",
+    title: "Propose bracket order",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    description: "APPROVAL CARD ONLY — NEVER auto-executed: propose one atomic bracket (entry + protective stop + 1–3 OCO take-profits) for in-app approval. Recorded as a proposed setup row (Diary → setups → Send to ticket). Never executes, never moves funds. Needs the trade:propose scope (PAT).",
+    inputSchema: { type: "object", properties: {
+      exchange: { type: "string", description: "CEX slug, e.g. kucoin" },
+      pair: { type: "string", description: "e.g. BTC/USDT" },
+      side: { type: "string", enum: ["buy", "sell", "long", "short"], description: "buy = long, sell = short" },
+      entry_type: { type: "string", enum: ["market", "limit"], description: "market = fill now; limit = resting entry at entry_price" },
+      entry_price: { type: "number", description: "Required when entry_type=limit. Must be > 0." },
+      amount: { type: "string", description: "Base amount, e.g. 0.05. Must be > 0." },
+      stop_price: { type: "number", description: "Protective stop. Long: below entry; short: above. Must be > 0." },
+      fee_usd: { type: "number", description: "All-in fee in USD. Omit or null if unknown — never 0-substituted." },
+      take_profits: { type: "array", description: "1–3 take-profit legs {price > 0, fraction 0..1 of position}. Weights should sum to ~1." },
+      rationale: { type: "string", description: "One-sentence why-now" },
+    }, required: ["exchange", "pair", "side", "entry_type", "amount", "stop_price", "take_profits", "rationale"], additionalProperties: false },
+  },
+  {
+    name: "propose_predict_market",
+    title: "Propose prediction trade",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    description: "APPROVAL CARD ONLY — NEVER auto-executed: propose a prediction-market trade for in-app approval. JEV-gated: pass the consult_jev family=prediction verdict (run analyze_market first) — a call without one is refused. Recorded as a proposal trail row. Never executes, never moves funds. Needs the trade:propose scope (PAT).",
+    inputSchema: { type: "object", properties: {
+      market_id: { type: "string", description: "Polymarket conditionId or slug, or Opinion market id" },
+      question: { type: "string", description: "Human-readable question, for UI display" },
+      side: { type: "string", enum: ["yes", "no"], description: "Outcome to buy" },
+      amount: { type: "number", description: "pUSD amount to spend" },
+      venue: { type: "string", enum: ["polymarket", "opinion"], description: "Default polymarket (executable). opinion is proposal-only." },
+      jev_verdict: { type: "string", description: "The consult_jev family=prediction verdict (run analyze_market first) — required" },
+      confidence: { type: "number", description: "Agreement-weighted conviction 0–1" },
+      rationale: { type: "string", description: "Why this market and side now" },
+    }, required: ["market_id", "side", "rationale", "jev_verdict"], additionalProperties: false },
+  },
+  {
+    name: "propose_close_all_positions",
+    title: "Propose close-all",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    description: "APPROVAL CARD ONLY — NEVER auto-executed: propose flattening EVERY open position at once (or one venue/pair scope) for in-app approval. Records the proposal only — no order is placed, nothing is cancelled. Needs the trade:propose scope (PAT).",
+    inputSchema: { type: "object", properties: {
+      exchange: { type: "string", description: "Optional CEX slug to flatten one venue only. Omit for every connected venue." },
+      pair: { type: "string", description: "Optional pair filter (e.g. BTC/USDT) — flatten only this market. Omit for everything." },
+      order_type: { type: "string", enum: ["market", "limit"], description: "Default market." },
+      limit_price: { type: "string", description: "Required for order_type=limit." },
+      rationale: { type: "string", description: "Why flatten now" },
+    }, required: ["rationale"], additionalProperties: false },
+  },
+  {
+    name: "propose_withdraw",
+    title: "Propose CEX withdrawal",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    description: "APPROVAL CARD ONLY — NEVER auto-executed: propose a CEX withdrawal (exchange → on-chain wallet) for in-app approval. JW3 holds trade-only keys (withdrawals disabled), so approving pre-fills the exchange withdrawal form and the user completes it inside their exchange account. Records the proposal only — no funds move. Needs the trade:propose scope (PAT).",
+    inputSchema: { type: "object", properties: {
+      source_exchange: { type: "string", description: "Source CEX slug, e.g. kucoin" },
+      asset: { type: "string", description: "Asset symbol, e.g. USDT, USDC, ETH, SOL" },
+      network: { type: "string", description: "Network the CEX withdraws on (e.g. ETH, ARBITRUM, BSC, SOL, TON, MATIC, TRX)" },
+      amount: { type: "string", description: "Amount in human units" },
+      dest_address: { type: "string", description: "Destination on-chain wallet address (user-confirmed, never invented)" },
+      dest_chain: { type: "string", description: "Optional destination chain slug (ethereum, base, arbitrum, polygon, bnb, avalanche, solana, ton)" },
+      rationale: { type: "string", description: "Why withdraw now" },
+    }, required: ["source_exchange", "asset", "network", "amount", "dest_address", "rationale"], additionalProperties: false },
+  },
+  {
     name: "read_onchain_balances",
     title: "Read onchain balances",
     annotations: { readOnlyHint: true, openWorldHint: true },
@@ -673,6 +746,88 @@ export function validateTradeSide(raw: unknown): { ok: true; side: string } | { 
   const v = String(raw ?? "").trim().toLowerCase();
   if (v === "buy" || v === "sell") return { ok: true, side: v };
   return { ok: false, error: "side must be buy|sell" };
+}
+
+/* ── propose_* card validators ──
+ *
+ * The five Cycle-05 proposal tools (trade_ideas, bracket, predict_market,
+ * close_all_positions, withdraw) are approval cards: they record proposal
+ * rows and never execute. These pure validators keep malformed cards from
+ * reaching the DB — same discipline as the execute_trade field validators
+ * above. All caps mirror the agent-chat slice widths (thesis 2000,
+ * jev_verdict 1000, invalidation/rationale 500) so harness rows read
+ * identically to chat rows in the Diary.
+ */
+
+/** Caps for free-text proposal fields (slice widths, never silent truncation). */
+export const MAX_PROPOSAL_RATIONALE_CHARS = 1000;
+export const MAX_PROPOSAL_THESIS_CHARS = 2000;
+export const MAX_PROPOSAL_JEV_CHARS = 1000;
+export const MAX_PROPOSAL_QUESTION_CHARS = 500;
+export const MAX_PROPOSAL_ADDRESS_CHARS = 128;
+
+/** Proposal side: buy|sell plus the long|short aliases the desk sends. */
+export function validateProposeSide(raw: unknown): { ok: true; side: "buy" | "sell" } | { ok: false; error: string } {
+  const v = String(raw ?? "").trim().toLowerCase();
+  if (v === "buy" || v === "long") return { ok: true, side: "buy" };
+  if (v === "sell" || v === "short") return { ok: true, side: "sell" };
+  return { ok: false, error: "side must be buy|sell (long|short accepted as aliases)" };
+}
+
+/** Required non-empty text with a length cap. */
+export function validateProposalText(
+  raw: unknown, field: string, maxLen: number,
+): { ok: true; value: string } | { ok: false; error: string } {
+  const v = typeof raw === "string" ? raw.trim() : "";
+  if (!v) return { ok: false, error: `${field} is required` };
+  if (v.length > maxLen) return { ok: false, error: `${field} too long (max ${maxLen} chars)` };
+  return { ok: true, value: v };
+}
+
+/** Positive number (prices, amounts, sizes). Rejects 0/null/NaN placeholders. */
+export function validatePositiveNumber(
+  raw: unknown, field: string,
+): { ok: true; value: number } | { ok: false; error: string } {
+  const n = typeof raw === "number" ? raw : Number(String(raw ?? "").trim());
+  if (!Number.isFinite(n) || n <= 0) return { ok: false, error: `${field} must be > 0 — never 0/null placeholders` };
+  return { ok: true, value: n };
+}
+
+/** Optional positive number (fee_usd, amount, confidence extras). */
+export function validateOptionalPositiveNumber(
+  raw: unknown, field: string,
+): { ok: true; value: number | null } | { ok: false; error: string } {
+  if (raw === undefined || raw === null || raw === "") return { ok: true, value: null };
+  return validatePositiveNumber(raw, field);
+}
+
+/**
+ * 1–3 price targets. Accepts the chat shapes ({price, weight?} on ideas,
+ * {price, fraction?} on brackets) and normalizes to [{price, weight}].
+ */
+export function validatePriceTargets(
+  raw: unknown, field: string,
+): { ok: true; targets: Array<{ price: number; weight: number | null }> } | { ok: false; error: string } {
+  if (!Array.isArray(raw) || raw.length < 1 || raw.length > 3) {
+    return { ok: false, error: `${field} needs 1–3 legs` };
+  }
+  const out: Array<{ price: number; weight: number | null }> = [];
+  for (let i = 0; i < raw.length; i++) {
+    const leg = (raw[i] ?? {}) as Record<string, unknown>;
+    const px = validatePositiveNumber(leg.price, `${field}[${i}].price`);
+    if (!px.ok) return px;
+    const wRaw = leg.weight ?? leg.fraction;
+    let weight: number | null = null;
+    if (wRaw !== undefined && wRaw !== null) {
+      const w = typeof wRaw === "number" ? wRaw : Number(wRaw);
+      if (!Number.isFinite(w) || w < 0 || w > 1) {
+        return { ok: false, error: `${field}[${i}].weight must be 0..1` };
+      }
+      weight = w;
+    }
+    out.push({ price: px.value, weight });
+  }
+  return { ok: true, targets: out };
 }
 
 /* ── daily_prep caps: one brief run stays bounded ── */

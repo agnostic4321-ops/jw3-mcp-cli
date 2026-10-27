@@ -45,6 +45,7 @@ import { cmdDegen, cmdDegenRecord, cmdPaperStats } from "./commands/degen.js";
 import { cmdTtm } from "./commands/ttm.js";
 import { cmdSpikes } from "./commands/spikes.js";
 import { cmdConnections, cmdDailyPrep, cmdDiary, cmdDiaryNote, cmdNews, cmdPropose, cmdRisk } from "./commands/extra.js";
+import { cmdProposeBracket, cmdProposeCloseAll, cmdProposeIdea, cmdProposePredict, cmdProposeWithdraw } from "./commands/propose-cards.js";
 import { cmdFills, cmdPnl } from "./commands/fills.js";
 import { cmdPnlReconcile } from "./commands/pnl-reconcile.js";
 import {
@@ -138,6 +139,11 @@ Usage:
   jw3 risk [--state] [--json]
   jw3 news [--pair BTC] [--source CoinDesk] [--limit 6] [--window-hrs 48] [--json]
   jw3 propose --pair BTC/USDT --side long --entry … --stop … [--asset BTC] [--venue kucoin] [--size-usd …] [--thesis …] [--timeframe 4h] [--json]
+  jw3 propose-idea --pair BTC/USDT --side buy --entry … --stop … --target 70000[:0.5],75000 --thesis "…" [--rationale "…"] [--json]
+  jw3 propose-bracket --exchange kucoin --pair BTC/USDT --side buy --entry-type market --amount … --stop … --tp 70000:50,75000:50 --rationale "…" [--json]
+  jw3 propose-predict --market-id <id> --side yes --jev-verdict "…" --rationale "…" [--json]
+  jw3 propose-close-all --rationale "…" [--exchange kucoin] [--pair BTC/USDT] [--json]
+  jw3 propose-withdraw --source-exchange kucoin --asset USDT --network ETH --amount … --dest-address 0x… --rationale "…" [--json]
   jw3 market --exchange binance --pair BTC/USDT [--json]
   jw3 screener [--exchange binance] [--json]
   jw3 positions [--exchange kucoin] [--pair BTC/USDT] [--watch SEC] [--polls N] [--json] [--json-lines]
@@ -1170,6 +1176,101 @@ async function main(): Promise<void> {
           sizeUsd: sizeRaw === undefined ? undefined : Number(sizeRaw),
           thesis: flagOf(g.rest, "--thesis"),
           timeframe: flagOf(g.rest, "--timeframe"),
+        },
+        { json: g.json, url: g.url, pat: g.pat },
+      );
+      return;
+    }
+    if (cmd === "propose-idea") {
+      const g = globals(tail);
+      const entry = Number(flagOf(g.rest, "--entry"));
+      const stop = Number(flagOf(g.rest, "--stop"));
+      const sizeRaw = flagOf(g.rest, "--size-usd");
+      await cmdProposeIdea(
+        {
+          pair: flagOf(g.rest, "--pair") ?? "",
+          side: flagOf(g.rest, "--side") ?? "",
+          entry,
+          stop,
+          thesis: flagOf(g.rest, "--thesis") ?? "",
+          targetRaw: flagOf(g.rest, "--target") ?? flagOf(g.rest, "--targets"),
+          asset: flagOf(g.rest, "--asset"),
+          venue: flagOf(g.rest, "--venue"),
+          exchange: flagOf(g.rest, "--exchange"),
+          timeframe: flagOf(g.rest, "--timeframe"),
+          sizeUsd: sizeRaw === undefined ? undefined : Number(sizeRaw),
+          jevVerdict: flagOf(g.rest, "--jev-verdict"),
+          rationale: flagOf(g.rest, "--rationale"),
+        },
+        { json: g.json, url: g.url, pat: g.pat },
+      );
+      return;
+    }
+    if (cmd === "propose-bracket") {
+      const g = globals(tail);
+      const entryRaw = flagOf(g.rest, "--entry-price");
+      const feeRaw = flagOf(g.rest, "--fee-usd");
+      await cmdProposeBracket(
+        {
+          exchange: flagOf(g.rest, "--exchange") ?? "",
+          pair: flagOf(g.rest, "--pair") ?? "",
+          side: flagOf(g.rest, "--side") ?? "",
+          entryType: flagOf(g.rest, "--entry-type") ?? "",
+          entryPrice: entryRaw === undefined ? undefined : Number(entryRaw),
+          amount: flagOf(g.rest, "--amount") ?? "",
+          stop: Number(flagOf(g.rest, "--stop")),
+          tpRaw: flagOf(g.rest, "--tp") ?? flagOf(g.rest, "--tp-legs"),
+          feeUsd: feeRaw === undefined ? undefined : Number(feeRaw),
+          rationale: flagOf(g.rest, "--rationale") ?? flagOf(g.rest, "--reason") ?? "",
+        },
+        { json: g.json, url: g.url, pat: g.pat },
+      );
+      return;
+    }
+    if (cmd === "propose-predict") {
+      const g = globals(tail);
+      const amountRaw = flagOf(g.rest, "--amount");
+      const confRaw = flagOf(g.rest, "--confidence");
+      await cmdProposePredict(
+        {
+          marketId: flagOf(g.rest, "--market-id") ?? "",
+          side: flagOf(g.rest, "--side") ?? "",
+          jevVerdict: flagOf(g.rest, "--jev-verdict") ?? "",
+          rationale: flagOf(g.rest, "--rationale") ?? flagOf(g.rest, "--reason") ?? "",
+          question: flagOf(g.rest, "--question"),
+          amount: amountRaw === undefined ? undefined : Number(amountRaw),
+          venue: flagOf(g.rest, "--venue"),
+          confidence: confRaw === undefined ? undefined : Number(confRaw),
+        },
+        { json: g.json, url: g.url, pat: g.pat },
+      );
+      return;
+    }
+    if (cmd === "propose-close-all") {
+      const g = globals(tail);
+      await cmdProposeCloseAll(
+        {
+          rationale: flagOf(g.rest, "--rationale") ?? flagOf(g.rest, "--reason") ?? "",
+          exchange: flagOf(g.rest, "--exchange"),
+          pair: flagOf(g.rest, "--pair"),
+          orderType: flagOf(g.rest, "--order-type"),
+          limitPrice: flagOf(g.rest, "--limit-price"),
+        },
+        { json: g.json, url: g.url, pat: g.pat },
+      );
+      return;
+    }
+    if (cmd === "propose-withdraw") {
+      const g = globals(tail);
+      await cmdProposeWithdraw(
+        {
+          sourceExchange: flagOf(g.rest, "--source-exchange") ?? flagOf(g.rest, "--exchange") ?? "",
+          asset: flagOf(g.rest, "--asset") ?? "",
+          network: flagOf(g.rest, "--network") ?? "",
+          amount: flagOf(g.rest, "--amount") ?? "",
+          destAddress: flagOf(g.rest, "--dest-address") ?? "",
+          destChain: flagOf(g.rest, "--dest-chain"),
+          rationale: flagOf(g.rest, "--rationale") ?? flagOf(g.rest, "--reason") ?? "",
         },
         { json: g.json, url: g.url, pat: g.pat },
       );
