@@ -17,9 +17,17 @@ The deployed function URLs are unchanged — same Supabase project, same slugs.
 ## Deploying functions
 
 ```sh
-supabase link --project-ref nzhbfeahymmyqerzjgbt
-supabase functions deploy mcp-server
+# Syncs edge-functions/{_shared,agent-chat} from the ../jw3_ai checkout
+# (override with JW3_AI_DIR), runs deno check, then stages the standard
+# supabase/functions layout in a temp dir and deploys.
+scripts/sync-edge-shared.sh --deploy mcp-server
 ```
+
+Direct `supabase functions deploy` from this root does NOT work: sources live
+under `edge-functions/` (not `supabase/functions/`), and the `../_shared` +
+`../agent-chat` imports only resolve after the sync step above (previously a
+throwaway-symlink step — now this committed script; the copies are gitignored,
+never committed). Sync-only (no deploy): run the script with no args.
 
 `supabase/config.toml` pins the gateway flags (`verify_jwt = false` where the
 harness PAT — not a JWT — is the credential).

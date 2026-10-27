@@ -1,5 +1,13 @@
 project_id = "nzhbfeahymmyqerzjgbt"
 
+# Deploy layout note: sources live under edge-functions/ (NOT
+# supabase/functions/), and edge-functions/{_shared,agent-chat} are
+# materialized at deploy time by scripts/sync-edge-shared.sh from the jw3_ai
+# checkout. Deploy via `scripts/sync-edge-shared.sh --deploy [fn…]` — it
+# stages the standard supabase/functions layout in a temp dir. Never run
+# `supabase functions deploy` directly from this root: the function dirs and
+# their ../_shared + ../agent-chat imports would not resolve.
+#
 # MCP-adjacent functions: the Supabase gateway cannot verify harness PATs
 # as JWTs, so the gateway check stays off and requireUser (+PAT fallback)
 # inside each function is the real gate. mcp-token keeps the default
