@@ -32,17 +32,30 @@ export async function cmdConnections(opts: { json: boolean; url?: string; pat?: 
   }
 }
 
-export async function cmdDiary(opts: { day?: string; json: boolean; url?: string; pat?: string }): Promise<void> {
+export async function cmdDiary(opts: { day?: string; startDay?: string; endDay?: string; json: boolean; url?: string; pat?: string }): Promise<void> {
   const pat = needPat(opts.pat);
   if (!pat) return;
-  if (opts.day && !/^\d{4}-\d{2}-\d{2}$/.test(opts.day)) {
+  const dayRe = /^\d{4}-\d{2}-\d{2}$/;
+  if (opts.day && !dayRe.test(opts.day)) {
     console.error("Day must be YYYY-MM-DD.");
     process.exitCode = 2;
     return;
   }
+  if ((opts.startDay ?? opts.endDay) && (!opts.startDay || !opts.endDay || !dayRe.test(opts.startDay) || !dayRe.test(opts.endDay))) {
+    console.error("Range needs both --start-day and --end-day in YYYY-MM-DD format.");
+    process.exitCode = 2;
+    return;
+  }
+  // A human typed this command, so an omitted day means today (local) —
+  // the no-default rule binds the model, not the CLI.
+  const now = new Date();
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  const params: Record<string, unknown> = opts.startDay
+    ? { start_day: opts.startDay, end_day: opts.endDay }
+    : { day: opts.day ?? today };
   let out: unknown;
   try {
-    out = await callTool("read_diary_day", opts.day ? { day: opts.day } : {}, pat, opts.url);
+    out = await callTool("read_diary_day", params, pat, opts.url);
   } catch (e) {
     fail(e);
     return;
@@ -113,6 +126,35 @@ export async function cmdRisk(opts: { json: boolean; url?: string; pat?: string 
   } catch (e) {
     fail(e);
     return;
+  }
+  console.log(JSON.stringify(out, null, opts.json ? 0 : 2));
+}
+
+/** Pure pair passthrough so bad shapes fail before any network call. */
+export function newsParams(opts: { pair?: string }): { params: Record<string, unknown> } {
+  const params: Record<string, unknown> = {};
+  if (opts.pair) params.pair = opts.pair;
+  return { params };
+}
+
+export async function cmdNews(opts: { pair?: string; json: boolean; url?: string; pat?: string }): Promise<void> {
+  const pat = needPat(opts.pat);
+  if (!pat) return;
+  let out: unknown;
+  try {
+    out = await callTool("read_news_brief", newsParams({ pair: opts.pair }).params, pat, opts.url);
+  } catch (e) {
+    fail(e);
+    return;
+  }
+  // MCP transports the payload as a JSON string — parse once so --json is real JSON.
+  if (typeof out === "string") {
+    try {
+      out = JSON.parse(out) as unknown;
+    } catch {
+      console.log(out);
+      return;
+    }
   }
   console.log(JSON.stringify(out, null, opts.json ? 0 : 2));
 }

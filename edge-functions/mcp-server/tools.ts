@@ -11,6 +11,10 @@ import { fetchWithTimeout } from "../_shared/http.ts";
 import type { AnyClient } from "../_shared/clients.ts";
 import { JEV_CONSULT_CONTRACT } from "../agent-chat/jev-gate.ts";
 import {
+  NEWS_BRIEF_DESCRIPTION,
+  NEWS_BRIEF_PARAMETERS,
+} from "../agent-chat/news-brief.ts";
+import {
   LIST_CONNECTIONS_DESCRIPTION,
   LIST_CONNECTIONS_PARAMETERS,
   READ_DEFI_DESCRIPTION,
@@ -291,6 +295,13 @@ export const TOOLS = [
     annotations: { readOnlyHint: true, openWorldHint: true },
     description: READ_DEFI_DESCRIPTION,
     inputSchema: READ_DEFI_PARAMETERS,
+  },
+  {
+    name: "read_news_brief",
+    title: "Read crypto news brief",
+    annotations: { readOnlyHint: true, openWorldHint: true },
+    description: NEWS_BRIEF_DESCRIPTION,
+    inputSchema: NEWS_BRIEF_PARAMETERS,
   },
   {
     name: "build_defi_tx",

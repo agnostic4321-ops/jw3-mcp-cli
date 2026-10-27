@@ -44,7 +44,7 @@ import { cmdOracle } from "./commands/oracle.js";
 import { cmdDegen, cmdDegenRecord, cmdPaperStats } from "./commands/degen.js";
 import { cmdTtm } from "./commands/ttm.js";
 import { cmdSpikes } from "./commands/spikes.js";
-import { cmdConnections, cmdDailyPrep, cmdDiary, cmdPropose, cmdRisk } from "./commands/extra.js";
+import { cmdConnections, cmdDailyPrep, cmdDiary, cmdNews, cmdPropose, cmdRisk } from "./commands/extra.js";
 import { cmdFills, cmdPnl } from "./commands/fills.js";
 import { cmdPnlReconcile } from "./commands/pnl-reconcile.js";
 import {
@@ -132,9 +132,10 @@ Usage:
   jw3 paper promote --account NAME [--position-id …] [--pair …] [--exchange kucoin] [--json]
   jw3 poly scan [--json]
   jw3 connections [--json]
-  jw3 diary [--day YYYY-MM-DD] [--json]
+  jw3 diary [--day YYYY-MM-DD | --start-day YYYY-MM-DD --end-day YYYY-MM-DD] [--json]
   jw3 daily-prep [--dry] [--day YYYY-MM-DD] [--json]
   jw3 risk [--json]
+  jw3 news [--pair BTC] [--json]
   jw3 propose --pair BTC/USDT --side long --entry … --stop … [--asset BTC] [--venue kucoin] [--size-usd …] [--thesis …] [--timeframe 4h] [--json]
   jw3 market --exchange binance --pair BTC/USDT [--json]
   jw3 screener [--exchange binance] [--json]
@@ -1112,7 +1113,7 @@ async function main(): Promise<void> {
     }
     if (cmd === "diary") {
       const g = globals(tail);
-      await cmdDiary({ day: flagOf(g.rest, "--day"), json: g.json, url: g.url, pat: g.pat });
+      await cmdDiary({ day: flagOf(g.rest, "--day"), startDay: flagOf(g.rest, "--start-day") ?? flagOf(g.rest, "--start"), endDay: flagOf(g.rest, "--end-day") ?? flagOf(g.rest, "--end"), json: g.json, url: g.url, pat: g.pat });
       return;
     }
     if (cmd === "daily-prep") {
@@ -1123,6 +1124,11 @@ async function main(): Promise<void> {
     if (cmd === "risk") {
       const g = globals(tail);
       await cmdRisk({ json: g.json, url: g.url, pat: g.pat });
+      return;
+    }
+    if (cmd === "news") {
+      const g = globals(tail);
+      await cmdNews({ pair: flagOf(g.rest, "--pair"), json: g.json, url: g.url, pat: g.pat });
       return;
     }
     if (cmd === "propose") {

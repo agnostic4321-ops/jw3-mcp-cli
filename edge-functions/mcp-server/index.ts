@@ -67,7 +67,9 @@ import {
   buildMcpFillsPayload,
   buildMcpPnlPayload,
   executeDefiRead,
+  executeDiaryDayRangeRead,
   executeMarketRead,
+  executeNewsBriefRead,
   executeOrderRead,
   executePositionsBalancesRead,
   executePredictionsRead,
@@ -75,7 +77,7 @@ import {
   executeScreenerRead,
   fetchConnectionMetadata,
   fetchOnchainSnapshot,
-  normalizeDiaryDay,
+  resolveDiaryDayRange,
   type DiaryDayOut,
   type ReadDeps,
   type ReadEdgeFn,
@@ -235,7 +237,7 @@ Deno.serve(withHandler("mcp-server", async (req) => {
       return new Response(null, { status: 202 });
     }
     if (body.method === "tools/list") {
-      // No pagination needed at 13 tools, but accept cursor for conformance.
+      // No pagination needed at 14 tools, but accept cursor for conformance.
       return rpcOk(body.id, { tools: TOOLS });
     }
     if (body.method === "tools/call") {
@@ -433,15 +435,28 @@ Deno.serve(withHandler("mcp-server", async (req) => {
           // Cap-safe slim payload (never the raw day record): the full
           // setup/action rows serialize past the tool-message cap and get
           // sliced mid-JSON, hiding tonight's trades from `jw3 diary`.
-          const day = normalizeDiaryDay(args.day);
-          let out: DiaryDayOut;
+          // Same fail-honest contract as the app chat branch: explicit
+          // day or explicit start_day/end_day range (max 31 days); a
+          // missing day is a guidance error, never a silent today.
+          const range = resolveDiaryDayRange(args);
+          if ("error" in range) return toolError(body.id, range.error);
+          if (range.days.length === 1) {
+            const day = range.days[0];
+            let out: DiaryDayOut;
+            try {
+              out = await callEdge(supaUrl, authHeader, "diary-day", { day }) as DiaryDayOut;
+            } catch (e) {
+              logServer(corr, "diary-day failed:", e instanceof Error ? e.message : e);
+              return toolError(body.id, upstreamErrorText(corr));
+            }
+            return toolOk(body.id, buildMcpDiaryDayPayload(out, day));
+          }
           try {
-            out = await callEdge(supaUrl, authHeader, "diary-day", { day }) as DiaryDayOut;
+            return toolOk(body.id, await executeDiaryDayRangeRead(range.days, readDeps));
           } catch (e) {
-            logServer(corr, "diary-day failed:", e instanceof Error ? e.message : e);
+            logServer(corr, "diary-day range failed:", e instanceof Error ? e.message : e);
             return toolError(body.id, upstreamErrorText(corr));
           }
-          return toolOk(body.id, buildMcpDiaryDayPayload(out, day));
         }
         if (name === "list_connections") {
           // Metadata only — the ONE shared implementation (see
@@ -1205,6 +1220,12 @@ Deno.serve(withHandler("mcp-server", async (req) => {
         if (name === "read_defi") {
           const payload = await executeDefiRead(args, readDeps);
           return readResult(body.id, "upstream: defi read failed", payload);
+        }
+        if (name === "read_news_brief") {
+          // Shared keyword-matched headlines reader (same RSS fan-out +
+          // clustering as agent-chat). Optional pair narrows to one asset;
+          // unknown pairs match nothing with an honest note, never invented.
+          return readResult(body.id, "news brief read", await executeNewsBriefRead(args));
         }
         if (name === "build_defi_tx") {
           const actionRaw = typeof args.action === "string" ? args.action.toLowerCase().trim() : "";

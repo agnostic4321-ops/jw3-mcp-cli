@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { dailyPrepParams, validatePropose } from "./commands/extra.js";
+import { dailyPrepParams, newsParams, validatePropose } from "./commands/extra.js";
 
 describe("validatePropose", () => {
   it("accepts a full ticket", () => {
@@ -18,6 +18,15 @@ describe("validatePropose", () => {
       validatePropose({ pair: "BTC/USDT", side: "buy", entry: 1, stop: 1, sizeUsd: 0 }) as string,
       /size_usd/,
     );
+  });
+});
+
+describe("newsParams", () => {
+  it("omits pair when absent (all three assets)", () => {
+    assert.deepEqual(newsParams({}), { params: {} });
+  });
+  it("passes pair through for single-asset narrowing", () => {
+    assert.deepEqual(newsParams({ pair: "BTC" }), { params: { pair: "BTC" } });
   });
 });
 

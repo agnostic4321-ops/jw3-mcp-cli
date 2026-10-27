@@ -50,11 +50,16 @@ import {
   READ_RISK_LIMITS_PARAMETERS,
 } from "../agent-chat/read-tools.ts";
 import { JEV_CONSULT_CONTRACT } from "../agent-chat/jev-gate.ts";
+import {
+  NEWS_BRIEF_DESCRIPTION,
+  NEWS_BRIEF_PARAMETERS,
+} from "../agent-chat/news-brief.ts";
 
 type ToolDef = {
   name: string;
   title?: string;
   description: string;
+  annotations?: { readOnlyHint?: boolean; openWorldHint?: boolean };
   inputSchema: { type: string; properties?: Record<string, unknown>; required?: string[]; additionalProperties?: boolean };
 };
 
@@ -90,6 +95,19 @@ Deno.test("mcp tools: read transports reuse the shared chat schemas (no copies)"
   assert.equal(byName("read_risk_limits").description, READ_RISK_LIMITS_DESCRIPTION);
   assert.equal(byName("read_risk_limits").inputSchema, READ_RISK_LIMITS_PARAMETERS);
   assert.equal(byName("list_connections").description, LIST_CONNECTIONS_DESCRIPTION);
+});
+
+Deno.test("mcp tools: read_news_brief reuses the shared chat schema (no copy)", () => {
+  const news = byName("read_news_brief");
+  assert.equal(news.description, NEWS_BRIEF_DESCRIPTION);
+  assert.equal(news.inputSchema, NEWS_BRIEF_PARAMETERS);
+  // External RSS fetch: open-world read, same as the defi reader.
+  assert.equal(news.annotations?.readOnlyHint, true);
+  assert.equal(news.annotations?.openWorldHint, true);
+  // Pair is optional — omit it for all three assets.
+  assert.deepEqual(news.inputSchema.required ?? [], []);
+  const props = Object.keys(news.inputSchema.properties ?? {});
+  assert.deepEqual(props, ["pair"]);
 });
 
 Deno.test("mcp tools: analyze_market shares the JEV contract + consult_jev shape", () => {
