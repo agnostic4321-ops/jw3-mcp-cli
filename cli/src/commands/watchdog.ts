@@ -1650,20 +1650,22 @@ export async function cmdWatchdogRun(opts: WatchdogCmdOptions, deps?: WatchdogDe
   const pollSec = Math.max(5, opts.pollSec ?? WATCHDOG_DEFAULT_POLL_SEC);
   const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
   let first = true;
+  let poll = 0;
   while (true) {
+    poll++;
     const result = await runWatchdogCycle(
       { exchange: opts.exchange, url: opts.url, pat, flatten: opts.flatten === true },
       deps,
     );
     if (opts.json !== true) {
       console.log(
-        `${new Date().toISOString()} WATCHDOG ${
+        `${new Date().toISOString()} WATCHDOG poll=${poll} ${
           result.decision.shouldAct ? "TRIPPED" : "clear"
         } — ${result.decision.trips.map((t) => t.reason).join("; ") || "no trip condition"}`,
       );
       for (const e of result.errors) console.error(`  error: ${e}`);
     } else {
-      console.log(JSON.stringify(result));
+      console.log(JSON.stringify({ poll, ...result }));
     }
     if (opts.once === true) {
       if (result.decision.shouldAct) process.exitCode = 1;

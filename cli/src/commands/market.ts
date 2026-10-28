@@ -224,6 +224,17 @@ export async function cmdPositions(opts: {
       console.log(
         `WATCH positions${pairFilter ? ` ${pairFilter}` : ""} on ${ctx.conn.exchange} every ${opts.watchSec}s (${totalLabel} polls) — Ctrl-C to stop`,
       );
+    } else {
+      console.log(
+        JSON.stringify({
+          event: "start",
+          kind: "positions-watch",
+          exchange: ctx.conn.exchange,
+          ...(pairFilter ? { pair: pairFilter } : {}),
+          intervalSec: opts.watchSec,
+          polls: Number.isFinite(total) ? total : null,
+        }),
+      );
     }
     for (let i = 1; i <= total; i++) {
       let out: unknown;
@@ -249,6 +260,15 @@ export async function cmdPositions(opts: {
         if (kept === 0) console.log("  (empty — no open positions match)");
       }
       if (i < total) await sleep(intervalMs);
+    }
+    if (Number.isFinite(total)) {
+      if (jsonLine) {
+        console.log(
+          JSON.stringify({ event: "done", kind: "positions-watch", polls: total, status: "complete" }),
+        );
+      } else {
+        console.log(`WATCH DONE — ${total} poll(s) complete. Re-run to keep watching.`);
+      }
     }
   } catch (e) {
     fail(e);
