@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { clampInt, flagAny, flagOf, needNum, needNumAny, numAny, numOf, posAny, posOf } from "./args.js";
+import { clampInt, flagAny, flagOf, needNum, needNumAny, numAny, numOf, posAny, posOf, refusePaperFlag } from "./args.js";
 
 describe("flagOf", () => {
   it("reads --flag value and --flag=value", () => {
@@ -81,6 +81,23 @@ describe("needNum", () => {
     const prev = process.exitCode;
     process.exitCode = undefined;
     assert.equal(needNum(NaN, "--size", ["--size", "abc"]), false);
+    assert.equal(process.exitCode, 2);
+    process.exitCode = prev;
+  });
+});
+
+describe("refusePaperFlag", () => {
+  it("passes routes without --paper through untouched", () => {
+    const prev = process.exitCode;
+    process.exitCode = undefined;
+    assert.equal(refusePaperFlag(["--pair", "SOL/USDT", "--yes"], "jw3 execute"), false);
+    assert.equal(process.exitCode, undefined);
+    process.exitCode = prev;
+  });
+  it("refuses --paper loudly with exit code 2", () => {
+    const prev = process.exitCode;
+    process.exitCode = undefined;
+    assert.equal(refusePaperFlag(["--pair", "SOL/USDT", "--paper"], "jw3 execute"), true);
     assert.equal(process.exitCode, 2);
     process.exitCode = prev;
   });

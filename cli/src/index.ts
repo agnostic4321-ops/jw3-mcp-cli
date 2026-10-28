@@ -87,7 +87,7 @@ import {
   cmdDefiPositions,
   cmdDefiProtocols,
 } from "./commands/defi.js";
-import { clampInt, flagAny, flagOf, needNum, needNumAny, numAny, numOf, posAny, posOf } from "./args.js";
+import { clampInt, flagAny, flagOf, needNum, needNumAny, numAny, numOf, posAny, posOf, refusePaperFlag } from "./args.js";
 
 const HELP = `jw3 — JW3.ai command line (v0.1)
 
@@ -284,6 +284,7 @@ async function main(): Promise<void> {
       const pair = flagOf(g.rest, "--pair") ?? "";
       const direction = rest.includes("--short") ? "short" : "long";
       if (sub === "start") {
+        if (refusePaperFlag(g.rest, "jw3 scalp start")) return;
         const lev = posAny(g.rest, 2, "--lev", "--leverage");
         if (!needNumAny(lev, g.rest, "--lev", "--leverage")) return;
         await cmdScalpStart(
@@ -307,6 +308,7 @@ async function main(): Promise<void> {
         return;
       }
       if (sub === "kill") {
+        if (refusePaperFlag(g.rest, "jw3 scalp kill")) return;
         await cmdScalpKill({
           pair,
           exchange: flagOf(g.rest, "--exchange"),
@@ -328,6 +330,7 @@ async function main(): Promise<void> {
     }
     if (cmd === "trail") {
       const g = globals(tail);
+      if (refusePaperFlag(g.rest, "jw3 trail")) return;
       const rest = g.rest.join(" ");
       const pair = flagOf(g.rest, "--pair") ?? "";
       const sideRaw = (flagOf(g.rest, "--side") ?? (rest.includes("--short") ? "short" : rest.includes("--long") ? "long" : "")).toLowerCase();
@@ -383,6 +386,7 @@ async function main(): Promise<void> {
     }
     if (cmd === "bounce") {
       const g = globals(tail);
+      if (refusePaperFlag(g.rest, "jw3 bounce")) return;
       const rest = g.rest.join(" ");
       const pair = flagOf(g.rest, "--pair") ?? "";
       const sideRaw = (
@@ -543,6 +547,7 @@ async function main(): Promise<void> {
       ) {
         return;
       }
+      if (sub === "start" && refusePaperFlag(g.rest, "jw3 grid start")) return;
       await cmdGrid(
         sub === "start" ? "start" : "plan",
         {
@@ -560,6 +565,7 @@ async function main(): Promise<void> {
     }
     if (cmd === "daemon" && sub === undefined) {
       const g = globals(tail);
+      if (refusePaperFlag(g.rest, "jw3 daemon")) return;
       const configPath = flagOf(g.rest, "--config");
       if (!configPath) {
         console.error("Usage: jw3 daemon --config <manifest.json> [--once] [--allow-live] [--flatten-on-shutdown] [--json]");
@@ -605,6 +611,7 @@ async function main(): Promise<void> {
         pat: g.pat,
         once: g.rest.includes("--once"),
       };
+      if ((mode === "run" || mode === "resume") && refusePaperFlag(g.rest, `jw3 watchdog ${mode}`)) return;
       if (mode === "resume" && !opts.actor) {
         console.error("watchdog resume needs --actor <who> — a resume is human-only and must be attributable. Nothing was called.");
         process.exitCode = 2;
@@ -739,6 +746,7 @@ async function main(): Promise<void> {
     }
     if (cmd === "live" && sub === undefined) {
       const g = globals(tail);
+      if (refusePaperFlag(g.rest, "jw3 live")) return;
       const pair = flagOf(g.rest, "--pair") ?? "";
       if (!pair) {
         console.error("Usage: jw3 live --pair BASE/USDT [--exchange kucoin] [--side long|short|auto] [--risk 3] [--size 15] [--session live] [--turn t1] [--yes] [--json]");
@@ -1457,6 +1465,7 @@ async function main(): Promise<void> {
     }
     if (cmd === "execute") {
       const g = globals(tail);
+      if (refusePaperFlag(g.rest, "jw3 execute")) return;
       const numFlag = (f: string): number | undefined => {
         const v = flagOf(g.rest, f);
         return v === undefined ? undefined : Number(v);
@@ -1524,6 +1533,7 @@ async function main(): Promise<void> {
     }
     if (cmd === "close") {
       const g = globals(tail);
+      if (refusePaperFlag(g.rest, "jw3 close")) return;
       const sizeRaw = flagOf(g.rest, "--size");
       await cmdClose({
         exchange: flagOf(g.rest, "--exchange") ?? "",
@@ -1539,6 +1549,7 @@ async function main(): Promise<void> {
     }
     if (cmd === "exits") {
       const g = globals(tail);
+      if (refusePaperFlag(g.rest, "jw3 exits")) return;
       await cmdExits({
         exchange: flagOf(g.rest, "--exchange") ?? "",
         pair: flagOf(g.rest, "--pair") ?? "",
@@ -1555,6 +1566,7 @@ async function main(): Promise<void> {
     }
     if (cmd === "cancel-all" || (cmd === "cancel" && sub === "all")) {
       const g = globals(tail);
+      if (refusePaperFlag(g.rest, "jw3 cancel-all")) return;
       await cmdCancelAll({
         exchange: flagOf(g.rest, "--exchange") ?? "",
         pair: flagOf(g.rest, "--pair") ?? "",
@@ -1568,6 +1580,7 @@ async function main(): Promise<void> {
     }
     if (cmd === "cancel") {
       const g = globals(tail);
+      if (refusePaperFlag(g.rest, "jw3 cancel")) return;
       await cmdCancel({
         exchange: flagOf(g.rest, "--exchange") ?? "",
         orderId: flagOf(g.rest, "--order-id") ?? "",
@@ -1613,6 +1626,7 @@ async function main(): Promise<void> {
     }
     if (cmd === "reserve" && (sub === "sweep" || sub === undefined)) {
       const g = globals(tail);
+      if (refusePaperFlag(g.rest, "jw3 reserve sweep")) return;
       const keepRaw = flagOf(g.rest, "--keep");
       const keep = keepRaw === undefined ? 10 : Number(keepRaw);
       await cmdReserveSweep(
@@ -1627,6 +1641,7 @@ async function main(): Promise<void> {
     }
     if (cmd === "supervise") {
       const g = globals(tail);
+      if (refusePaperFlag(g.rest, "jw3 supervise")) return;
       // Repeatable flags: --trail SPEC (×N), --loop SPEC (×N).
       const trailRaws: string[] = [];
       const loopRaws: string[] = [];

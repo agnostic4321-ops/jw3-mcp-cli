@@ -87,3 +87,19 @@ export function needNumAny(v: number, rest: string[], ...flags: string[]): boole
   const used = flags.find((f) => flagOf(rest, f) !== undefined) ?? flags[0] ?? "--flag";
   return needNum(v, used, rest);
 }
+
+/**
+ * Refuse `--paper` on live-only routes (exit 2, nothing called).
+ * Paper fills live in `jw3 paper ...` (simulated accounts), `jw3 degen
+ * --paper` (strategy loop), and `jw3 farm` (paper-only by construction) —
+ * a `--paper` flag on a live command must never silently mean live.
+ * Returns true when refused (caller must return immediately).
+ */
+export function refusePaperFlag(rest: string[], route: string): boolean {
+  if (!rest.includes("--paper")) return false;
+  console.error(
+    `${route} is live-only: --paper is refused — paper fills live in \`jw3 paper ...\`, \`jw3 degen --paper\`, \`jw3 farm\`. Nothing was called.`,
+  );
+  process.exitCode = 2;
+  return true;
+}
