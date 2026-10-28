@@ -13,11 +13,13 @@ excluded from `tsconfig.app.json` typecheck and the root vitest run
 ## Run without installing
 
 ```bash
-node packages/jw3-cli/dist/index.js --help
-# after `tsc -p packages/jw3-cli/tsconfig.json`
+node cli/dist/index.js --help
+# after `tsc -p cli/tsconfig.json`
 ```
 
 ## Commands
+
+Common commands — complete list is `jw3 --help` (source of truth).
 
 ```bash
 jw3 auth login|logout|status [--pat …] [--url …] [--browser] [--scope "mcp:read trade:propose"] [--timeout 300]
@@ -33,7 +35,7 @@ jw3 degen [--pair SOL/USDT] [--exchange kucoin] [--size 15] [--lev 2] [--max-hea
 jw3 degen record --pair SOL/USDT --outcome win|loss|stop|scratch [--pnl …] [--paper] [--json]
 jw3 degen paper-stats [--json]
 jw3 ttm --pair SOL/USDT --side long|short --equity 10 --base 5 --entry … --atr-pct 0.8 [--lev 25] [--sleeve momentum] [--activation-pct 0.25] [--bounceback-pct 0.08] [--json]
-jw3 trail --pair SOL/USDT --side long|short --size 1 [--exchange kucoin] [--activation-pct 0.25] [--bounceback-pct 0.08] [--polls 600] [--live] [--yes] [--json]
+jw3 trail --pair SOL/USDT --side long|short --size 1 [--exchange kucoin] [--activation-pct 0.25] [--bounceback-pct|--backoff-pct 0.08] [--polls 600] [--live] [--yes] [--json]
 jw3 tick --pair SOL/USDT [--seconds 15] [--json]
 jw3 vote --pair SOL/USDT [--exchange kucoin] [--horizon 12] [--json]
 jw3 vote stats [--json]
@@ -43,9 +45,9 @@ jw3 grid backtest --pair SEI/USDT [--step-pct 0.25] [--levels 25] [--contracts 1
 jw3 backtest scalp --pair SOL/USDT [--days 30] [--tp 0.3] [--fee maker|taker] [--size 60] [--json]
 jw3 poly scan [--json]
 jw3 connections [--json]
-jw3 diary [--day YYYY-MM-DD] [--json]
+jw3 diary [--day YYYY-MM-DD | --start-day YYYY-MM-DD --end-day YYYY-MM-DD] [--json]
 jw3 daily-prep [--dry] [--day YYYY-MM-DD] [--json]
-jw3 risk [--json]
+jw3 risk [--state] [--json]
 jw3 propose --pair BTC/USDT --side long --entry … --stop … [--asset BTC] [--venue kucoin] [--size-usd …] [--thesis …] [--timeframe 4h] [--json]
 jw3 market --exchange binance --pair BTC/USDT [--json]
 jw3 screener [--exchange binance] [--json]
@@ -56,7 +58,7 @@ jw3 order --exchange kucoin --order-id … [--pair …] [--market spot|futures] 
 jw3 fills --exchange kucoin [--pair BTC/USDT] [--market spot|futures|all] [--days 30] [--limit 50] [--json]
 jw3 pnl --exchange kucoin [--pair BTC/USDT] [--days 30] [--limit 100] [--json]
 jw3 onchain [--chains ethereum,solana] [--json]
-jw3 execute --exchange kucoin --pair BTC/USDT --side buy (--amount … | --risk-usd …) [--price …] [--market futures] [--leverage …] [--margin-mode cross|isolated] [--stop …] --yes [--json]
+jw3 execute --exchange kucoin --pair BTC/USDT --side buy (--amount … | --risk-usd …) [--price …] [--market futures] [--leverage …] [--margin-mode cross|isolated] [--stop …] [--tp … | --tp-legs P1:S1,P2:S2] [--chase SECS [--chase-poll S] [--chase-max N] [--chase-take]] [--idempotency-key …] [--actor …] --yes [--json]
 jw3 close --exchange kucoin --pair BTC/USDT --side long|short [--size …] --yes [--json]
 jw3 exits --exchange kucoin --pair BTC/USDT [--sl …] [--tp …] [--market spot|futures] [--quantity …] --yes [--json]
 jw3 cancel --exchange kucoin --order-id … [--pair …] [--market spot|futures] --yes [--json]
@@ -100,7 +102,7 @@ jw3d supervise …                   same supervisor via the jw3d alias (24/7 en
   `propose_trade` ([PAPER] setup, propose scope only — never executes).
   Refuses `--yes`/`--live`/`--trail`. `degen record --paper` closes paper
   positions; `degen paper-stats` scores the book. Full spec:
-  `packages/jw3-cli/PAPER_MODE.md`.
+  `cli/PAPER_MODE.md`.
 - `trail` guards an open futures position with a ratcheting close-stop
   (public KuCoin futures ticker only — one GET per 3s poll, max 3600
   polls, no auth reads): entry is the first good mark, the stop arms on
@@ -221,13 +223,13 @@ machine re-run `jw3 auth login` instead of copying the file.
 ## Verify
 
 ```bash
-cd packages/jw3-cli && npm test   # tsc build + node --test dist/
+cd cli && npm test   # tsc build + node --test dist/
 ```
 
 ## Launch + auth
 
 ```bash
-cd ~/Desktop/jw3_ai/packages/jw3-cli
+cd ~/Desktop/jw3-mcp-cli/cli
 npm run build
 node dist/index.js --help
 node dist/index.js auth login --browser   # opens the app, Approve, done
