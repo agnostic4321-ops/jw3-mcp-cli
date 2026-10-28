@@ -1124,7 +1124,7 @@ export async function cmdScoreStats(opts: { json: boolean; storePath?: string })
     console.log(
       JSON.stringify(
         {
-          gate: { min_samples: GATE_MIN_SAMPLES, hit_floor: GATE_HIT_FLOOR, window: SCORE_WINDOW, method: "wilson" },
+          gate: { minSamples: GATE_MIN_SAMPLES, hitFloor: GATE_HIT_FLOOR, window: SCORE_WINDOW, method: "wilson" },
           models: rows,
           gates,
         },
@@ -1145,7 +1145,7 @@ export async function cmdScoreReport(opts: { json: boolean; storePath?: string; 
     console.log(
       JSON.stringify(
         {
-          gate: { min_samples: GATE_MIN_SAMPLES, hit_floor: GATE_HIT_FLOOR, window: SCORE_WINDOW, method: "wilson" },
+          gate: { minSamples: GATE_MIN_SAMPLES, hitFloor: GATE_HIT_FLOOR, window: SCORE_WINDOW, method: "wilson" },
           models: rows,
           holdouts,
         },

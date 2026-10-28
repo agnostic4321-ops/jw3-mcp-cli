@@ -870,7 +870,7 @@ describe("cmdLearningStats", () => {
     const models = out["models"] as { model: string; scored: number; hits: number }[];
     assert.equal(models.find((m) => m.model === "jev")!.scored, 1);
     assert.equal(models.find((m) => m.model === "jev")!.hits, 1);
-    assert.equal(out["live_weights"] !== null, true);
+    assert.equal(out["liveWeights"] !== null, true);
   });
 });
 

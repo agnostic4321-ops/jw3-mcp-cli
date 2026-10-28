@@ -1268,7 +1268,7 @@ export async function cmdLearningStats(opts: {
     liveWeights = undefined;
   }
   if (opts.json) {
-    console.log(JSON.stringify({ ...stats, live_weights: liveWeights ?? null }, null, 2));
+    console.log(JSON.stringify({ ...stats, liveWeights: liveWeights ?? null }, null, 2));
     return;
   }
   for (const line of formatLearningReport(stats, liveWeights)) console.log(line);

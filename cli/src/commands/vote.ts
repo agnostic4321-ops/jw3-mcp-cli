@@ -439,15 +439,15 @@ export async function cmdVoteStats(opts: { json: boolean; storePath?: string }):
   const rows = SKILLS.map((s) => {
     const t = store.skills[s]!;
     const rate = hitRate(t);
-    return { skill: s, weight: store.weights[s]!, window: t.results.length, hit_rate: rate, hits: t.hits, total: t.total };
+    return { skill: s, weight: store.weights[s]!, window: t.results.length, hitRate: rate, hits: t.hits, total: t.total };
   });
   if (opts.json) {
-    console.log(JSON.stringify({ weights: store.weights, skills: rows, open_votes: store.votes.filter((v) => !v.resolved).length }, null, 2));
+    console.log(JSON.stringify({ weights: store.weights, skills: rows, openVotes: store.votes.filter((v) => !v.resolved).length }, null, 2));
     return;
   }
   console.log(`VOTE WEIGHTS (rolling ${HISTORY_WINDOW}, tune ≥${MIN_SAMPLES} samples: ≥${Math.round(PROMOTE_AT * 100)}% +${WEIGHT_STEP.toFixed(1)}, ≤${Math.round(DEMOTE_AT * 100)}% −${WEIGHT_STEP.toFixed(1)})`);
   for (const r of rows) {
-    const rate = r.hit_rate === null ? "—" : `${Math.round(r.hit_rate * 100)}%`;
+    const rate = r.hitRate === null ? "—" : `${Math.round(r.hitRate * 100)}%`;
     console.log(`  ${r.skill.padEnd(8)} w ${fmtW(r.weight)}  hit ${rate} (${r.window}/${HISTORY_WINDOW} scored)  lifetime ${r.hits}/${r.total}`);
   }
   const open = store.votes.filter((v) => !v.resolved);
