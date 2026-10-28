@@ -123,7 +123,7 @@ export async function cmdScalpPlan(opts: {
   try {
     row = await futuresFade(base);
   } catch (e) {
-    console.error(`No futures tape for ${base}: ${e instanceof Error ? e.message : String(e)}`);
+    console.error(`No futures tape for ${base} — no plan derived: ${e instanceof Error ? e.message : String(e)}`);
     process.exitCode = 1;
     return;
   }

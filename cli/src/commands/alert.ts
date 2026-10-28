@@ -1511,7 +1511,7 @@ export async function cmdAlert(opts: AlertOpts): Promise<void> {
   try {
     sent = await dispatchAlerts(decision.alerts, send);
   } catch (e) {
-    console.error(`Alert delivery failed: ${e instanceof Error ? e.message : String(e)}`);
+    console.error(`Alert delivery failed: ${e instanceof Error ? e.message : String(e)} — some alerts may be unsent.`);
     process.exitCode = 1;
   }
 
@@ -1519,7 +1519,7 @@ export async function cmdAlert(opts: AlertOpts): Promise<void> {
     saveAlertState(statePath, decision.state);
     writeFileSync(snapPath, `${JSON.stringify(current, null, 2)}\n`);
   } catch (e) {
-    console.error(`Could not persist the alert state: ${e instanceof Error ? e.message : String(e)}`);
+    console.error(`Could not persist the alert state: ${e instanceof Error ? e.message : String(e)} — state may be re-alerted on retry.`);
     process.exitCode = 1;
   }
 

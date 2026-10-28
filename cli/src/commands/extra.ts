@@ -37,12 +37,12 @@ export async function cmdDiary(opts: { day?: string; startDay?: string; endDay?:
   if (!pat) return;
   const dayRe = /^\d{4}-\d{2}-\d{2}$/;
   if (opts.day && !dayRe.test(opts.day)) {
-    console.error("Day must be YYYY-MM-DD.");
+    console.error("Bad --day: must be YYYY-MM-DD — nothing was called.");
     process.exitCode = 2;
     return;
   }
   if ((opts.startDay ?? opts.endDay) && (!opts.startDay || !opts.endDay || !dayRe.test(opts.startDay) || !dayRe.test(opts.endDay))) {
-    console.error("Range needs both --start-day and --end-day in YYYY-MM-DD format.");
+    console.error("Bad range: needs both --start-day and --end-day in YYYY-MM-DD format — nothing was called.");
     process.exitCode = 2;
     return;
   }
@@ -84,7 +84,7 @@ export async function cmdDailyPrep(opts: { dry: boolean; day?: string; json: boo
   if (!pat) return;
   const built = dailyPrepParams(opts);
   if ("error" in built) {
-    console.error(built.error);
+    console.error(`Bad daily-prep: ${built.error} — nothing was called.`);
     process.exitCode = 2;
     return;
   }
@@ -297,7 +297,7 @@ export async function cmdPropose(
   if (!pat) return;
   const err = validatePropose(args);
   if (err) {
-    console.error(`Bad ticket: ${err}`);
+    console.error(`Bad ticket: ${err} — nothing was called.`);
     process.exitCode = 2;
     return;
   }

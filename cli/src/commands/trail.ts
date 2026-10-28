@@ -222,13 +222,13 @@ export async function cmdTrail(
 ): Promise<void> {
   const err = validateTrailArgs(a);
   if (err) {
-    console.error(`Bad ticket: ${err}`);
+    console.error(`Bad ticket: ${err} — nothing was called.`);
     process.exitCode = 2;
     return;
   }
   const base = (a.pair.split("/")[0] ?? "").toUpperCase();
   if (!base) {
-    console.error("Usage: jw3 trail --pair SOL/USDT --side long|short --size LOT [--activation-pct 0.25] [--bounceback-pct 0.08] [--polls 600] [--yes]");
+    console.error("Usage: jw3 trail --pair SOL/USDT --side long|short --size LOT [--activation-pct 0.25] [--bounceback-pct 0.08] [--polls 600] [--live] [--yes] [--json]");
     process.exitCode = 2;
     return;
   }

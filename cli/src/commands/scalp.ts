@@ -159,7 +159,7 @@ export async function cmdScalpStart(
 ): Promise<void> {
   const err = validateScalpStart(a);
   if (err) {
-    console.error(`Bad ticket: ${err}`);
+    console.error(`Bad ticket: ${err} — nothing was called.`);
     process.exitCode = 2;
     return;
   }
@@ -266,7 +266,7 @@ export async function cmdScalpWatch(opts: {
 }): Promise<void> {
   const base = (opts.pair.split("/")[0] ?? "").toUpperCase();
   if (!base) {
-    console.error("Usage: jw3 scalp watch --pair SOL/USDT [--polls 30] [--interval 10]");
+    console.error("Usage: jw3 scalp watch --pair SOL/USDT [--polls 30] [--interval 10] [--json]");
     process.exitCode = 2;
     return;
   }
@@ -334,7 +334,7 @@ export async function cmdScalpKill(opts: {
 }): Promise<void> {
   const base = (opts.pair.split("/")[0] ?? "").toUpperCase();
   if (!base) {
-    console.error("Usage: jw3 scalp kill --pair SOL/USDT [--exchange kucoin] --yes");
+    console.error("Usage: jw3 scalp kill --pair SOL/USDT [--exchange kucoin] --yes [--json]");
     process.exitCode = 2;
     return;
   }

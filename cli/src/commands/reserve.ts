@@ -37,7 +37,7 @@ export async function cmdReserveSweep(
   if (!pat) return;
   const err = validateReserveSweep(args);
   if (err) {
-    console.error(`Bad sweep: ${err}`);
+    console.error(`Bad sweep: ${err} — nothing was called.`);
     process.exitCode = 2;
     return;
   }

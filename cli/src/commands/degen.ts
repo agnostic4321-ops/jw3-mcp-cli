@@ -500,12 +500,12 @@ export async function cmdDegen(
 ): Promise<void> {
   const argErr = validateDegenArgs(a);
   if (argErr) {
-    console.error(`Bad ticket: ${argErr}`);
+    console.error(`Bad ticket: ${argErr} — nothing was called.`);
     process.exitCode = 2;
     return;
   }
   if (a.paper && opts.yes) {
-    console.error("Bad ticket: --paper never fires — drop --yes (paper records simulated fills, it never touches the venue).");
+    console.error("Bad ticket: --paper never fires — drop --yes (paper records simulated fills, it never touches the venue) — nothing was called.");
     process.exitCode = 2;
     return;
   }

@@ -192,13 +192,13 @@ export async function cmdBounce(
 ): Promise<void> {
   const err = validateBounceArgs(a);
   if (err) {
-    console.error(`Bad ticket: ${err}`);
+    console.error(`Bad ticket: ${err} — nothing was called.`);
     process.exitCode = 2;
     return;
   }
   const base = (a.pair.split("/")[0] ?? "").toUpperCase();
   if (!base) {
-    console.error("Usage: jw3 bounce --pair SOL/USDT --side short [--bounce-pct 0.4] [--lookback-min 60] [--size …] [--yes]");
+    console.error("Usage: jw3 bounce --pair SOL/USDT --side short [--bounce-pct 0.4] [--lookback-min 60] [--size …] [--yes] [--json]");
     process.exitCode = 2;
     return;
   }

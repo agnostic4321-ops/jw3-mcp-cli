@@ -92,7 +92,7 @@ export async function cmdAuth(
       if (await tryServerRevoke(current, opts.url)) {
         console.log("Server revocation confirmed.");
       } else {
-        console.error("Server revocation not confirmed - rotate the PAT at Settings > Harness Access (PATs cannot self-revoke server-side).");
+        console.error("Server revocation not confirmed — rotate the PAT at Settings > Harness Access (PATs cannot self-revoke server-side).");
       }
     }
     console.log(clearPat() ? "Logged out - stored PAT removed." : "No stored PAT found.");

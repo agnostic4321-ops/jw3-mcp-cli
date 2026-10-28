@@ -323,7 +323,7 @@ export async function cmdExecuteChase(
   if (!pat) return;
   const err = validateExecute(args) ?? validateChase(cfg, args.market);
   if (err) {
-    console.error(`Bad ticket: ${err}`);
+    console.error(`Bad ticket: ${err} — nothing was called.`);
     process.exitCode = 2;
     return;
   }
@@ -331,7 +331,7 @@ export async function cmdExecuteChase(
   const side = args.side.toLowerCase() as ChaseSide;
   const contract = futuresContract(args.pair);
   if (!contract) {
-    console.error(`Bad ticket: no futures contract for pair ${JSON.stringify(args.pair)} — chase needs a touch to join`);
+    console.error(`Bad ticket: no futures contract for pair ${JSON.stringify(args.pair)} — chase needs a touch to join; nothing was called.`);
     process.exitCode = 2;
     return;
   }

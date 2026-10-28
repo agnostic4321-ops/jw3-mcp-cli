@@ -1171,7 +1171,7 @@ export async function cmdScoreRecord(opts: {
 }): Promise<void> {
   const voteStore = opts.voteStore;
   if (!voteStore) {
-    console.error("A vote store is required to resolve the entry context.");
+    console.error("A vote store is required to resolve the entry context — nothing was scored.");
     process.exitCode = 2;
     return;
   }
@@ -1187,7 +1187,7 @@ export async function cmdScoreRecord(opts: {
   const store = loadScoreStore(opts.storePath ?? scoreStorePath());
   const result = scoreTrade(store, trade);
   if (!result.ok) {
-    console.error(result.error ?? "trade not scorable");
+    console.error(`Failed: ${result.error ?? "trade not scorable"} — nothing was scored.`);
     process.exitCode = 1;
     return;
   }

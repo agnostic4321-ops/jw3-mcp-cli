@@ -284,7 +284,7 @@ export async function cmdExecute(
   if (!pat) return;
   const err = validateExecute(args);
   if (err) {
-    console.error(`Bad ticket: ${err}`);
+    console.error(`Bad ticket: ${err} — nothing was called.`);
     process.exitCode = 2;
     return;
   }
@@ -331,7 +331,7 @@ export async function cmdClose(opts: {
     return;
   }
   if (opts.size !== undefined && (!Number.isFinite(opts.size) || opts.size <= 0)) {
-    console.error("Bad ticket: size must be > 0 in base units (omit for full size).");
+    console.error("Bad ticket: size must be > 0 in base units (omit for full size) — nothing was called.");
     process.exitCode = 2;
     return;
   }
@@ -383,7 +383,7 @@ export async function cmdExits(opts: {
     return;
   }
   if (opts.market !== undefined && !["spot", "futures"].includes(opts.market.toLowerCase())) {
-    console.error("Bad ticket: market must be spot|futures.");
+    console.error("Bad ticket: market must be spot|futures — nothing was called.");
     process.exitCode = 2;
     return;
   }
@@ -636,7 +636,7 @@ export async function cmdCancelAll(opts: {
   if (!pat) return;
   const err = validateCancelAll({ exchange: opts.exchange, pair: opts.pair, market: opts.market });
   if (err) {
-    console.error(`Bad ticket: ${err}`);
+    console.error(`Bad ticket: ${err} — nothing was called.`);
     process.exitCode = 2;
     return;
   }

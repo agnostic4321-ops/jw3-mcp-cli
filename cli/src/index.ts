@@ -343,7 +343,7 @@ async function main(): Promise<void> {
       const pollsRaw = flagOf(g.rest, "--polls");
       const polls = pollsRaw === undefined ? 600 : Number(pollsRaw);
       if (!pair || !pair.includes("/")) {
-        console.error("Usage: jw3 trail --pair SOL/USDT --side long|short --size LOT [--activation-pct 0.25] [--bounceback-pct 0.08] [--polls 600] [--live] [--yes]");
+        console.error("Usage: jw3 trail --pair SOL/USDT --side long|short --size LOT [--activation-pct 0.25] [--bounceback-pct 0.08] [--polls 600] [--live] [--yes] [--json]");
         process.exitCode = 2;
         return;
       }
@@ -391,7 +391,7 @@ async function main(): Promise<void> {
       const sizeRaw = flagOf(g.rest, "--size");
       const size = sizeRaw === undefined ? undefined : Number(sizeRaw);
       if (!pair || !pair.includes("/")) {
-        console.error("Usage: jw3 bounce --pair SOL/USDT --side short [--bounce-pct 0.4] [--lookback-min 60] [--size …] [--yes]");
+        console.error("Usage: jw3 bounce --pair SOL/USDT --side short [--bounce-pct 0.4] [--lookback-min 60] [--size …] [--yes] [--json]");
         process.exitCode = 2;
         return;
       }
@@ -1443,19 +1443,19 @@ async function main(): Promise<void> {
       };
       const tpLegsParsed = parseTpLegsFlag(flagOf(g.rest, "--tp-legs"));
       if (tpLegsParsed.error) {
-        console.error(`Bad ticket: ${tpLegsParsed.error}`);
+        console.error(`Bad ticket: ${tpLegsParsed.error} — nothing was called.`);
         process.exitCode = 2;
         return;
       }
       const chase = parseChaseFlags(g.rest);
       if ("error" in chase) {
-        console.error(`Bad ticket: ${chase.error}`);
+        console.error(`Bad ticket: ${chase.error} — nothing was called.`);
         process.exitCode = 2;
         return;
       }
       if (chase.cfg.enabled) {
         if (numFlag("--price") !== undefined) {
-          console.error("Bad ticket: --chase sets its own limit at the touch — drop --price");
+          console.error("Bad ticket: --chase sets its own limit at the touch — drop --price — nothing was called.");
           process.exitCode = 2;
           return;
         }

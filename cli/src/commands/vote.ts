@@ -472,7 +472,7 @@ export async function cmdVoteRecord(opts: {
   const store = loadStore(path);
   const res = resolveVote(store, opts.pair, outcome);
   if ("error" in res) {
-    console.error(res.error);
+    console.error(`Failed: ${res.error} — nothing was recorded.`);
     process.exitCode = 1;
     return;
   }
