@@ -345,9 +345,19 @@ export async function cmdExecuteChase(
     ["expiry", cfg.take ? "cancel + market TAKE" : "cancel + abort"],
   ];
   if (!opts.yes) {
-    const title = "CHASE PLAN (real money)";
-    console.log([title, "—".repeat(Math.min(title.length, 48)), ...plan.map(([k, v]) => `${k}: ${v}`)].join("\n"));
-    console.log("Dry run — nothing sent. Re-run with --yes to fire (real money).");
+    if (opts.json) {
+      console.log(
+        JSON.stringify({
+          mode: "preview", exchange: args.exchange, pair: args.pair, side,
+          secs: cfg.secs, pollSecs: cfg.pollSecs,
+          maxChases: cfg.maxChases ?? null, take: cfg.take,
+        }),
+      );
+    } else {
+      const title = "CHASE PLAN (real money)";
+      console.log([title, "—".repeat(Math.min(title.length, 48)), ...plan.map(([k, v]) => `${k}: ${v}`)].join("\n"));
+      console.log("Dry run — nothing sent. Re-run with --yes to fire (real money).");
+    }
     return;
   }
   // Every place AND every replace is its own ticket: a fresh builder call

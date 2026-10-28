@@ -337,9 +337,18 @@ export async function cmdTrail(
   const fireTrigger = async (price: number): Promise<void> => {
     if (!opts.yes) {
       persist(true, false, price);
-      console.log(
-        `WOULD-CLOSE ${a.side.toUpperCase()} ${a.pair} ×${a.size} @ ${px(price)} (${a.bouncebackPct}% off peak ${px(peak)}) — dry run, nothing sent. Re-run with --yes to market-close (real money). State → ${statePath}`,
-      );
+      if (opts.json) {
+        console.log(
+          JSON.stringify({
+            event: "would-close", pair: a.pair, exchange: a.exchange, side: a.side, size: a.size,
+            price, peak, bouncebackPct: a.bouncebackPct, mode: "dry", statePath,
+          }),
+        );
+      } else {
+        console.log(
+          `WOULD-CLOSE ${a.side.toUpperCase()} ${a.pair} ×${a.size} @ ${px(price)} (${a.bouncebackPct}% off peak ${px(peak)}) — dry run, nothing sent. Re-run with --yes to market-close (real money). State → ${statePath}`,
+        );
+      }
       return;
     }
     const pat = needPat(opts.pat);
@@ -356,13 +365,22 @@ export async function cmdTrail(
         ((args: Record<string, unknown>) => callTool("close_position", args, pat, opts.url));
       const out = await closeFn(closeArgs);
       persist(true, true, price);
-      console.log(`CLOSED ${a.side.toUpperCase()} ${a.pair} ×${a.size} @ ${px(price)}: ${JSON.stringify(out)}`);
       try {
         unlinkSync(statePath);
       } catch {
         // State already gone — the close itself succeeded.
       }
-      console.log(`Trail cleared — state removed (${statePath}).`);
+      if (opts.json) {
+        console.log(
+          JSON.stringify({
+            event: "closed", pair: a.pair, exchange: a.exchange, side: a.side, size: a.size,
+            price, peak, order: out, stateCleared: true,
+          }),
+        );
+      } else {
+        console.log(`CLOSED ${a.side.toUpperCase()} ${a.pair} ×${a.size} @ ${px(price)}: ${JSON.stringify(out)}`);
+        console.log(`Trail cleared — state removed (${statePath}).`);
+      }
     } catch (e) {
       persist(true, false, price);
       console.error(`CLOSE FAILED: ${e instanceof Error ? e.message : String(e)} — state KEPT at ${statePath} so nothing is lost.`);
@@ -476,8 +494,17 @@ export async function cmdTrail(
     closeFeed();
     return;
   }
-  console.log(
-    `TRAIL DONE — no trigger inside ${a.polls} polls × 3s. ${armed ? `Armed, stop ${stop === null ? "—" : px(stop)}.` : "Never armed."}${a.live ? ` Live: ${feed ? feed.count() : 0} WS ticks, ${restFallbacks} REST fallbacks.` : ""} Re-run to keep trailing. State → ${statePath}`,
-  );
+  if (opts.json) {
+    console.log(
+      JSON.stringify({
+        event: "done", pair: a.pair, exchange: a.exchange, side: a.side,
+        polls: a.polls, armed, peak, stop, status: "no-trigger", statePath,
+      }),
+    );
+  } else {
+    console.log(
+      `TRAIL DONE — no trigger inside ${a.polls} polls × 3s. ${armed ? `Armed, stop ${stop === null ? "—" : px(stop)}.` : "Never armed."}${a.live ? ` Live: ${feed ? feed.count() : 0} WS ticks, ${restFallbacks} REST fallbacks.` : ""} Re-run to keep trailing. State → ${statePath}`,
+    );
+  }
   closeFeed();
 }

@@ -253,10 +253,13 @@ function previewLines(title: string, rows: [string, string][]): string[] {
 }
 
 /** False = dry run printed, nothing sent. True = caller may fire. */
-function gate(yes: boolean, lines: string[]): boolean {
+function gate(yes: boolean, lines: string[], jsonPreview?: { json: boolean; preview: unknown }): boolean {
   if (yes) return true;
-  for (const l of lines) console.log(l);
-  console.log("Dry run — nothing sent. Re-run with --yes to fire (real money).");
+  if (jsonPreview?.json) console.log(JSON.stringify(jsonPreview.preview));
+  else {
+    for (const l of lines) console.log(l);
+    console.log("Dry run — nothing sent. Re-run with --yes to fire (real money).");
+  }
   return false;
 }
 
@@ -300,7 +303,7 @@ export async function cmdExecute(
     ["idempotency-key", String(toolArgs.idempotency_key)],
     ...(toolArgs.actor !== undefined ? [["actor", String(toolArgs.actor)] as [string, string]] : []),
   ]);
-  if (!gate(opts.yes, lines)) return;
+  if (!gate(opts.yes, lines, { json: opts.json, preview: { mode: "preview", ticket: toolArgs } })) return;
   try {
     const out = await call("execute_trade", toolArgs, pat, opts.url);
     console.log(JSON.stringify(out, null, opts.json ? 0 : 2));
@@ -341,6 +344,7 @@ export async function cmdClose(opts: {
         ["open side", side.toUpperCase()],
         ["size", opts.size !== undefined ? `${opts.size}` : "full"],
       ]),
+      { json: opts.json, preview: { mode: "preview", exchange: opts.exchange, pair: opts.pair, side, ...(opts.size !== undefined ? { size: opts.size } : { size: "full" }) } },
     )
   ) {
     return;
@@ -393,6 +397,7 @@ export async function cmdExits(opts: {
         ["take-profit", opts.tp != null ? `${opts.tp}` : "—"],
         ["market", opts.market ?? "futures"],
       ]),
+      { json: opts.json, preview: { mode: "preview", exchange: opts.exchange, pair: opts.pair, stopLoss: opts.sl ?? null, takeProfit: opts.tp ?? null, market: opts.market ?? "futures", ...(opts.quantity !== undefined ? { quantity: opts.quantity } : {}) } },
     )
   ) {
     return;
@@ -435,6 +440,7 @@ export async function cmdCancel(opts: {
         ["exchange", opts.exchange],
         ["order", opts.orderId],
       ]),
+      { json: opts.json, preview: { mode: "preview", exchange: opts.exchange, orderId: opts.orderId, ...(opts.pair ? { pair: opts.pair } : {}), ...(opts.market ? { market: opts.market } : {}) } },
     )
   ) {
     return;

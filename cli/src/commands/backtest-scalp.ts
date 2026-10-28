@@ -74,11 +74,27 @@ export async function cmdBacktestScalp(opts: {
   }
   const r: ScalpBacktest | null = backtestScalp(klines, { tpPct: opts.tpPct, feePerSidePct: feePerSide });
   if (!r) {
-    console.log(`BACKTEST SCALP ${opts.pair} — ${klines.length}×1h candles, no backtest on thin history. Verdict: NO-GO.`);
-    if (opts.json) console.log(JSON.stringify({ pair: opts.pair, candles: klines.length, trades: 0, verdict: "NO-GO" }));
+    if (opts.json) {
+      console.log(JSON.stringify({ pair: opts.pair, candles: klines.length, trades: 0, verdict: "NO-GO" }));
+    } else {
+      console.log(`BACKTEST SCALP ${opts.pair} — ${klines.length}×1h candles, no backtest on thin history. Verdict: NO-GO.`);
+    }
     return;
   }
   if (r.trades.length === 0) {
+    if (opts.json) {
+      console.log(JSON.stringify({
+        pair: opts.pair, symbol, candles: r.candles, hourly: true, days,
+        signals: r.signals, trades: 0, verdict: "NO-GO",
+        verdictConservative: r.verdictConservative,
+        conditionalSignals: r.conditionalSignals, conditionalTrades: r.conditionalTrades,
+        expectancyPctConditional: r.expectancyPctConditional,
+        totalNetPctConditional: r.totalNetPctConditional,
+        winRateConditional: r.winRateConditional,
+        conditionalBySide: r.conditionalBySide,
+      }));
+      return;
+    }
     // The unambiguous series can be empty while the conditional track has
     // trades — report the conditional, not a bare "no signals".
     const cb0 = r.conditionalBySide;
@@ -96,18 +112,6 @@ export async function cmdBacktestScalp(opts: {
         `    long  n=${cb0.long.trades} WR=${cb0.long.winRate.toFixed(1)}% expectancy ${cb0.long.expectancyPct.toFixed(4)}%/tr` +
           `   |   short n=${cb0.short.trades} WR=${cb0.short.winRate.toFixed(1)}% expectancy ${cb0.short.expectancyPct.toFixed(4)}%/tr`,
       );
-    }
-    if (opts.json) {
-      console.log(JSON.stringify({
-        pair: opts.pair, symbol, candles: r.candles, hourly: true, days,
-        signals: r.signals, trades: 0, verdict: "NO-GO",
-        verdictConservative: r.verdictConservative,
-        conditionalSignals: r.conditionalSignals, conditionalTrades: r.conditionalTrades,
-        expectancyPctConditional: r.expectancyPctConditional,
-        totalNetPctConditional: r.totalNetPctConditional,
-        winRateConditional: r.winRateConditional,
-        conditionalBySide: r.conditionalBySide,
-      }));
     }
     return;
   }

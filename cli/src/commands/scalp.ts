@@ -281,13 +281,19 @@ export async function cmdScalpWatch(opts: {
     return;
   }
   const dir = state.direction.toUpperCase();
-  console.log(`WATCH ${dir} ${state.pair} — TP ${px(state.tpPrice)} / kill ${px(state.killPrice)} (${polls} polls × ${intervalMs / 1000}s)`);
+  if (opts.json) {
+    console.log(JSON.stringify({ event: "start", pair: state.pair, direction: state.direction, tpPrice: state.tpPrice, killPrice: state.killPrice, polls, intervalSec: intervalMs / 1000 }));
+  } else {
+    console.log(`WATCH ${dir} ${state.pair} — TP ${px(state.tpPrice)} / kill ${px(state.killPrice)} (${polls} polls × ${intervalMs / 1000}s)`);
+  }
   for (let i = 1; i <= polls; i++) {
     let mark: number;
     try {
       mark = await futuresCenter(state.base);
     } catch (e) {
-      console.log(`EVENT poll=${i} status=tape-error error=${JSON.stringify(e instanceof Error ? e.message : String(e))}`);
+      const msg = e instanceof Error ? e.message : String(e);
+      if (opts.json) console.log(JSON.stringify({ poll: i, status: "tape-error", error: msg }));
+      else console.log(`EVENT poll=${i} status=tape-error error=${JSON.stringify(msg)}`);
       if (i < polls) await new Promise((r) => setTimeout(r, intervalMs));
       continue;
     }
@@ -298,17 +304,20 @@ export async function cmdScalpWatch(opts: {
       console.log(`EVENT poll=${i} price=${px(mark)} status=${cls}`);
     }
     if (cls === "tp") {
-      console.log(`TP HIT @ ${px(mark)} — take-profit should have filled; clear state with \`scalp kill --pair ${state.pair}\` (no orders expected).`);
+      if (opts.json) console.log(JSON.stringify({ poll: i, price: mark, status: cls, tpPrice: state.tpPrice, killPrice: state.killPrice, event: "tp-hit" }));
+      else console.log(`TP HIT @ ${px(mark)} — take-profit should have filled; clear state with \`scalp kill --pair ${state.pair}\` (no orders expected).`);
       return;
     }
     if (cls === "kill") {
-      console.log(`KILL LINE BREACHED @ ${px(mark)} (≈ -$${state.killLossUsd.toFixed(2)}) — run \`scalp kill --pair ${state.pair} --yes\` now.`);
+      if (opts.json) console.log(JSON.stringify({ poll: i, price: mark, status: cls, tpPrice: state.tpPrice, killPrice: state.killPrice, event: "kill-breach" }));
+      else console.log(`KILL LINE BREACHED @ ${px(mark)} (≈ -$${state.killLossUsd.toFixed(2)}) — run \`scalp kill --pair ${state.pair} --yes\` now.`);
       process.exitCode = 1;
       return;
     }
     if (i < polls) await new Promise((r) => setTimeout(r, intervalMs));
   }
-  console.log("WATCH DONE — neither line touched inside the poll budget. Re-run to keep watching.");
+  if (opts.json) console.log(JSON.stringify({ event: "done", pair: state.pair, polls, status: "no-touch" }));
+  else console.log("WATCH DONE — neither line touched inside the poll budget. Re-run to keep watching.");
 }
 
 /**

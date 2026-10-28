@@ -214,15 +214,17 @@ export async function cmdGrid(
     freeFuturesUsd: free, funded: ok,
     roundTripFeePct: 0.12, netPerPairPct: a.stepPct * 2 - 0.12,
   };
-  if (opts.json) {
-    console.log(JSON.stringify({ ...summary, ladder: ladder.levels.map((l) => ({ ...l, price: roundToTick(l.price, spec.tick) })) }));
+  if (opts.json && !(mode === "start" && opts.yes)) {
+    console.log(JSON.stringify({ mode, ...summary, ladder: ladder.levels.map((l) => ({ ...l, price: roundToTick(l.price, spec.tick) })) }));
     return;
   }
+  if (!opts.json) {
   console.log(`GRID ${mode.toUpperCase()} ${bias.toUpperCase()} — ${a.pair} @ ${center} (${ladder.levels.length} levels × ${a.stepPct}%, x${a.leverage} isolated)`);
   if (bias !== "neutral") console.log(`  seed ${bias.toUpperCase()} ${ladder.seedContracts} contracts @ market (covers all ${ladder.levelsPerSide} ${bias === "long" ? "sell" : "buy"} levels)`);
   console.log(`  range ${roundToTick(ladder.lower, spec.tick)} … ${roundToTick(ladder.upper, spec.tick)} (${ladder.rangePct.toFixed(2)}%)`);
   console.log(`  ${contracts} contracts/level ≈ $${stepNotional.toFixed(2)} → margin $${marginReq.toFixed(0)} vs free $${free.toFixed(0)} — ${ok ? "FUNDED" : "UNDERFUNDED"}`);
   console.log(`  net per pair-fill ≈ ${(a.stepPct * 2 - 0.12).toFixed(2)}% ≈ $${((stepNotional * (a.stepPct * 2 - 0.12)) / 100).toFixed(3)}`);
+  }
   if (!ok) {
     console.error("Refusing: free balance does not cover margin + $30 buffer. Reduce --size or --levels.");
     process.exitCode = 1;
@@ -258,7 +260,7 @@ export async function cmdGrid(
         pat, opts.url,
       )) as { orderId?: string };
       seedOrderId = String(seed.orderId ?? "?");
-      console.log(`SEED ${bias.toUpperCase()} ${ladder.seedContracts} @ market → ${seedOrderId}`);
+      if (!opts.json) console.log(`SEED ${bias.toUpperCase()} ${ladder.seedContracts} @ market → ${seedOrderId}`);
     } catch (e) {
       console.error(`Seed failed — aborting ladder, no levels placed: ${e instanceof Error ? e.message : String(e)}`);
       process.exitCode = 1;
@@ -286,11 +288,15 @@ export async function cmdGrid(
       failed.push({ side: l.side, price: px, error: e instanceof Error ? e.message : String(e) });
     }
   }
-  console.log(`PLACED ${placed.length}/${ladder.levels.length} levels, ${failed.length} failed.`);
-  for (const f of failed.slice(0, 10)) console.log(`  FAIL ${f.side} @ ${f.price}: ${f.error.slice(0, 160)}`);
   const state = { ...summary, center, tick: spec.tick, multiplier: spec.multiplier, seedOrderId, placed, failed: failed.length };
   const statePath = join(tmpdir(), `grid_${base.toLowerCase()}.json`);
   writeFileSync(statePath, JSON.stringify(state, null, 2));
-  console.log(`Grid state → ${statePath}`);
+  if (opts.json) {
+    console.log(JSON.stringify({ mode: "started", ...summary, center, seedOrderId, placed, failed, statePath }));
+  } else {
+    console.log(`PLACED ${placed.length}/${ladder.levels.length} levels, ${failed.length} failed.`);
+    for (const f of failed.slice(0, 10)) console.log(`  FAIL ${f.side} @ ${f.price}: ${f.error.slice(0, 160)}`);
+    console.log(`Grid state → ${statePath}`);
+  }
   if (failed.length > 0) process.exitCode = 1;
 }

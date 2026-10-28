@@ -631,14 +631,14 @@ export async function cmdDegen(
   }
 
   if (!opts.yes) {
-    printTicket(a, ticket, row!, oracle, heat, false);
     const finetune = appendLearning(logPath, learningEntry(a, ticket, row!, oracle, heat, "preview", "screen+oracle pass"));
     if (opts.json) {
-      console.log(JSON.stringify({ mode: "preview", ticket, screen: row, oracle, heat }, null, 2));
+      console.log(JSON.stringify({ mode: "preview", ticket, screen: row, oracle, heat, ...(finetune ? { finetune } : {}) }, null, 2));
     } else {
+      printTicket(a, ticket, row!, oracle, heat, false);
       console.log("Dry run — nothing sent. Re-run with --yes to fire step-1 + stage step-2 + arm TP (real money).");
+      if (finetune) console.log(`FINETUNE-READY: ${finetune} learning windows banked — re-score the oracle holdout.`);
     }
-    if (finetune) console.log(`FINETUNE-READY: ${finetune} learning windows banked — re-score the oracle holdout.`);
     return;
   }
 
@@ -671,7 +671,7 @@ export async function cmdDegen(
   try {
     const out1 = (await call("execute_trade", degenExecuteArgs({ exchange: a.exchange, pair, side, contracts: step1.contracts, price: step1.price, leverage: a.leverage, multiplier: spec.multiplier }), pat, opts.url)) as { orderId?: string };
     step1Id = String(out1.orderId ?? "?");
-    console.log(`PLACED step-1: ${execSide.toUpperCase()} ${step1.contracts} @ ${px(step1.price)} → ${step1Id}`);
+    if (!opts.json) console.log(`PLACED step-1: ${execSide.toUpperCase()} ${step1.contracts} @ ${px(step1.price)} → ${step1Id}`);
   } catch (e) {
     failed++;
     console.error(`STEP-1 FAILED: ${e instanceof Error ? e.message : String(e)}`);
@@ -680,7 +680,7 @@ export async function cmdDegen(
     try {
       const out2 = (await call("execute_trade", degenExecuteArgs({ exchange: a.exchange, pair, side, contracts: step2.contracts, price: step2.price, leverage: a.leverage, multiplier: spec.multiplier }), pat, opts.url)) as { orderId?: string };
       step2Id = String(out2.orderId ?? "?");
-      console.log(`STAGED step-2 (resting average level): ${execSide.toUpperCase()} ${step2.contracts} @ ${px(step2.price)} → ${step2Id}`);
+      if (!opts.json) console.log(`STAGED step-2 (resting average level): ${execSide.toUpperCase()} ${step2.contracts} @ ${px(step2.price)} → ${step2Id}`);
     } catch (e) {
       failed++;
       console.error(`STEP-2 STAGE FAILED (step-1 is live WITHOUT its averaging level): ${e instanceof Error ? e.message : String(e)}`);
@@ -699,7 +699,7 @@ export async function cmdDegen(
     await call("set_exits", degenExitsArgs({ exchange: a.exchange, pair, tpPrice: tp1Price, slPrice: plan.killPrice }), pat, opts.url);
     tpArmed = true;
     stopArmed = true;
-    console.log(`TP ARMED @ ${px(tp1Price)} (step-1 TP; move to averaged ${px(tp2Price)} via exits once step-2 fills) + STOP ARMED @ kill ${px(plan.killPrice)}`);
+    if (!opts.json) console.log(`TP ARMED @ ${px(tp1Price)} (step-1 TP; move to averaged ${px(tp2Price)} via exits once step-2 fills) + STOP ARMED @ kill ${px(plan.killPrice)}`);
   } catch (e) {
     // The combined arm failed: fall back to the TP-only arm (the old
     // doctrine) so the take-profit is not lost with the stop. A TP-only
@@ -708,7 +708,7 @@ export async function cmdDegen(
     try {
       await call("set_exits", degenExitsArgs({ exchange: a.exchange, pair, tpPrice: tp1Price }), pat, opts.url);
       tpArmed = true;
-      console.log(`TP ARMED @ ${px(tp1Price)} (step-1 TP; move to averaged ${px(tp2Price)} via exits once step-2 fills)`);
+      if (!opts.json) console.log(`TP ARMED @ ${px(tp1Price)} (step-1 TP; move to averaged ${px(tp2Price)} via exits once step-2 fills)`);
     } catch (e2) {
       console.error(`TP arm failed: entry is live WITHOUT a take-profit: ${e2 instanceof Error ? e2.message : String(e2)}`);
     }
@@ -736,7 +736,16 @@ export async function cmdDegen(
   heat.heatUsd += plan.killLossUsd;
   saveHeat(heatPath, heat);
   const finetune = appendLearning(logPath, learningEntry(a, ticket, row!, oracle, heat, "live", "fired"));
-  printTicket(a, ticket, row!, oracle, heat, true);
+  if (opts.json) {
+    console.log(JSON.stringify({
+      mode: "fired", ticket, pair, side,
+      step1Id, step2Id, failed, tpArmed, stopArmed, trail: a.trail,
+      tp1Price, tp2Price, killPrice: plan.killPrice, killLossUsd: plan.killLossUsd,
+      heat, ...(finetune ? { finetune } : {}),
+    }, null, 2));
+  } else {
+    printTicket(a, ticket, row!, oracle, heat, true);
+  }
   if (a.trail) {
     const runTrail = deps?.runTrail ?? (async (t) => {
       await cmdTrail(
@@ -745,11 +754,13 @@ export async function cmdDegen(
       );
     });
     await runTrail({ exchange: a.exchange, pair, side, size: step1.contracts, activationPct: a.activationPct, bouncebackPct: a.bouncebackPct, polls: a.polls, live: a.live });
-  } else {
+  } else if (!opts.json) {
     console.log(`Trail guard: jw3 trail --pair ${pair} --side ${side} --size ${step1.contracts} --exchange ${a.exchange} --activation-pct ${a.activationPct} --bounceback-pct ${a.bouncebackPct} --polls ${a.polls}${a.live ? " --live" : ""} --yes`);
   }
-  console.log(`Kill line ${px(plan.killPrice)} (≈ -$${plan.killLossUsd.toFixed(2)}) — thesis break scratches everything; close the loop with \`degen record --pair ${pair} --outcome win|loss|stop|scratch\`.`);
-  if (finetune) console.log(`FINETUNE-READY: ${finetune} learning windows banked — re-score the oracle holdout.`);
+  if (!opts.json) {
+    console.log(`Kill line ${px(plan.killPrice)} (≈ -$${plan.killLossUsd.toFixed(2)}) — thesis break scratches everything; close the loop with \`degen record --pair ${pair} --outcome win|loss|stop|scratch\`.`);
+    if (finetune) console.log(`FINETUNE-READY: ${finetune} learning windows banked — re-score the oracle holdout.`);
+  }
   // Success needs a guarded position: a venue-native stop, or the trail
   // supervisor running inline. A TP-only arm never counts.
   if (failed > 0 || !tpArmed || (!stopArmed && !a.trail)) process.exitCode = 1;
@@ -866,17 +877,19 @@ async function runPaper(
     fills,
     diary: { setupId, skipped: diarySkipped },
   });
+  if (opts.json) {
+    console.log(JSON.stringify({ mode: "paper", ticket, screen: row, oracle, heat, fills, diary: { setupId, skipped: diarySkipped }, ...(finetune ? { finetune } : {}) }, null, 2));
+  } else {
   printTicket(a, ticket, row, oracle, heat, false);
   console.log(`  paper fills: step-1 [${fills.step1Id}] step-2 [${fills.step2Id}] TP ${px(ticket.tp1Price)} (virtual, TP-only doctrine)`);
   if (setupId) console.log(`  diary: PAPER setup ${setupId} (propose scope — approve nothing, it never executes)`);
   else console.log(`  diary: ${diarySkipped}`);
-  if (opts.json) {
-    console.log(JSON.stringify({ mode: "paper", ticket, screen: row, oracle, heat, fills, diary: { setupId, skipped: diarySkipped } }, null, 2));
-  } else {
     console.log("PAPER — simulated fills, zero venue contact. Nothing can execute from this ticket.");
   }
+  if (!opts.json) {
   console.log(`Kill line ${px(ticket.plan.killPrice)} (≈ -$${ticket.plan.killLossUsd.toFixed(2)}) — close the loop with \`degen record --paper --pair ${ticket.pair} --outcome win|loss|stop|scratch [--pnl …]\`.`);
   if (finetune) console.log(`FINETUNE-READY: ${finetune} learning windows banked — re-score the oracle holdout.`);
+  }
 }
 
 function learningEntry(
@@ -1018,13 +1031,13 @@ export async function cmdDegenRecord(
     heat: { stopsToday: heat.stopsToday, heatUsd: heat.heatUsd, open: heat.open.map((o) => o.pair) },
   });
   if (opts.json) {
-    console.log(JSON.stringify({ pair, outcome, ...(opts.paper ? { paper: true } : {}), heat }, null, 2));
+    console.log(JSON.stringify({ pair, outcome, ...(opts.paper ? { paper: true } : {}), heat, ...(finetune ? { finetune } : {}) }, null, 2));
   } else {
     console.log(`${opts.paper ? "PAPER " : ""}RECORDED ${outcome.toUpperCase()} ${pair} — stops today ${heat.stopsToday}, heat $${heat.heatUsd.toFixed(2)}, open [${heat.open.map((o) => o.pair).join(", ") || "—"}]`);
     if (heat.stopsToday === 1) console.log("Halve rule live: next size is HALF until the day rolls.");
     if (heat.stopsToday >= DEGEN_MAX_STOPS_PER_DAY) console.log("Flat for the day — the book reopens tomorrow.");
+    if (finetune) console.log(`FINETUNE-READY: ${finetune} learning windows banked — re-score the oracle holdout.`);
   }
-  if (finetune) console.log(`FINETUNE-READY: ${finetune} learning windows banked — re-score the oracle holdout.`);
 }
 
 /** Scored view of the paper book: fills opened vs outcomes recorded. */

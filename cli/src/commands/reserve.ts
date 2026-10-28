@@ -52,13 +52,13 @@ export async function cmdReserveSweep(
     try {
       const out = await callTool("reserve_sweep", toolArgs, pat, opts.url);
       console.log(JSON.stringify(out, null, opts.json ? 0 : 2));
-      console.log("Dry run — nothing sent. Re-run with --yes to fire (real money).");
+      if (!opts.json) console.log("Dry run — nothing sent. Re-run with --yes to fire (real money).");
     } catch (e) {
       fail(e);
     }
     return;
   }
-  console.log(`RESERVE SWEEP (real money): keep ${args.keep} ${currency} in futures on ${args.exchange.toLowerCase()}, sweep the excess futures -> main -> trade.`);
+  if (!opts.json) console.log(`RESERVE SWEEP (real money): keep ${args.keep} ${currency} in futures on ${args.exchange.toLowerCase()}, sweep the excess futures -> main -> trade.`);
   try {
     const out = await callTool("reserve_sweep", toolArgs, pat, opts.url);
     console.log(JSON.stringify(out, null, opts.json ? 0 : 2));

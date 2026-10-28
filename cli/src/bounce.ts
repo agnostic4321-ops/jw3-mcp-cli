@@ -232,15 +232,33 @@ export async function cmdBounce(
     const off = bouncePctOffLow(low, price);
     const offS = Number.isFinite(off) ? `${off.toFixed(3)}%` : "—";
     if (!opts.yes) {
-      console.log(
-        `WOULD-${a.side.toUpperCase()} ${a.pair} @ ${px(price)} (+${offS} off low ${px(low)}, trigger +${a.bouncePct}%) — dry run, nothing sent. Re-run with --yes${sized ? "" : " --size …"} to fire (real money).`,
-      );
+      if (opts.json) {
+        console.log(
+          JSON.stringify({
+            event: "would-fire", pair: a.pair, exchange: a.exchange, side: a.side,
+            price, low, bouncePctOff: off, triggerPct: a.bouncePct, mode: "dry", size: a.size ?? null,
+          }),
+        );
+      } else {
+        console.log(
+          `WOULD-${a.side.toUpperCase()} ${a.pair} @ ${px(price)} (+${offS} off low ${px(low)}, trigger +${a.bouncePct}%) — dry run, nothing sent. Re-run with --yes${sized ? "" : " --size …"} to fire (real money).`,
+        );
+      }
       return;
     }
     if (!sized) {
-      console.log(
-        `BOUNCE ${a.side.toUpperCase()} ${a.pair} @ ${px(price)} (+${offS} off low ${px(low)}, trigger +${a.bouncePct}%) — no --size: ticket only, nothing sent.`,
-      );
+      if (opts.json) {
+        console.log(
+          JSON.stringify({
+            event: "ticket-only", pair: a.pair, exchange: a.exchange, side: a.side,
+            price, low, bouncePctOff: off, triggerPct: a.bouncePct, mode: "dry", reason: "no-size",
+          }),
+        );
+      } else {
+        console.log(
+          `BOUNCE ${a.side.toUpperCase()} ${a.pair} @ ${px(price)} (+${offS} off low ${px(low)}, trigger +${a.bouncePct}%) — no --size: ticket only, nothing sent.`,
+        );
+      }
       return;
     }
     const pat = needPat(opts.pat);
@@ -257,7 +275,16 @@ export async function cmdBounce(
     try {
       const call = deps?.call ?? callTool;
       const out = await call("execute_trade", toolArgs, pat, opts.url);
-      console.log(`FIRED ${a.side.toUpperCase()} ${a.pair} @ ${px(price)} (+${offS} off low ${px(low)}): ${JSON.stringify(out)}`);
+      if (opts.json) {
+        console.log(
+          JSON.stringify({
+            event: "fired", pair: a.pair, exchange: a.exchange, side: a.side,
+            price, low, bouncePctOff: off, order: out,
+          }),
+        );
+      } else {
+        console.log(`FIRED ${a.side.toUpperCase()} ${a.pair} @ ${px(price)} (+${offS} off low ${px(low)}): ${JSON.stringify(out)}`);
+      }
     } catch (e) {
       console.error(`ENTRY FAILED: ${e instanceof Error ? e.message : String(e)} — nothing filled, ticket kept above.`);
       process.exitCode = 1;
@@ -320,7 +347,16 @@ export async function cmdBounce(
     process.exitCode = 1;
     return;
   }
-  console.log(
-    `BOUNCE DONE — no +${a.bouncePct}% bounce off low ${px(low)} inside ${polls} polls × 3s. Re-run to keep watching.`,
-  );
+  if (opts.json) {
+    console.log(
+      JSON.stringify({
+        event: "done", pair: a.pair, exchange: a.exchange, side: a.side,
+        low, polls, status: "no-trigger",
+      }),
+    );
+  } else {
+    console.log(
+      `BOUNCE DONE — no +${a.bouncePct}% bounce off low ${px(low)} inside ${polls} polls × 3s. Re-run to keep watching.`,
+    );
+  }
 }

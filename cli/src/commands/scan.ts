@@ -45,7 +45,8 @@ export async function cmdScanFade(opts: {
     .filter((c): c is { tick: Tick; base: string } => c.base !== null)
     .slice(0, opts.limit);
   if (cands.length === 0) {
-    console.log(`No gainers ≥ ${opts.minChg}% in the top-by-volume board — nothing to fade.`);
+    if (opts.json) console.log(JSON.stringify([]));
+    else console.log(`No gainers ≥ ${opts.minChg}% in the top-by-volume board — nothing to fade.`);
     return;
   }
   const rows: (FadeRow & { chg24: number | null; sSig: string; lSig: string })[] = [];
