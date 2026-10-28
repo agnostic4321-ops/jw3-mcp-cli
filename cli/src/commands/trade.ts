@@ -323,7 +323,7 @@ export async function cmdClose(opts: {
   if (!pat) return;
   const side = opts.side.toLowerCase();
   if (!opts.exchange || !opts.pair || (side !== "long" && side !== "short")) {
-    console.error("Usage: jw3 close --exchange kucoin --pair BTC/USDT --side long|short [--size …] --yes");
+    console.error("Usage: jw3 close --exchange kucoin --pair BTC/USDT --side long|short [--size …] --yes [--json]");
     process.exitCode = 2;
     return;
   }
@@ -374,7 +374,7 @@ export async function cmdExits(opts: {
   const pat = needPat(opts.pat);
   if (!pat) return;
   if (!opts.exchange || !opts.pair || (!(opts.sl != null && opts.sl > 0) && !(opts.tp != null && opts.tp > 0))) {
-    console.error("Usage: jw3 exits --exchange kucoin --pair BTC/USDT [--sl …] [--tp …] [--market spot|futures] [--quantity …] --yes");
+    console.error("Usage: jw3 exits --exchange kucoin --pair BTC/USDT [--sl …] [--tp …] [--market spot|futures] [--quantity …] --yes [--json]");
     process.exitCode = 2;
     return;
   }
@@ -424,7 +424,7 @@ export async function cmdCancel(opts: {
   const pat = needPat(opts.pat);
   if (!pat) return;
   if (!opts.exchange || !opts.orderId) {
-    console.error("Usage: jw3 cancel --exchange kucoin --order-id … [--pair …] [--market spot|futures] --yes");
+    console.error("Usage: jw3 cancel --exchange kucoin --order-id … [--pair …] [--market spot|futures] --yes [--json]");
     process.exitCode = 2;
     return;
   }

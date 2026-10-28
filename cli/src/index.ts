@@ -741,7 +741,7 @@ async function main(): Promise<void> {
       if (!needNum(risk, "--risk", g.rest) || !needNum(size, "--size", g.rest)) return;
       const pat = resolvePat(g.pat);
       if (!pat) {
-        console.error("Not authenticated — run `jw3 auth login --browser`. Nothing was called.");
+        console.error("Not authenticated — run `jw3 auth login --browser` first; nothing was called.");
         process.exitCode = 2;
         return;
       }

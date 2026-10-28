@@ -276,7 +276,7 @@ export async function cmdScalpWatch(opts: {
   try {
     state = readScalpState(scalpStatePath(base));
   } catch (e) {
-    console.error(e instanceof Error ? e.message : String(e));
+    console.error(`Failed: ${e instanceof Error ? e.message : String(e)}`);
     process.exitCode = 1;
     return;
   }
@@ -334,7 +334,7 @@ export async function cmdScalpKill(opts: {
   try {
     state = readScalpState(statePath);
   } catch (e) {
-    console.error(e instanceof Error ? e.message : String(e));
+    console.error(`Failed: ${e instanceof Error ? e.message : String(e)}`);
     process.exitCode = 1;
     return;
   }

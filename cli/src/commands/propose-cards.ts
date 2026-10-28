@@ -110,19 +110,19 @@ export async function cmdProposeIdea(
   if (!pat) return;
   const parsed = args.targets === undefined ? parseIdeaTargets(args.targetRaw) : {};
   if (parsed.error) {
-    console.error(`Bad targets: ${parsed.error}`);
+    console.error(`Bad targets: ${parsed.error} — nothing was called.`);
     process.exitCode = 2;
     return;
   }
   const withTargets = { ...args, targets: args.targets ?? parsed.targets };
   if (!withTargets.targets) {
-    console.error("Bad targets: --target is required (1..3 price[:weight] legs, e.g. 70000:0.5,75000)");
+    console.error("Bad targets: --target is required (1..3 price[:weight] legs, e.g. 70000:0.5,75000) — nothing was called.");
     process.exitCode = 2;
     return;
   }
   const err = validateProposeIdea(withTargets as ProposeIdeaArgs);
   if (err) {
-    console.error(`Bad idea: ${err}`);
+    console.error(`Bad idea: ${err} — nothing was called.`);
     process.exitCode = 2;
     return;
   }
@@ -211,7 +211,7 @@ export async function cmdProposeBracket(
   if (!pat) return;
   const err = validateProposeBracket(args);
   if (err) {
-    console.error(`Bad bracket: ${err}`);
+    console.error(`Bad bracket: ${err} — nothing was called.`);
     process.exitCode = 2;
     return;
   }
@@ -291,7 +291,7 @@ export async function cmdProposePredict(
   if (!pat) return;
   const err = validateProposePredict(args);
   if (err) {
-    console.error(`Bad prediction: ${err}`);
+    console.error(`Bad prediction: ${err} — nothing was called.`);
     process.exitCode = 2;
     return;
   }
@@ -356,7 +356,7 @@ export async function cmdProposeCloseAll(
   if (!pat) return;
   const err = validateProposeCloseAll(args);
   if (err) {
-    console.error(`Bad close-all: ${err}`);
+    console.error(`Bad close-all: ${err} — nothing was called.`);
     process.exitCode = 2;
     return;
   }
@@ -419,7 +419,7 @@ export async function cmdProposeWithdraw(
   if (!pat) return;
   const err = validateProposeWithdraw(args);
   if (err) {
-    console.error(`Bad withdrawal: ${err}`);
+    console.error(`Bad withdrawal: ${err} — nothing was called.`);
     process.exitCode = 2;
     return;
   }

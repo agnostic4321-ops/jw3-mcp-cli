@@ -501,15 +501,15 @@ export async function cmdPaperPromote(
 
 export const PAPER_USAGE = `jw3 paper — local paper-trading accounts (no venue contact, no trades).
 
-  jw3 paper create --account NAME [--equity 10000]
-  jw3 paper fund --account NAME --amount 500
-  jw3 paper reset --account NAME
+  jw3 paper create --account NAME [--equity 10000] [--json]
+  jw3 paper fund --account NAME --amount 500 [--json]
+  jw3 paper reset --account NAME [--json]
   jw3 paper list [--json]
-  jw3 paper execute --account NAME --pair SOL/USDT --side buy|sell (--qty … | --size-usd …) --price … [--lev 1] [--tp …] [--sl …] [--fee maker|taker] [--strategy TAG]
-  jw3 paper positions [--account NAME] [--pair …] [--strategy TAG] [--mark … (needs --pair)]
-  jw3 paper fills [--account NAME] [--pair …] [--strategy TAG] [--limit 50]
-  jw3 paper pnl [--account NAME]
-  jw3 paper tick --pair SOL/USDT --price … [--account NAME] [--fee maker|taker]
-  jw3 paper promote --account NAME [--position-id …] [--pair …] [--exchange kucoin]
+  jw3 paper execute --account NAME --pair SOL/USDT --side buy|sell (--qty … | --size-usd …) --price … [--lev 1] [--tp …] [--sl …] [--fee maker|taker] [--strategy TAG] [--json]
+  jw3 paper positions [--account NAME] [--pair …] [--strategy TAG] [--mark … (needs --pair)] [--json]
+  jw3 paper fills [--account NAME] [--pair …] [--strategy TAG] [--limit 50] [--json]
+  jw3 paper pnl [--account NAME] [--json]
+  jw3 paper tick --pair SOL/USDT --price … [--account NAME] [--fee maker|taker] [--json]
+  jw3 paper promote --account NAME [--position-id …] [--pair …] [--exchange kucoin] [--json]
 
 Simulated fills settle locally; promote renders the live ticket without sending it.`;
