@@ -1725,35 +1725,3 @@ export async function cmdWatchdogResume(opts: WatchdogCmdOptions, deps?: Watchdo
   console.log(`WATCHDOG — resumed by ${actor}: ${verdict.reason}`);
   if (opts.json === true) console.log(JSON.stringify({ resumed: true, actor, reason: verdict.reason }));
 }
-
-/** `jw3 watchdog arm-flatten` / `disarm-flatten` — arm the standing policy. */
-export async function cmdWatchdogArmFlatten(
-  opts: WatchdogCmdOptions & { arm: boolean },
-  deps?: WatchdogDeps,
-): Promise<void> {
-  const cfgDir = deps?.cfgDir ?? configDir();
-  const statePath = watchdogStatePath(cfgDir);
-  const state = loadWatchdogState(statePath);
-  const next: WatchdogState = {
-    ...state,
-    policy: { ...state.policy, flattenArmed: opts.arm === true },
-  };
-  saveWatchdogState(statePath, next);
-  console.log(
-    opts.arm === true
-      ? "WATCHDOG — flatten policy ARMED (still per-invocation opt-in; the watchdog still prefers a reduce-only close)."
-      : "WATCHDOG — flatten policy DISARMED.",
-  );
-}
-
-/** Dispatch: `jw3 watchdog <check|run|resume|arm-flatten|disarm-flatten>`. */
-export async function cmdWatchdog(opts: WatchdogCmdOptions, deps?: WatchdogDeps): Promise<void> {
-  const sub = (opts.sub ?? "check").toLowerCase();
-  if (sub === "check") return cmdWatchdogCheck(opts, deps);
-  if (sub === "run") return cmdWatchdogRun(opts, deps);
-  if (sub === "resume") return cmdWatchdogResume(opts, deps);
-  if (sub === "arm-flatten") return cmdWatchdogArmFlatten({ ...opts, arm: true }, deps);
-  if (sub === "disarm-flatten") return cmdWatchdogArmFlatten({ ...opts, arm: false }, deps);
-  console.error("Usage: jw3 watchdog <check|run|resume|arm-flatten|disarm-flatten>");
-  process.exitCode = 2;
-}

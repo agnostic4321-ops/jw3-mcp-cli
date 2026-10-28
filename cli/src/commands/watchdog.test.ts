@@ -16,8 +16,7 @@ import {
   appendWatchdogDiary,
   applyResume,
   classifyOrderOwnership,
-  cmdWatchdog,
-  cmdWatchdogArmFlatten,
+  cmdWatchdogCheck,
   cmdWatchdogResume,
   decideWatchdog,
   defaultWatchdogPolicy,
@@ -31,6 +30,7 @@ import {
   normalizeWatchdogRiskState,
   parseHeartbeat,
   runWatchdogCycle,
+  saveWatchdogState,
   watchdogDiaryPath,
   watchdogStatePath,
   WATCHDOG_DEFAULT_MAX_VENUE_ERRORS,
@@ -902,8 +902,13 @@ describe("runWatchdogCycle", () => {
   it("flattens with a reduce-only close only when armed AND opted in", async () => {
     const { calls, deps } = makeDeps();
     writeFileSync(join(dir, "scalp_sol.json"), JSON.stringify({ pair: "SOL/USDT", placed: [{ orderId: "o1" }] }));
-    // Arm the policy.
-    await cmdWatchdogArmFlatten({ arm: true }, { cfgDir: dir });
+    // Arm the policy (direct state write; no CLI setter exists).
+    {
+      const statePath = watchdogStatePath(dir);
+      const armed = loadWatchdogState(statePath);
+      armed.policy.flattenArmed = true;
+      saveWatchdogState(statePath, armed);
+    }
     const result = await runWatchdogCycle({ exchange: "kucoin", pat: "p", flatten: true }, deps);
     const closes = calls.filter((c) => c.name === "close_position");
     assert.equal(closes.length, 1);
@@ -915,7 +920,12 @@ describe("runWatchdogCycle", () => {
   it("does not flatten when the invocation omits the opt-in", async () => {
     const { calls, deps } = makeDeps();
     writeFileSync(join(dir, "scalp_sol.json"), JSON.stringify({ pair: "SOL/USDT", placed: [{ orderId: "o1" }] }));
-    await cmdWatchdogArmFlatten({ arm: true }, { cfgDir: dir });
+    {
+      const statePath = watchdogStatePath(dir);
+      const armed = loadWatchdogState(statePath);
+      armed.policy.flattenArmed = true;
+      saveWatchdogState(statePath, armed);
+    }
     await runWatchdogCycle({ exchange: "kucoin", pat: "p" }, deps);
     assert.equal(calls.filter((c) => c.name === "close_position").length, 0);
   });
@@ -1177,7 +1187,7 @@ describe("cmdWatchdogResume", () => {
 /* CLI dispatch                                                        */
 /* ------------------------------------------------------------------ */
 
-describe("cmdWatchdog dispatch", () => {
+describe("cmdWatchdogCheck", () => {
   let origLog: typeof console.log;
   let origErr: typeof console.error;
   let logged: string[];
@@ -1195,16 +1205,11 @@ describe("cmdWatchdog dispatch", () => {
     process.exitCode = undefined;
   });
 
-  it("rejects an unknown subcommand with exit 2", async () => {
-    await cmdWatchdog({ sub: "nonsense", pat: "p" });
-    assert.equal(process.exitCode, 2);
-  });
-
   it("check is read-only — no cancel, no close", async () => {
     const dir = mkdtempSync(join(tmpdir(), "watchdog-check-"));
     const calls: string[] = [];
-    await cmdWatchdog(
-      { sub: "check", pat: "p" },
+    await cmdWatchdogCheck(
+      { pat: "p" },
       {
         call: (async (name: string) => {
           calls.push(name);
@@ -1478,8 +1483,13 @@ describe("watchdog diary: every auto-cancel/auto-close is logged", () => {
         return { ok: true };
       }) as never;
       writeFileSync(join(dir, "scalp_sol.json"), JSON.stringify({ pair: "SOL/USDT", placed: [{ orderId: "o1" }] }));
-      // Arm the flatten policy, then opt in for this cycle.
-      await cmdWatchdogArmFlatten({ arm: true }, { cfgDir: dir });
+      // Arm the flatten policy, then opt in for this cycle (direct state write; no CLI setter exists).
+      {
+        const statePath = watchdogStatePath(dir);
+        const armed = loadWatchdogState(statePath);
+        armed.policy.flattenArmed = true;
+        saveWatchdogState(statePath, armed);
+      }
       const result = await runWatchdogCycle(
         { exchange: "kucoin", pat: "p", flatten: true },
         {
