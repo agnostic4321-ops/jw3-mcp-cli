@@ -89,7 +89,7 @@ import {
 } from "./commands/defi.js";
 import { clampInt, flagAny, flagOf, needNum, needNumAny, numAny, numOf, posAny, posOf, refusePaperFlag } from "./args.js";
 
-const HELP = `jw3 — JW3.ai command line (v0.1)
+const HELP = `jw3 — JW3.ai command line (v0.1.0)
 
 Usage:
   jw3 auth login|logout|status [--pat …] [--url …] [--browser] [--scope "mcp:read trade:propose"] [--timeout 300]

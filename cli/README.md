@@ -1,4 +1,4 @@
-# @jw3/cli — JW3.ai command line (v0.1)
+# @jw3/cli — JW3.ai command line (v0.1.0)
 
 Thin wrapper over the `mcp-server` JSON-RPC surface. Read-only by
 default; `propose` queues Diary setups for in-app approve-and-sign,
