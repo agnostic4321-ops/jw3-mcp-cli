@@ -464,7 +464,7 @@ Deno.serve(withHandler("mcp-server", async (req) => {
           // day or explicit start_day/end_day range (max 31 days); a
           // missing day is a guidance error, never a silent today.
           const range = resolveDiaryDayRange(args);
-          if ("error" in range) return toolError(body.id, range.error);
+          if ("error" in range) return toolError(body.id, `validation: ${range.error}`);
           if (range.days.length === 1) {
             const day = range.days[0];
             let out: DiaryDayOut;
