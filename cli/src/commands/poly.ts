@@ -5,6 +5,8 @@
  * dead shells (vol 0) — this scans what actually trades.
  * Public Gamma API, no auth.
  */
+import { fetchJson as httpJson } from "../http.js";
+
 const GAMMA = "https://gamma-api.polymarket.com";
 
 const SERIES: { label: string; id: string }[] = [
@@ -25,17 +27,18 @@ type ScanRow = {
 };
 
 async function seriesOpen(id: string): Promise<ScanRow[]> {
-  const res = await fetch(
+  // Shared HTTP discipline (same as gamma.ts): one UA, 20s timeout, bounded
+  // retry on 429/5xx with backoff — not a one-shot raw fetch.
+  const ev = (await httpJson(
     `${GAMMA}/events?series_id=${id}&closed=false&limit=30&order=endDate&ascending=true`,
-    { headers: { "User-Agent": "jw3-cli/0.1", Accept: "application/json" }, signal: AbortSignal.timeout(20000) },
-  );
-  if (!res.ok) throw new Error(`gamma ${res.status}`);
-  const now = Date.now();
-  const ev = ((await res.json()) as {
+    {},
+    { timeoutMs: 20_000 },
+  )) as {
     slug: string;
     endDate: string;
     markets?: { volume?: string | number; outcomePrices?: string[] | string }[];
-  }[]);
+  }[];
+  const now = Date.now();
   const rows: ScanRow[] = [];
   for (const e of ev) {
     const end = Date.parse(e.endDate);
