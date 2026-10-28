@@ -118,9 +118,12 @@ Usage:
   jw3 loop --exchange kucoin --pair SOL/USDT [--long|--short] [--size 15] [--json]
   jw3 grid plan|start --pair SEI/USDT [--bias long|short|neutral] [--step-pct 0.25] [--levels 25] [--size 15] [--lev 2] [--yes]
   jw3 grid backtest --pair SEI/USDT [--step-pct 0.25] [--levels 25] [--contracts 19] [--lev 2] [--days 30] [--json]
+  jw3 backtest live --pair SOL/USDT [--days 30] [--tf 15m] [--size 15] [--leverage 20] [--mode maker|chase|taker|all] [--json]
   jw3 backtest scalp --pair SOL/USDT [--days 30] [--tp 0.3] [--fee maker|taker] [--size 60] [--json]
   jw3 farm run [--pairs SOL/USDT,BTC/USDT,ETH/USDT] [--days 30] [--fee maker|taker] [--size 60] [--json]
   jw3 farm leaderboard [--json]
+  jw3 live --pair BASE/USDT [--exchange kucoin] [--side long|short|auto] [--risk 3] [--size 15] [--session live] [--turn t1] [--yes] [--json]
+  jw3 committee --pair BASE/USDT [--exchange kucoin] [--json]
   jw3 paper create --account NAME [--equity 10000] [--json]
   jw3 paper fund --account NAME --amount 500 [--json]
   jw3 paper reset --account NAME [--json]
@@ -163,6 +166,16 @@ Usage:
   jw3 heat [--exchange kucoin] [--min-free 50] [--json]
   jw3 reserve sweep [--exchange kucoin] [--keep 10] [--currency USDT] [--yes] [--json]
   jw3 defi protocols|markets|positions|quote-lp|build [--chain …] [--protocol …] [--token …] [--investment-id …] [--wallet …] [--amount …] [--json]
+  jw3 watchdog check|run|resume [--exchange kucoin] [--poll-sec 15] [--flatten] [--actor NAME] [--once] [--json]
+  jw3 monitor [--exchange kucoin] [--json]
+  jw3 alert --snapshot <path> [--prev-snapshot <path>] [--state <path>] [--policy <path>] [--transport console|file] [--out <path>] [--json]
+  jw3 learning record --pair BASE/USDT --side long|short --entry <px> --exit <px> [--reason <text>] [--pnl <usd>] [--fees <usd>] [--json]
+  jw3 learning stats [--log <path>] [--json]
+  jw3 harness [--json]
+  jw3 score stats [--store <path>] [--json]
+  jw3 score report [--store <path>] [--holdout 64] [--json]
+  jw3 score record --pair SOL/USDT [--side long] [--pnl …] [--store <path>] [--json]
+  jw3 daemon --config <manifest.json> [--once] [--allow-live] [--flatten-on-shutdown] [--json]
   jw3 supervise --trail SOL/USDT:long:1 [--trail …] [--loop kucoin:SOL/USDT] [--config manifest.json] [--once] [--heartbeat-sec 15] [--max-restarts 10] [--allow-live] [--json]
   jw3d supervise …                   same supervisor via the jw3d alias (24/7 entrypoint)
 
@@ -706,7 +719,7 @@ async function main(): Promise<void> {
       const g = globals(tail);
       const pair = flagOf(g.rest, "--pair") ?? "";
       if (!pair) {
-        console.error("Usage: jw3 backtest live --pair BASE/USDT [--days 30] [--side long|short] [--size 15]");
+        console.error("Usage: jw3 backtest live --pair BASE/USDT [--days 30] [--tf 15m] [--size 15] [--leverage 20] [--mode maker|chase|taker|all] [--json]");
         process.exitCode = 2;
         return;
       }
@@ -725,7 +738,7 @@ async function main(): Promise<void> {
       const g = globals(tail);
       const pair = flagOf(g.rest, "--pair") ?? "";
       if (!pair) {
-        console.error("Usage: jw3 live --pair BASE/USDT [--exchange kucoin] [--side long|short|auto] [--risk 3] [--size 15] [--yes]");
+        console.error("Usage: jw3 live --pair BASE/USDT [--exchange kucoin] [--side long|short|auto] [--risk 3] [--size 15] [--session live] [--turn t1] [--yes] [--json]");
         process.exitCode = 2;
         return;
       }
