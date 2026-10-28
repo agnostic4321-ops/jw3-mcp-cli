@@ -179,6 +179,12 @@ jw3d supervise …                   same supervisor via the jw3d alias (24/7 en
   (`checkLoopKill`/`loopKillReason`: kill switch → breaker → daily-loss
   cap → max trades) runs first and is disclosed, never blocking —
   cancels reduce risk. Scope refusal stops the fan-out.
+- Spaced forms work for every hyphenated command (`diary note`,
+  `daily prep`, `pnl reconcile`,
+  `propose idea|bracket|predict|close-all|withdraw`, `cancel all`); flag
+  aliases `--lev|--leverage`, `--tf|--timeframe`,
+  `--bounceback-pct|--backoff-pct` are accepted everywhere those options
+  exist.
 - `reconcile` audits one pair's local state (scalp/grid/trail files)
   against venue truth and reports strays. Read-only, never trades.
 - `supervise` (`jw3d supervise`) is the 24/7 CLI supervisor: boot-time

@@ -12,6 +12,32 @@ export function flagOf(rest: string[], flag: string): string | undefined {
 }
 
 /**
+ * First defined value across spelling aliases (`--lev`/`--leverage`, …).
+ * Primary spelling goes first (it also names error labels downstream).
+ */
+export function flagAny(rest: string[], ...flags: string[]): string | undefined {
+  for (const f of flags) {
+    const v = flagOf(rest, f);
+    if (v !== undefined) return v;
+  }
+  return undefined;
+}
+
+/** numOf across aliases; absent still yields the default. */
+export function numAny(rest: string[], dflt: number, ...flags: string[]): number {
+  const raw = flagAny(rest, ...flags);
+  if (raw === undefined) return dflt;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : NaN;
+}
+
+/** posOf across aliases. */
+export function posAny(rest: string[], dflt: number, ...flags: string[]): number {
+  const v = numAny(rest, dflt, ...flags);
+  return v > 0 ? v : NaN;
+}
+
+/**
  * Number flag with a default. NaN when the flag is present but not a
  * number — callers reject it via needNum instead of silently running
  * on a default the user never asked for.
@@ -50,4 +76,14 @@ export function needNum(v: number, flag: string, rest: string[]): boolean {
   );
   process.exitCode = 2;
   return false;
+}
+
+/**
+ * needNum across spelling aliases: the label names the spelling the
+ * user actually typed (falls back to the primary when neither parses).
+ */
+export function needNumAny(v: number, rest: string[], ...flags: string[]): boolean {
+  if (Number.isFinite(v)) return true;
+  const used = flags.find((f) => flagOf(rest, f) !== undefined) ?? flags[0] ?? "--flag";
+  return needNum(v, used, rest);
 }

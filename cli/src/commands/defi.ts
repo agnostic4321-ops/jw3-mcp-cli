@@ -14,7 +14,7 @@ import { fail, needPat } from "./market.js";
 
 export const DEFI_USAGE = `Usage:
   jw3 defi protocols [--chain ethereum] [--category lending|staking|liquidity|yield|restaking|derivatives|rwa] [--limit 20] [--json]
-  jw3 defi markets [--chain ethereum] [--protocol aave-v3] [--token USDC] [--category lending] [--min-apy 3] [--limit 20] [--json]
+  jw3 defi markets|investments [--chain ethereum] [--protocol aave-v3] [--token USDC] [--category lending] [--min-apy 3] [--limit 20] [--json]
   jw3 defi positions [--wallet 0x...] [--chain ethereum] [--protocol aave-v3] [--json]
   jw3 defi quote-lp --investment-id <id> --amount <amount> [--token-address 0x...] [--chain ethereum] [--json]
   jw3 defi build --action supply|redeem|borrow|repay|claim --investment-id <id> --wallet <addr> [--amount <amount>] [--token-address 0x...] [--chain ethereum] [--slippage-bps 50] [--no-simulate] [--json]`;

@@ -87,7 +87,7 @@ import {
   cmdDefiPositions,
   cmdDefiProtocols,
 } from "./commands/defi.js";
-import { clampInt, flagOf, needNum, numOf, posOf } from "./args.js";
+import { clampInt, flagAny, flagOf, needNum, needNumAny, numAny, numOf, posAny, posOf } from "./args.js";
 
 const HELP = `jw3 — JW3.ai command line (v0.1)
 
@@ -165,7 +165,7 @@ Usage:
   jw3 reconcile --exchange kucoin --pair BTC/USDT [--json]
   jw3 heat [--exchange kucoin] [--min-free 50] [--json]
   jw3 reserve sweep [--exchange kucoin] [--keep 10] [--currency USDT] [--yes] [--json]
-  jw3 defi protocols|markets|positions|quote-lp|build [--chain …] [--protocol …] [--token …] [--investment-id …] [--wallet …] [--amount …] [--json]
+  jw3 defi protocols|markets|investments|positions|quote-lp|build [--chain …] [--protocol …] [--token …] [--investment-id …] [--wallet …] [--amount …] [--json]
   jw3 watchdog check|run|resume [--exchange kucoin] [--poll-sec 15] [--flatten] [--actor NAME] [--once] [--json]
   jw3 monitor [--exchange kucoin] [--json]
   jw3 alert --snapshot <path> [--prev-snapshot <path>] [--state <path>] [--policy <path>] [--transport console|file] [--out <path>] [--json]
@@ -178,6 +178,9 @@ Usage:
   jw3 daemon --config <manifest.json> [--once] [--allow-live] [--flatten-on-shutdown] [--json]
   jw3 supervise --trail SOL/USDT:long:1 [--trail …] [--loop kucoin:SOL/USDT] [--config manifest.json] [--once] [--heartbeat-sec 15] [--max-restarts 10] [--allow-live] [--json]
   jw3d supervise …                   same supervisor via the jw3d alias (24/7 entrypoint)
+
+Aliases: diary note, daily prep, pnl reconcile, propose <idea|bracket|predict|close-all|withdraw|close all>, cancel all — spaced forms of the hyphenated commands.
+Flag aliases (same meaning everywhere the option exists): --lev|--leverage, --tf|--timeframe, --bounceback-pct|--backoff-pct.
 
 Global:
   --url <supabase-url>   override JW3_SUPABASE_URL
@@ -281,8 +284,8 @@ async function main(): Promise<void> {
       const pair = flagOf(g.rest, "--pair") ?? "";
       const direction = rest.includes("--short") ? "short" : "long";
       if (sub === "start") {
-        const lev = posOf(g.rest, "--lev", 2);
-        if (!needNum(lev, "--lev", g.rest)) return;
+        const lev = posAny(g.rest, 2, "--lev", "--leverage");
+        if (!needNumAny(lev, g.rest, "--lev", "--leverage")) return;
         await cmdScalpStart(
           {
             exchange: flagOf(g.rest, "--exchange") ?? "kucoin",
@@ -507,7 +510,7 @@ async function main(): Promise<void> {
       const biasRaw = (flagOf(g.rest, "--bias") ?? "neutral").toLowerCase();
       const stepPct = numOf(g.rest, "--step-pct", 0.25);
       const levels = clampInt(numOf(g.rest, "--levels", 25), 1, 100);
-      const lev = posOf(g.rest, "--lev", 2);
+      const lev = posAny(g.rest, 2, "--lev", "--leverage");
       if (sub === "backtest") {
         const contracts = numOf(g.rest, "--contracts", 0);
         const days = clampInt(numOf(g.rest, "--days", 30), 1, 90);
@@ -515,7 +518,7 @@ async function main(): Promise<void> {
           !needNum(stepPct, "--step-pct", g.rest) ||
           !needNum(levels, "--levels", g.rest) ||
           !needNum(contracts, "--contracts", g.rest) ||
-          !needNum(lev, "--lev", g.rest) ||
+          !needNumAny(lev, g.rest, "--lev", "--leverage") ||
           !needNum(days, "--days", g.rest)
         ) {
           return;
@@ -536,7 +539,7 @@ async function main(): Promise<void> {
         !needNum(stepPct, "--step-pct", g.rest) ||
         !needNum(levels, "--levels", g.rest) ||
         !needNum(size, "--size", g.rest) ||
-        !needNum(lev, "--lev", g.rest)
+        !needNumAny(lev, g.rest, "--lev", "--leverage")
       ) {
         return;
       }
@@ -726,9 +729,9 @@ async function main(): Promise<void> {
       await cmdBacktestLive({
         pair,
         days: numOf(g.rest, "--days", 30),
-        tf: flagOf(g.rest, "--tf") ?? "15m",
+        tf: flagAny(g.rest, "--tf", "--timeframe") ?? "15m",
         sizeUsd: numOf(g.rest, "--size", 15),
-        leverage: numOf(g.rest, "--leverage", 20),
+        leverage: numAny(g.rest, 20, "--leverage", "--lev"),
         mode: (flagOf(g.rest, "--mode") as "maker" | "chase" | "taker" | "all" | undefined) ?? "all",
         json: g.json,
       });
@@ -878,7 +881,7 @@ async function main(): Promise<void> {
           qty: numFlag("--qty"),
           sizeUsd: numFlag("--size-usd"),
           price: numFlag("--price") ?? NaN,
-          leverage: numFlag("--lev") ?? 1,
+          leverage: numFlag("--lev") ?? numFlag("--leverage") ?? 1,
           tp: numFlag("--tp"),
           sl: numFlag("--sl"),
           fee: flagOf(g.rest, "--fee"),
@@ -1028,21 +1031,21 @@ async function main(): Promise<void> {
         return;
       }
       const size = posOf(g.rest, "--size", 15);
-      const lev = posOf(g.rest, "--lev", 2);
+      const lev = posAny(g.rest, 2, "--lev", "--leverage");
       const maxHeat = posOf(g.rest, "--max-heat", 6);
       const maxConcurrent = clampInt(numOf(g.rest, "--max-concurrent", 2), 1, 8);
       const activationPct = numOf(g.rest, "--activation-pct", 0.25);
-      const bouncebackPct = numOf(g.rest, "--bounceback-pct", 0.08);
+      const bouncebackPct = numAny(g.rest, 0.08, "--bounceback-pct", "--backoff-pct");
       const pollsRaw = flagOf(g.rest, "--polls");
       const polls = pollsRaw === undefined ? 600 : Number(pollsRaw);
       const horizon = clampInt(numOf(g.rest, "--horizon", 12), 1, 120);
       if (
         !needNum(size, "--size", g.rest) ||
-        !needNum(lev, "--lev", g.rest) ||
+        !needNumAny(lev, g.rest, "--lev", "--leverage") ||
         !needNum(maxHeat, "--max-heat", g.rest) ||
         !needNum(maxConcurrent, "--max-concurrent", g.rest) ||
         !needNum(activationPct, "--activation-pct", g.rest) ||
-        !needNum(bouncebackPct, "--bounceback-pct", g.rest) ||
+        !needNumAny(bouncebackPct, g.rest, "--bounceback-pct", "--backoff-pct") ||
         !needNum(horizon, "--horizon", g.rest)
       ) {
         return;
@@ -1084,18 +1087,18 @@ async function main(): Promise<void> {
       ).toLowerCase();
       const equity = numOf(g.rest, "--equity", 10);
       const base = posOf(g.rest, "--base", NaN);
-      const lev = posOf(g.rest, "--lev", 25);
+      const lev = posAny(g.rest, 25, "--lev", "--leverage");
       const entryRaw = flagOf(g.rest, "--entry");
       const entry = entryRaw === undefined ? NaN : Number(entryRaw);
       const atrPct = numOf(g.rest, "--atr-pct", NaN);
       const activationPct = numOf(g.rest, "--activation-pct", 0.25);
-      const bouncebackPct = numOf(g.rest, "--bounceback-pct", 0.08);
+      const bouncebackPct = numAny(g.rest, 0.08, "--bounceback-pct", "--backoff-pct");
       const sleeveRaw = (flagOf(g.rest, "--sleeve") ?? "momentum").toLowerCase();
       if (!needNum(equity, "--equity", g.rest) || !needNum(base, "--base", g.rest)) return;
-      if (!needNum(lev, "--lev", g.rest)) return;
+      if (!needNumAny(lev, g.rest, "--lev", "--leverage")) return;
       if (!needNum(entry, "--entry", g.rest) || !needNum(atrPct, "--atr-pct", g.rest)) return;
       if (!needNum(activationPct, "--activation-pct", g.rest)) return;
-      if (!needNum(bouncebackPct, "--bounceback-pct", g.rest)) return;
+      if (!needNumAny(bouncebackPct, g.rest, "--bounceback-pct", "--backoff-pct")) return;
       await cmdTtm(
         {
           pair: flagOf(g.rest, "--pair") ?? "",
@@ -1131,12 +1134,14 @@ async function main(): Promise<void> {
       await cmdConnections({ json: g.json, url: g.url, pat: g.pat });
       return;
     }
-    if (cmd === "diary") {
+    if (cmd === "diary" && sub !== "note") {
       const g = globals(tail);
       await cmdDiary({ day: flagOf(g.rest, "--day"), startDay: flagOf(g.rest, "--start-day") ?? flagOf(g.rest, "--start"), endDay: flagOf(g.rest, "--end-day") ?? flagOf(g.rest, "--end"), json: g.json, url: g.url, pat: g.pat });
       return;
     }
-    if (cmd === "diary-note") {
+    // Space form: `diary note` (same handler; mirrors `cancel all`). Must sit
+    // below the guarded bare `diary` above.
+    if (cmd === "diary-note" || (cmd === "diary" && sub === "note")) {
       const g = globals(tail);
       await cmdDiaryNote(
         {
@@ -1148,7 +1153,8 @@ async function main(): Promise<void> {
       );
       return;
     }
-    if (cmd === "daily-prep") {
+    // Space form: `daily prep`.
+    if (cmd === "daily-prep" || (cmd === "daily" && sub === "prep")) {
       const g = globals(tail);
       await cmdDailyPrep({ dry: tail.includes("--dry"), day: flagOf(g.rest, "--day"), json: g.json, url: g.url, pat: g.pat });
       return;
@@ -1173,7 +1179,10 @@ async function main(): Promise<void> {
       });
       return;
     }
-    if (cmd === "propose") {
+    // Space forms (`propose idea|bracket|predict|close-all|withdraw`, plus
+    // `propose close all`) are handled by the card branches below — the
+    // guard keeps them from falling into the bare propose ticket.
+    if (cmd === "propose" && sub !== "idea" && sub !== "bracket" && sub !== "predict" && sub !== "close-all" && sub !== "close" && sub !== "withdraw") {
       const g = globals(tail);
       const entry = Number(flagOf(g.rest, "--entry"));
       const stop = Number(flagOf(g.rest, "--stop"));
@@ -1194,7 +1203,8 @@ async function main(): Promise<void> {
       );
       return;
     }
-    if (cmd === "propose-idea") {
+    // Space form: `propose idea`.
+    if (cmd === "propose-idea" || (cmd === "propose" && sub === "idea")) {
       const g = globals(tail);
       const entry = Number(flagOf(g.rest, "--entry"));
       const stop = Number(flagOf(g.rest, "--stop"));
@@ -1210,7 +1220,7 @@ async function main(): Promise<void> {
           asset: flagOf(g.rest, "--asset"),
           venue: flagOf(g.rest, "--venue"),
           exchange: flagOf(g.rest, "--exchange"),
-          timeframe: flagOf(g.rest, "--timeframe"),
+          timeframe: flagAny(g.rest, "--timeframe", "--tf"),
           sizeUsd: sizeRaw === undefined ? undefined : Number(sizeRaw),
           jevVerdict: flagOf(g.rest, "--jev-verdict"),
           rationale: flagOf(g.rest, "--rationale"),
@@ -1219,7 +1229,8 @@ async function main(): Promise<void> {
       );
       return;
     }
-    if (cmd === "propose-bracket") {
+    // Space form: `propose bracket`.
+    if (cmd === "propose-bracket" || (cmd === "propose" && sub === "bracket")) {
       const g = globals(tail);
       const entryRaw = flagOf(g.rest, "--entry-price");
       const feeRaw = flagOf(g.rest, "--fee-usd");
@@ -1240,7 +1251,8 @@ async function main(): Promise<void> {
       );
       return;
     }
-    if (cmd === "propose-predict") {
+    // Space form: `propose predict`.
+    if (cmd === "propose-predict" || (cmd === "propose" && sub === "predict")) {
       const g = globals(tail);
       const amountRaw = flagOf(g.rest, "--amount");
       const confRaw = flagOf(g.rest, "--confidence");
@@ -1259,8 +1271,11 @@ async function main(): Promise<void> {
       );
       return;
     }
-    if (cmd === "propose-close-all") {
+    // Space forms: `propose close-all` and `propose close all`.
+    if (cmd === "propose-close-all" || (cmd === "propose" && (sub === "close-all" || sub === "close"))) {
       const g = globals(tail);
+      // Drop the `all` in `propose close all` — it is the sub alias, not a flag value.
+      if (sub === "close" && g.rest[0] === "all") g.rest.shift();
       await cmdProposeCloseAll(
         {
           rationale: flagOf(g.rest, "--rationale") ?? flagOf(g.rest, "--reason") ?? "",
@@ -1273,7 +1288,8 @@ async function main(): Promise<void> {
       );
       return;
     }
-    if (cmd === "propose-withdraw") {
+    // Space form: `propose withdraw`.
+    if (cmd === "propose-withdraw" || (cmd === "propose" && sub === "withdraw")) {
       const g = globals(tail);
       await cmdProposeWithdraw(
         {
@@ -1399,7 +1415,9 @@ async function main(): Promise<void> {
       });
       return;
     }
-    if (cmd === "pnl") {
+    // `pnl reconcile` (space form) is handled by the pnl-reconcile branch
+    // below — the guard keeps it from falling into the bare pnl reader.
+    if (cmd === "pnl" && sub !== "reconcile") {
       const g = globals(tail);
       const daysRaw = flagOf(g.rest, "--days");
       const limitRaw = flagOf(g.rest, "--limit");
@@ -1414,7 +1432,9 @@ async function main(): Promise<void> {
       });
       return;
     }
-    if (cmd === "pnl-reconcile") {
+    // Space form: `pnl reconcile` (same handler; mirrors `cancel all`).
+    // Sits below the guarded bare `pnl` above.
+    if (cmd === "pnl-reconcile" || (cmd === "pnl" && sub === "reconcile")) {
       // Count the venue's realized LOSSES against the daily risk counters.
       // A trade closed by the VENUE's own stop never goes through the
       // close path, so without this the daily loss cap can never fire on
@@ -1489,7 +1509,7 @@ async function main(): Promise<void> {
           amount: numFlag("--amount"),
           price: numFlag("--price"),
           market: flagOf(g.rest, "--market"),
-          leverage: numFlag("--leverage"),
+          leverage: numFlag("--leverage") ?? numFlag("--lev"),
           marginMode: flagOf(g.rest, "--margin-mode"),
           stop: numFlag("--stop"),
           tp: numFlag("--tp"),
