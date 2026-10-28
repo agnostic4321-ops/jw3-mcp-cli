@@ -248,7 +248,7 @@ Deno.serve(withHandler("mcp-server", async (req) => {
       return new Response(null, { status: 202 });
     }
     if (body.method === "tools/list") {
-      // No pagination needed at 14 tools, but accept cursor for conformance.
+      // No pagination needed at 26 tools, but accept cursor for conformance.
       return rpcOk(body.id, { tools: TOOLS });
     }
     if (body.method === "tools/call") {

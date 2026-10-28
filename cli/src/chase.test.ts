@@ -335,7 +335,7 @@ describe("cmdExecuteChase fire", () => {
     console.log = () => {};
     try {
       await cmdExecuteChase(
-        { exchange: "kucoin", pair: "BTC/USDT", side: "buy", amount: 0.01, actor: "op" },
+        { exchange: "kucoin", pair: "BTC/USDT", side: "buy", amount: 0.01, actor: "owner" },
         { enabled: true, secs: 4, pollSecs: 2, take: false },
         { yes: true, json: true, pat: "p" },
         {
@@ -350,7 +350,7 @@ describe("cmdExecuteChase fire", () => {
       console.log = origLog;
     }
     assert.equal(seen.length, 1);
-    assert.equal(seen[0]?.actor, "op");
+    assert.equal(seen[0]?.actor, "owner");
     assert.match(String(seen[0]?.idempotency_key), /^jw3-chase-[0-9a-f]{8}$/);
   });
 });

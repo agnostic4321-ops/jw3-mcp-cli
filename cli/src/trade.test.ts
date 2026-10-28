@@ -53,6 +53,13 @@ describe("validateExecute", () => {
     assert.match(validateExecute({ ...base, tp: 0 }) as string, /tp/);
     assert.match(validateExecute({ ...base, tp: -5 }) as string, /tp/);
   });
+  it("actor mirrors the server enum (machine|owner), omitted stays omitted", () => {
+    const base = { exchange: "kucoin", pair: "BTC/USDT", side: "buy", amount: 0.01 };
+    assert.equal(validateExecute({ ...base }), null);
+    assert.equal(validateExecute({ ...base, actor: "machine" }), null);
+    assert.equal(validateExecute({ ...base, actor: "Owner" }), null);
+    assert.match(validateExecute({ ...base, actor: "bot" }) as string, /actor must be machine\|owner/);
+  });
 });
 
 describe("validateCancelAll", () => {

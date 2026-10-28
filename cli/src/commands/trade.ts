@@ -97,6 +97,9 @@ export function validateExecute(a: ExecuteArgs): string | null {
   if (a.marginMode !== undefined && !["cross", "isolated"].includes(a.marginMode.toLowerCase())) {
     return "margin-mode must be cross|isolated";
   }
+  if (a.actor !== undefined && a.actor.trim() !== "" && !["machine", "owner"].includes(a.actor.trim().toLowerCase())) {
+    return "actor must be machine|owner";
+  }
   if (a.stop !== undefined && (!Number.isFinite(a.stop) || a.stop <= 0)) return "stop must be > 0";
   if (a.tp !== undefined && (!Number.isFinite(a.tp) || a.tp <= 0)) return "tp must be > 0";
   if (a.tp !== undefined && a.tpLegs && a.tpLegs.length > 0) return "pass --tp or --tp-legs, not both";
@@ -189,9 +192,10 @@ export function executeToolArgs(a: ExecuteArgs): Record<string, unknown> {
   // Explicit actor only (see ACTOR MAP above). Machine paths pass
   // "machine"; interactive paths pass the operator's --actor. Omitted here
   // means omitted on the wire: the server attributes the call to the
-  // authenticated subject.
+  // authenticated subject. Lowercased: the server enum is exact-match
+  // machine|owner (see validateActor), so "Owner" rides as "owner".
   if (a.actor !== undefined && a.actor.trim() !== "") {
-    toolArgs.actor = a.actor.trim();
+    toolArgs.actor = a.actor.trim().toLowerCase();
   }
   return toolArgs;
 }

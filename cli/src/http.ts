@@ -13,7 +13,7 @@
  *   backoff with jitter. 429 means "not processed, slow down" — safe to
  *   retry reads AND the single bullet bootstrap.
  * - 5xx / network error → bounded retry (reads only; fund-moving MCP
- *   tools never auto-retry — see mcp.ts NON_RETRYABLE_TOOLS; an ambiguous
+ *   tools never auto-retry — see mcp.ts NO_RETRY_TOOLS; an ambiguous
  *   order is reconciled via list/query, never re-fired blind).
  * - Anything else (4xx, bad body) → throw immediately, no retry.
  * - Every attempt has its own timeout; total cost is bounded by
