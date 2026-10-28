@@ -1111,12 +1111,12 @@ export function consoleTransport(write: (line: string) => void = (l) => console.
 export function fileTransport(path: string): AlertSender {
   return async (alert) => {
     try {
-      mkdirSync(dirname(path), { recursive: true });
+      mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     } catch {
       // best-effort; the append below still tries
     }
     try {
-      appendFileSync(path, `${JSON.stringify(alert)}\n`);
+      appendFileSync(path, `${JSON.stringify(alert)}\n`, { mode: 0o600 });
     } catch {
       // A transport failure must never take the machine down.
     }
@@ -1413,7 +1413,7 @@ export function saveAlertState(path: string, state: AlertState): void {
   } catch {
     // best-effort; the write below still tries
   }
-  writeFileSync(path, `${JSON.stringify(state, null, 2)}\n`);
+  writeFileSync(path, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
 }
 
 export type AlertOpts = {

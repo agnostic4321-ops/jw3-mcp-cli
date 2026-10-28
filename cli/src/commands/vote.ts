@@ -21,9 +21,8 @@
  * corrupt file falls back to defaults and is rewritten on the next vote.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
-import { resolvePat } from "../config.js";
+import { configDir, resolvePat } from "../config.js";
 import { fetchJevTrend, type TrendVerdict } from "./analyze.js";
 import { fetchKronosVerdict, type ForecastVerdict } from "./forecast.js";
 import { rfdetrBoxesToSignal, type RfdetrVerdict } from "./rfdetr.js";
@@ -224,12 +223,6 @@ export function defaultStore(): VoteStore {
   return { version: 1, weights: { ...DEFAULT_WEIGHTS }, skills, votes: [] };
 }
 
-function configDir(): string {
-  if (process.env["JW3_CONFIG_HOME"]) return process.env["JW3_CONFIG_HOME"];
-  const xdg = process.env["XDG_CONFIG_HOME"];
-  return xdg ? join(xdg, "jw3") : join(homedir(), ".config", "jw3");
-}
-
 /** Store file path (vote.json beside credentials.json). */
 export function voteStorePath(dir?: string): string {
   return join(dir ?? configDir(), "vote.json");
@@ -272,8 +265,8 @@ export function loadStore(path: string): VoteStore {
 /** Persist the store (creates the config dir; best-effort — callers warn, never fail the vote). */
 export function saveStore(path: string, store: VoteStore): void {
   const dir = path.split("/").slice(0, -1).join("/") || ".";
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(path, JSON.stringify(store, null, 2));
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  writeFileSync(path, JSON.stringify(store, null, 2), { mode: 0o600 });
 }
 
 /** Rolling hit-rate over the window, or null before the first scored outcome. */

@@ -697,7 +697,20 @@ describe("learningLogPath", () => {
   it("mirrors the degen-learning.jsonl convention under the config dir", () => {
     const p = learningLogPath("/tmp/jw3cfg");
     assert.equal(p, "/tmp/jw3cfg/learning.jsonl");
-    assert.match(learningLogPath(), /jw3[\\/]learning\.jsonl$/);
+    // The no-arg form reads the ambient config dir — isolate it from any
+    // JW3_CONFIG_HOME / XDG_CONFIG_HOME the runner exports.
+    const savedHome = process.env.JW3_CONFIG_HOME;
+    const savedXdg = process.env.XDG_CONFIG_HOME;
+    delete process.env.JW3_CONFIG_HOME;
+    delete process.env.XDG_CONFIG_HOME;
+    try {
+      assert.match(learningLogPath(), /jw3[\\/]learning\.jsonl$/);
+    } finally {
+      if (savedHome === undefined) delete process.env.JW3_CONFIG_HOME;
+      else process.env.JW3_CONFIG_HOME = savedHome;
+      if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = savedXdg;
+    }
   });
 });
 

@@ -10,9 +10,9 @@
  *   reads in one CLI session resolve `list_connections` once per
  *   exchange+url instead of once per poll.
  */
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { configDir } from "./config.js";
 
 export const SPIKE_BASELINE_TTL_MS = 5 * 60 * 1000;
 export const CONN_SESSION_TTL_MS = 5 * 60 * 1000;
@@ -31,12 +31,6 @@ export function isFresh(fetchedAt: number, nowMs: number, ttlMs: number): boolea
   if (!Number.isFinite(fetchedAt) || !Number.isFinite(nowMs)) return false;
   if (fetchedAt <= 0 || nowMs < fetchedAt) return false;
   return nowMs - fetchedAt < ttlMs;
-}
-
-function configDir(): string {
-  if (process.env.JW3_CONFIG_HOME) return process.env.JW3_CONFIG_HOME;
-  const xdg = process.env.XDG_CONFIG_HOME;
-  return xdg ? join(xdg, "jw3") : join(homedir(), ".config", "jw3");
 }
 
 export function cacheDir(): string {

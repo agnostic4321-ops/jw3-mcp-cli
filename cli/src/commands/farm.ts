@@ -18,9 +18,9 @@
  *   farm-latest.json          full leaderboard of the last run
  *   farm-live-candidates.json promoted winner (or empty + reason)
  */
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { configDir } from "../config.js";
 import {
   SCALP_TAKER_FEE_PCT,
   dipSignal,
@@ -42,18 +42,12 @@ export const FARM_MIN_TRADES = 15;
 
 export const FARM_DEFAULT_PAIRS = ["SOL/USDT", "BTC/USDT", "ETH/USDT"];
 
-function farmDir(): string {
-  if (process.env.JW3_CONFIG_HOME) return process.env.JW3_CONFIG_HOME;
-  const xdg = process.env.XDG_CONFIG_HOME;
-  return xdg ? join(xdg, "jw3") : join(homedir(), ".config", "jw3");
-}
-
 export function farmLatestPath(): string {
-  return join(farmDir(), "farm-latest.json");
+  return join(configDir(), "farm-latest.json");
 }
 
 export function farmCandidatesPath(): string {
-  return join(farmDir(), "farm-live-candidates.json");
+  return join(configDir(), "farm-live-candidates.json");
 }
 
 /* ------------------------------------------------------------------ */
@@ -352,12 +346,12 @@ export async function cmdFarmRun(opts: {
     winner: winner ? { ...winner, netUsd: (winner.totalNetPct / 100) * opts.sizeUsd } : null,
   };
   try {
-    mkdirSync(farmDir(), { recursive: true, mode: 0o700 });
-    writeFileSync(farmLatestPath(), JSON.stringify(payload, null, 2));
+    mkdirSync(configDir(), { recursive: true, mode: 0o700 });
+    writeFileSync(farmLatestPath(), JSON.stringify(payload, null, 2), { mode: 0o600 });
     const candidates = winner
       ? { updatedAt: backtestedAt, candidates: [{ ...winner, sizeUsd: opts.sizeUsd, note: "paper only — no live order. Re-check live funding + liquidity before sizing." }] }
       : { updatedAt: backtestedAt, candidates: [], reason: `no strategy cleared expectancy > 0 with n >= ${FARM_MIN_TRADES}` };
-    writeFileSync(farmCandidatesPath(), JSON.stringify(candidates, null, 2));
+    writeFileSync(farmCandidatesPath(), JSON.stringify(candidates, null, 2), { mode: 0o600 });
   } catch (e) {
     console.error(`Farm state write failed: ${e instanceof Error ? e.message : String(e)}`);
     process.exitCode = 1;

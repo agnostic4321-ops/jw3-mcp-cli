@@ -937,8 +937,8 @@ export function loadScoreStore(path: string): ScoreStore {
 /** Persist the score store (creates the config dir; best-effort). */
 export function saveScoreStore(path: string, store: ScoreStore): void {
   const dir = path.split("/").slice(0, -1).join("/") || ".";
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(path, JSON.stringify(store, null, 2));
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  writeFileSync(path, JSON.stringify(store, null, 2), { mode: 0o600 });
 }
 
 /* ------------------------------------------------------------------ */

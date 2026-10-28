@@ -27,9 +27,18 @@ export function mcpEndpoint(override?: string): string {
   return `${baseUrl(override)}/functions/v1/mcp-server`;
 }
 
-function configDir(): string {
-  if (process.env.JW3_CONFIG_HOME) return process.env.JW3_CONFIG_HOME;
-  const xdg = process.env.XDG_CONFIG_HOME;
+/**
+ * Canonical user config dir for all CLI state.
+ *
+ * Resolution: $JW3_CONFIG_HOME, else $XDG_CONFIG_HOME/jw3, else
+ * ~/.config/jw3. Blank values are ignored so `JW3_CONFIG_HOME=""`
+ * falls back instead of resolving to the cwd. Exported so every
+ * module shares one copy — do not reimplement it locally.
+ */
+export function configDir(): string {
+  const home = process.env.JW3_CONFIG_HOME?.trim();
+  if (home) return home;
+  const xdg = process.env.XDG_CONFIG_HOME?.trim();
   return xdg ? join(xdg, "jw3") : join(homedir(), ".config", "jw3");
 }
 
@@ -53,10 +62,17 @@ export function resolvePat(flag?: string): string | null {
 }
 
 export function savePat(pat: string): void {
+  const clean = pat.trim();
+  if (!clean) throw new Error("Refusing to store an empty PAT — nothing written.");
   const dir = configDir();
   mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try {
+    chmodSync(dir, 0o700);
+  } catch {
+    // best-effort; an existing dir keeps its current mode
+  }
   const p = credPath();
-  writeFileSync(p, JSON.stringify({ pat }), { mode: 0o600 });
+  writeFileSync(p, JSON.stringify({ pat: clean }), { mode: 0o600 });
   try {
     chmodSync(p, 0o600);
   } catch {

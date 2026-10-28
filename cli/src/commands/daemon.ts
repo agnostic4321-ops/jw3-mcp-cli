@@ -1413,7 +1413,7 @@ export async function cmdDaemon(opts: DaemonOpts, deps: DaemonDeps = {}): Promis
     });
     try {
       mkdirSync(dirname(hbPath), { recursive: true, mode: 0o700 });
-      writeFileSync(hbPath, JSON.stringify(payload, null, 2));
+      writeFileSync(hbPath, JSON.stringify(payload, null, 2), { mode: 0o600 });
     } catch {
       // best-effort — the loop keeps supervising
     }

@@ -48,8 +48,8 @@
  * wrappers are the thin filesystem shell around them.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { configDir } from "../config.js";
 import {
   HISTORY_WINDOW,
   WEIGHT_CAP,
@@ -1069,12 +1069,6 @@ export function applyPromotionGate(
 /* Paths + commands                                                    */
 /* ------------------------------------------------------------------ */
 
-function configDir(): string {
-  if (process.env["JW3_CONFIG_HOME"]) return process.env["JW3_CONFIG_HOME"];
-  const xdg = process.env["XDG_CONFIG_HOME"];
-  return xdg ? join(xdg, "jw3") : join(homedir(), ".config", "jw3");
-}
-
 /** The learning log (one JSON line per closed trade). */
 export function learningLogPath(dir?: string): string {
   return join(dir ?? configDir(), "learning.jsonl");
@@ -1205,8 +1199,8 @@ export async function cmdLearningRecord(opts: {
     compacted = { removed: c.removed, kept: c.kept };
   }
   try {
-    mkdirSync(logPath.split("/").slice(0, -1).join("/") || ".", { recursive: true });
-    writeFileSync(logPath, outText);
+    mkdirSync(logPath.split("/").slice(0, -1).join("/") || ".", { recursive: true, mode: 0o700 });
+    writeFileSync(logPath, outText, { mode: 0o600 });
   } catch (e) {
     console.error(`Warning: learning record not persisted (${e instanceof Error ? e.message : String(e)}).`);
   }

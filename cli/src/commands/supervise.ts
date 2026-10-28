@@ -357,13 +357,13 @@ export function rotateLogsIfNeeded(logFile: string, maxBytes: number, maxFiles: 
 
 export function appendLog(logFile: string, line: string, maxBytes: number, maxFiles: number): void {
   try {
-    mkdirSync(dirname(logFile), { recursive: true });
+    mkdirSync(dirname(logFile), { recursive: true, mode: 0o700 });
   } catch {
     // best-effort; the write below still tries
   }
   rotateLogsIfNeeded(logFile, maxBytes, maxFiles);
   try {
-    appendFileSync(logFile, `${line}\n`);
+    appendFileSync(logFile, `${line}\n`, { mode: 0o600 });
   } catch {
     // Logging never stops supervision.
   }
@@ -493,7 +493,7 @@ export async function cmdSupervise(a: SuperviseArgs): Promise<void> {
     });
     try {
       mkdirSync(dirname(hbPath), { recursive: true, mode: 0o700 });
-      writeFileSync(hbPath, JSON.stringify(payload, null, 2));
+      writeFileSync(hbPath, JSON.stringify(payload, null, 2), { mode: 0o600 });
     } catch {
       // Heartbeat is best-effort; the loop keeps supervising.
     }
@@ -502,7 +502,7 @@ export async function cmdSupervise(a: SuperviseArgs): Promise<void> {
   if (a.once) {
     try {
       mkdirSync(dirname(hbPath), { recursive: true, mode: 0o700 });
-      writeFileSync(hbPath, JSON.stringify(once.heartbeat, null, 2));
+      writeFileSync(hbPath, JSON.stringify(once.heartbeat, null, 2), { mode: 0o600 });
     } catch {
       // best-effort
     }

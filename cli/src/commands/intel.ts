@@ -15,8 +15,8 @@
  * a miss, writes never throw.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { configDir } from "../config.js";
 import { fetchJson as httpJson, fetchText as httpText } from "../http.js";
 
 /** Verdict-style freshness window for a topic brief. */
@@ -375,15 +375,8 @@ export function classifyCatalyst(item: { title: string; description: string }): 
 /* file cache (best-effort mirror of the JEV verdict discipline)        */
 /* ------------------------------------------------------------------ */
 
-function intelConfigDir(): string {
-  if (process.env.JW3_CONFIG_HOME) return process.env.JW3_CONFIG_HOME;
-  const xdg = process.env.XDG_CONFIG_HOME;
-  if (xdg) return join(xdg, "jw3");
-  return join(homedir(), ".config", "jw3");
-}
-
 export function intelCacheDir(): string {
-  return join(intelConfigDir(), "cache");
+  return join(configDir(), "cache");
 }
 
 export function intelCachePath(slug: string): string {

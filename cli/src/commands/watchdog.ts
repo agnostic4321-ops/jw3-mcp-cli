@@ -35,8 +35,9 @@
  * exposure. The watchdog never trades directionally.
  */
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { configDir } from "../config.js";
 import { fetchJson } from "../http.js";
 import { callTool } from "../mcp.js";
 import { isOpenPosition, readLocalStates, rowMatchesPair, rowPairOf } from "../reconcile.js";
@@ -896,12 +897,6 @@ export function applyResume(
 /* state + heartbeat files                                             */
 /* ------------------------------------------------------------------ */
 
-function configDir(): string {
-  if (process.env["JW3_CONFIG_HOME"]) return process.env["JW3_CONFIG_HOME"];
-  const xdg = process.env["XDG_CONFIG_HOME"];
-  return xdg ? join(xdg, "jw3") : join(homedir(), ".config", "jw3");
-}
-
 export function watchdogStatePath(dir?: string): string {
   return join(dir ?? configDir(), "watchdog-state.json");
 }
@@ -986,7 +981,7 @@ export function loadWatchdogState(path: string): WatchdogState {
 export function saveWatchdogState(path: string, state: WatchdogState): void {
   try {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    writeFileSync(path, JSON.stringify(state, null, 2));
+    writeFileSync(path, JSON.stringify(state, null, 2), { mode: 0o600 });
   } catch {
     // Persisting the breaker is best-effort; the venue action still runs.
   }
@@ -1018,7 +1013,7 @@ export function readHeartbeatFile(path: string, source: string): WatchdogHeartbe
 export function writeHeartbeatFile(path: string, payload: Record<string, unknown>): void {
   try {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    writeFileSync(path, JSON.stringify(payload, null, 2));
+    writeFileSync(path, JSON.stringify(payload, null, 2), { mode: 0o600 });
   } catch {
     // best-effort
   }
@@ -1109,7 +1104,7 @@ export function makeWatchdogDiaryEntry(o: {
 export function appendWatchdogDiary(path: string, entry: WatchdogDiaryEntry): string | null {
   try {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    writeFileSync(path, `${JSON.stringify(entry)}\n`, { flag: "a" });
+    writeFileSync(path, `${JSON.stringify(entry)}\n`, { flag: "a", mode: 0o600 });
     return null;
   } catch (e) {
     return e instanceof Error ? e.message : String(e);

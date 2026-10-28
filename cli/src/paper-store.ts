@@ -15,8 +15,8 @@
  *    (realizedPnl is net of EXIT fees only — see closePaperPosition).
  */
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join, dirname } from "node:path";
+import { configDir } from "./config.js";
 
 export type PaperSide = "long" | "short";
 export type PaperFeeTier = "maker" | "taker";
@@ -75,10 +75,10 @@ export const PAPER_STORE_FILE = "paper-accounts.json";
 /** Cap on fills kept per account — the file stays small. */
 export const PAPER_MAX_FILLS = 1000;
 
+/** Canonical config dir — single copy lives in config.ts. Kept as a named
+ * alias so existing importers don't churn. */
 export function paperConfigDir(): string {
-  if (process.env["JW3_CONFIG_HOME"]) return process.env["JW3_CONFIG_HOME"] as string;
-  const xdg = process.env["XDG_CONFIG_HOME"];
-  return xdg ? join(xdg, "jw3") : join(homedir(), ".config", "jw3");
+  return configDir();
 }
 
 export function paperStorePath(dir?: string): string {
@@ -173,6 +173,11 @@ export function savePaperStore(path: string, store: PaperStore): void {
   // Same 0700 dir / 0600 file discipline as config.ts credentials and
   // cache.ts verdict files: paper books live under the same config dir.
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  try {
+    chmodSync(dirname(path), 0o700);
+  } catch {
+    // best-effort; an existing dir keeps its current mode
+  }
   writeFileSync(path, JSON.stringify(store, null, 2) + "\n", { mode: 0o600 });
   try {
     chmodSync(path, 0o600);

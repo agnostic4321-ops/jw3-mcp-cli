@@ -44,10 +44,10 @@
  * `--paper` refuses `--yes`/`--live`/`--trail`: paper never fires.
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { callTool } from "../mcp.js";
-import { resolvePat } from "../config.js";
+import { configDir, resolvePat } from "../config.js";
 import {
   SPIKE_DEFAULT_SYMS,
   dipSignal,
@@ -134,12 +134,6 @@ export const DEFAULT_HEAT_CAPS: HeatCaps = {
   maxStops: DEGEN_MAX_STOPS_PER_DAY,
 };
 
-function configDir(): string {
-  if (process.env["JW3_CONFIG_HOME"]) return process.env["JW3_CONFIG_HOME"];
-  const xdg = process.env["XDG_CONFIG_HOME"];
-  return xdg ? join(xdg, "jw3") : join(homedir(), ".config", "jw3");
-}
-
 export function degenHeatPath(dir?: string): string {
   return join(dir ?? configDir(), "degen-heat.json");
 }
@@ -205,8 +199,8 @@ export function loadHeat(path: string, nowMs: number = Date.now()): DegenHeat {
 }
 
 export function saveHeat(path: string, heat: DegenHeat): void {
-  mkdirSync(path.split("/").slice(0, -1).join("/") || ".", { recursive: true });
-  writeFileSync(path, JSON.stringify(heat, null, 2));
+  mkdirSync(path.split("/").slice(0, -1).join("/") || ".", { recursive: true, mode: 0o700 });
+  writeFileSync(path, JSON.stringify(heat, null, 2), { mode: 0o600 });
 }
 
 /**
@@ -936,8 +930,8 @@ function learningEntry(
 /** Append one learning line; returns the banked total when a threshold hits. */
 export function appendLearning(logPath: string, entry: Record<string, unknown>): number | null {
   try {
-    mkdirSync(logPath.split("/").slice(0, -1).join("/") || ".", { recursive: true });
-    appendFileSync(logPath, `${JSON.stringify(entry)}\n`);
+    mkdirSync(logPath.split("/").slice(0, -1).join("/") || ".", { recursive: true, mode: 0o700 });
+    appendFileSync(logPath, `${JSON.stringify(entry)}\n`, { mode: 0o600 });
     const total = readFileSync(logPath, "utf8").split("\n").filter((l) => l.trim() !== "").length;
     return (DEGEN_FINETUNE_AT as number[]).includes(total) ? total : null;
   } catch {
