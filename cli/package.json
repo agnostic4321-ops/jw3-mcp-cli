@@ -2,12 +2,17 @@
   "name": "@jw3/cli",
   "version": "0.1.0",
   "private": true,
-  "description": "JW3.ai command line \u2014 thin wrapper over the mcp-server JSON-RPC surface (read-only by default; propose-only, never executes).",
+  "description": "JW3.ai command line — thin wrapper over the mcp-server JSON-RPC surface (read-only by default; propose-only, never executes).",
   "type": "module",
   "bin": {
     "jw3": "./dist/index.js",
     "jw3d": "./dist/index.js"
   },
+  "files": [
+    "dist",
+    "!dist/**/*.test.js",
+    "!dist/**/*.test.d.ts"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "npm run build --silent && node --test \"dist/**/*.test.js\""
