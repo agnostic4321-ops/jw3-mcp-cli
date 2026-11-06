@@ -35,6 +35,7 @@ import { buildCexTimeframes } from "../_shared/snapshot.ts";
 import { cacheGet, cacheSet } from "../_shared/cache.ts";
 import { JEV_TTL_MS, jevCacheKey } from "../_shared/jev-cache.ts";
 import { requireYoloEligible } from "../_shared/execute-guard.ts";
+import { buildInsightsSnapshot } from "../_shared/insights-snapshot.ts";
 import { TOOLS, callEdge, rpcError, rpcOk, toolError, toolOk } from "./tools.ts";
 import {
   DEFI_BUILD_ACTIONS,
@@ -1570,6 +1571,44 @@ Deno.serve(withHandler("mcp-server", async (req) => {
           // clustering as agent-chat). Optional pair narrows to one asset;
           // unknown pairs match nothing with an honest note, never invented.
           return readResult(body.id, "news brief read", await executeNewsBriefRead(args));
+        }
+        if (name === "get_insights") {
+          // Shared cross-signal rollup (same aggregator as agent-chat):
+          // market regime, account performance, and news substance in one
+          // read. Every argument is parsed defensively and rejected BEFORE
+          // the fan-out, so a bad call costs no upstream work.
+          const daysRaw = args.days;
+          const days = daysRaw === undefined || daysRaw === null ? 30 : daysRaw;
+          if (typeof days !== "number" || !Number.isFinite(days) || !Number.isInteger(days) || days < 1 || days > 90) {
+            return toolError(body.id, "validation: get_insights: days must be an integer between 1 and 90");
+          }
+          const notionalRaw = args.notional_usd;
+          const notionalUsd = notionalRaw === undefined || notionalRaw === null ? 10000 : notionalRaw;
+          if (typeof notionalUsd !== "number" || !Number.isFinite(notionalUsd) || notionalUsd <= 0) {
+            return toolError(body.id, "validation: get_insights: notional_usd must be a positive number");
+          }
+          const feeRaw = args.fee_bps;
+          const feeBps = feeRaw === undefined || feeRaw === null ? 5 : feeRaw;
+          if (typeof feeBps !== "number" || !Number.isFinite(feeBps) || feeBps < 0 || feeBps > 100) {
+            return toolError(body.id, "validation: get_insights: fee_bps must be a number between 0 and 100");
+          }
+          try {
+            const payload = await buildInsightsSnapshot(
+              { userId, admin, authHeader, supaUrl },
+              { days, notionalUsd, feeBps },
+            );
+            const payloadError = payload && typeof payload === "object" && "error" in payload
+              ? (payload as { error?: unknown }).error
+              : undefined;
+            if (payloadError != null) {
+              logServer(corr, "get_insights upstream failed:", String(payloadError).slice(0, 2000));
+              return toolError(body.id, "upstream: get_insights: " + String(payloadError));
+            }
+            return toolOk(body.id, payload);
+          } catch (e) {
+            logServer(corr, "get_insights threw:", e instanceof Error ? e.message : e);
+            return toolError(body.id, internalErrorText(corr));
+          }
         }
         if (name === "build_defi_tx") {
           const actionRaw = typeof args.action === "string" ? args.action.toLowerCase().trim() : "";

@@ -372,6 +372,17 @@ export const TOOLS = [
     inputSchema: NEWS_BRIEF_PARAMETERS,
   },
   {
+    name: "get_insights",
+    title: "Insights summary",
+    annotations: { readOnlyHint: true, openWorldHint: true },
+    description: "READ-ONLY: one-shot summary of the user's Insights page — market regime (BTC/ETH price + 24h, total market cap, Fear & Greed, ETF 7d net flow, stablecoin supply), cross-venue funding extremes, the fee-aware carry board, DEX perp volume share, the caller's own fee drag from the Diary, headlines, and a deterministic brief. Values may be null/unknown; missing blocks are listed in `gaps` and are never synthesized. Cite as 'observed at <time>'. Optional args: days (1-90, default 30), notional_usd (default 10000), fee_bps (default 5). Never trades, never writes.",
+    inputSchema: { type: "object", properties: {
+      days: { type: "number", minimum: 1, maximum: 90, description: "Lookback in days for the rollup, 1..90 (default 30)." },
+      notional_usd: { type: "number", minimum: 1, description: "Notional in USD used to price the carry board and the fee drag, > 0 (default 10000)." },
+      fee_bps: { type: "number", minimum: 0, maximum: 100, description: "Round-trip fee assumption in basis points, 0..100 (default 5)." },
+    }, additionalProperties: false },
+  },
+  {
     name: "build_defi_tx",
     title: "Build or quote unsigned DeFi transaction",
     annotations: { readOnlyHint: true, openWorldHint: true },
@@ -411,6 +422,8 @@ export const PROTECTION_TOOL_RATE_LIMIT = { limit: 120, windowSec: 60, bucket: "
  */
 export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSec: number; bucket: string }> = {
   daily_prep: { limit: 5, windowSec: 300, bucket: "mcp-server:daily_prep" },
+  // ~14 upstreams per call: cap the fan-out so scanners cannot drain quotas.
+  get_insights: { limit: 20, windowSec: 60, bucket: "mcp-server:get_insights" },
   analyze_market: { limit: 20, windowSec: 60, bucket: "mcp-server:analyze_market" },
   list_fills: { limit: 20, windowSec: 60, bucket: "mcp-server:list_fills" },
   read_closed_pnl: { limit: 20, windowSec: 60, bucket: "mcp-server:read_closed_pnl" },

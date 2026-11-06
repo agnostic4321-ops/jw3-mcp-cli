@@ -121,6 +121,35 @@ Deno.test("mcp tools: read_news_brief reuses the shared chat schema (no copy)", 
   assert.deepEqual(props, ["pair", "source", "limit", "window_hrs"]);
 });
 
+Deno.test("mcp tools: get_insights is a read-only, closed-schema insight reader", () => {
+  const insights = byName("get_insights");
+  // Read-only + open-world: it reads journal/fill history, moves nothing.
+  assert.equal(insights.annotations?.readOnlyHint, true);
+  assert.equal(insights.annotations?.openWorldHint, true);
+  assert.equal(insights.inputSchema.additionalProperties, false);
+  // Every narrower is optional — bare call returns the full insight set.
+  assert.deepEqual(insights.inputSchema.required ?? [], []);
+  const props = Object.keys(insights.inputSchema.properties ?? {});
+  assert.deepEqual(props, ["days", "notional_usd", "fee_bps"]);
+  // The prefix and the "gaps" hook are the contract the agent prompt relies on.
+  const description = insights.description;
+  assert.ok(
+    description.startsWith("READ-ONLY:"),
+    `get_insights description must start with READ-ONLY: (got: ${description.slice(0, 40)})`,
+  );
+  assert.ok(
+    description.toLowerCase().includes("gaps"),
+    "get_insights description must mention gaps",
+  );
+  // First sentence must not read like an action tool.
+  const firstSentence = description.split(/[.!?]/)[0] ?? "";
+  const movingVerb = /\b(place|submit|swap|bridge|execute|sign|transfer|approve)\b/i;
+  assert.ok(
+    !movingVerb.test(firstSentence),
+    `get_insights first sentence implies a fund-moving action: ${firstSentence}`,
+  );
+});
+
 Deno.test("mcp tools: propose_diary_note mirrors the chat approval write (no new execution)", () => {
   const note = byName("propose_diary_note");
   assert.deepEqual(note.inputSchema.required ?? [], ["body_md"]);

@@ -48,6 +48,7 @@ import { cmdConnections, cmdDailyPrep, cmdDiary, cmdDiaryNote, cmdNews, cmdPropo
 import { cmdProposeBracket, cmdProposeCloseAll, cmdProposeIdea, cmdProposePredict } from "./commands/propose-cards.js";
 import { cmdFills, cmdPnl } from "./commands/fills.js";
 import { cmdPnlReconcile } from "./commands/pnl-reconcile.js";
+import { cmdInsights } from "./commands/insights.js";
 import {
   cmdBalances,
   cmdMarket,
@@ -140,6 +141,7 @@ Usage:
   jw3 diary-note --body "..." [--day YYYY-MM-DD] [--mode append|replace] [--json]
   jw3 daily-prep [--dry] [--day YYYY-MM-DD] [--json]
   jw3 risk [--state] [--json]
+  jw3 insights [--days 30] [--notional-usd 10000] [--fee-bps 5] [--json]
   jw3 news [--pair BTC] [--source CoinDesk] [--limit 6] [--window-hrs 48] [--json]
   jw3 propose --pair BTC/USDT --side long --entry … --stop … [--asset BTC] [--venue kucoin] [--size-usd …] [--thesis …] [--timeframe 4h] [--json]
   jw3 propose-idea --pair BTC/USDT --side buy --entry … --stop … --target 70000[:0.5],75000 --thesis "…" [--rationale "…"] [--json]
@@ -1169,6 +1171,21 @@ async function main(): Promise<void> {
     if (cmd === "risk") {
       const g = globals(tail);
       await cmdRisk({ json: g.json, state: g.rest.includes("--state"), url: g.url, pat: g.pat });
+      return;
+    }
+    if (cmd === "insights") {
+      const g = globals(tail);
+      // numOf keeps the documented default when a flag is absent and yields NaN
+      // for a present-but-unparsable value, so cmdInsights rejects it (exit 2,
+      // nothing called) instead of silently running on a default.
+      await cmdInsights({
+        days: numOf(g.rest, "--days", 30),
+        notionalUsd: numOf(g.rest, "--notional-usd", 10000),
+        feeBps: numOf(g.rest, "--fee-bps", 5),
+        json: g.json,
+        url: g.url,
+        pat: g.pat,
+      });
       return;
     }
     if (cmd === "news") {
