@@ -9,7 +9,6 @@
  *  - `jw3 propose-bracket`   -> `propose_bracket` (atomic entry + SL + 1–3 OCO TPs)
  *  - `jw3 propose-predict`   -> `propose_predict_market` (JEV-gated: needs analyze_market first)
  *  - `jw3 propose-close-all` -> `propose_close_all_positions` (records intent; reviews in-app)
- *  - `jw3 propose-withdraw`  -> `propose_withdraw` (trade-only keys: completed in the exchange account)
  */
 import { callTool } from "../mcp.js";
 import { fail, needPat } from "./market.js";
@@ -19,8 +18,7 @@ export const PROPOSE_CARDS_USAGE = `Usage:
   jw3 propose-idea --pair BTC/USDT --side buy --entry … --stop … --target 70000[:0.5],75000 --thesis "…" [--asset BTC] [--venue kucoin] [--exchange kucoin] [--timeframe 4h] [--size-usd …] [--jev-verdict …] [--rationale "…"] [--json]
   jw3 propose-bracket --exchange kucoin --pair BTC/USDT --side buy --entry-type market|limit [--entry-price …] --amount … --stop … --tp 70000:50,75000:50 [--fee-usd …] --rationale "…" [--json]
   jw3 propose-predict --market-id <id> --side yes|no --jev-verdict "…" --rationale "…" [--question "…"] [--amount …] [--venue polymarket|opinion] [--confidence 0..1] [--json]
-  jw3 propose-close-all --rationale "…" [--exchange kucoin] [--pair BTC/USDT] [--order-type market|limit] [--limit-price …] [--json]
-  jw3 propose-withdraw --source-exchange kucoin --asset USDT --network ETH --amount … --dest-address 0x… --rationale "…" [--dest-chain ethereum] [--json]`;
+  jw3 propose-close-all --rationale "…" [--exchange kucoin] [--pair BTC/USDT] [--order-type market|limit] [--limit-price …] [--json]`;
 
 /** One idea's target leg after CLI parsing (price + optional 0..1 weight). */
 export type IdeaTarget = { price: number; weight: number | null };
@@ -389,66 +387,3 @@ export async function cmdProposeCloseAll(
   console.log(`Close-all proposed for ${scope}${r.proposal_id ? ` (proposal ${r.proposal_id})` : ""} — nothing was closed. Review every leg in-app: Trading → Positions → Close all.`);
 }
 
-export type ProposeWithdrawArgs = {
-  sourceExchange: string;
-  asset: string;
-  network: string;
-  amount: string;
-  destAddress: string;
-  destChain?: string;
-  rationale: string;
-};
-
-/** Pure validation so bad withdrawal cards fail before any network call. */
-export function validateProposeWithdraw(a: ProposeWithdrawArgs): string | null {
-  if (!a.sourceExchange) return "source-exchange required (e.g. kucoin)";
-  if (!a.asset) return "asset required (e.g. USDT)";
-  if (!a.network) return "network required (e.g. ETH)";
-  if (!a.amount || posNum(a.amount) === null) return "amount must be > 0 in human units";
-  if (!a.destAddress) return "dest-address required (the full user-confirmed wallet address — never invented)";
-  if (a.destAddress.trim().length < 8) return "dest-address looks truncated — pass the full user-confirmed address";
-  if (!a.rationale) return "rationale required (why withdraw now)";
-  return null;
-}
-
-export async function cmdProposeWithdraw(
-  args: ProposeWithdrawArgs,
-  opts: { json: boolean; url?: string; pat?: string },
-): Promise<void> {
-  const pat = needPat(opts.pat);
-  if (!pat) return;
-  const err = validateProposeWithdraw(args);
-  if (err) {
-    console.error(`Bad withdrawal: ${err} — nothing was called.`);
-    process.exitCode = 2;
-    return;
-  }
-  const toolArgs: Record<string, unknown> = {
-    source_exchange: args.sourceExchange.toLowerCase(),
-    asset: args.asset,
-    network: args.network,
-    amount: args.amount,
-    dest_address: args.destAddress,
-    ...(args.destChain ? { dest_chain: args.destChain.toLowerCase() } : {}),
-    rationale: args.rationale,
-  };
-  let out: unknown;
-  try {
-    out = await callTool("propose_withdraw", toolArgs, pat, opts.url);
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (/trade:propose/.test(msg)) {
-      console.error(`Refused: ${msg} (mint the scope in Settings → Harness Access).`);
-    } else {
-      fail(e);
-    }
-    process.exitCode = 1;
-    return;
-  }
-  if (opts.json) {
-    console.log(JSON.stringify(out));
-    return;
-  }
-  const r = out as { proposal_id?: string };
-  console.log(`Withdrawal proposed${r.proposal_id ? ` (proposal ${r.proposal_id})` : ""} — no funds moved. Approval pre-fills the exchange form; complete it inside your exchange account (trade-only keys).`);
-}

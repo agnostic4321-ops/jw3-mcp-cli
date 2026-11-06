@@ -183,7 +183,7 @@ jw3d supervise …                   same supervisor via the jw3d alias (24/7 en
   cancels reduce risk. Scope refusal stops the fan-out.
 - Spaced forms work for every hyphenated command (`diary note`,
   `daily prep`, `pnl reconcile`,
-  `propose idea|bracket|predict|close-all|withdraw`, `cancel all`); flag
+  `propose idea|bracket|predict|close-all`, `cancel all`); flag
   aliases `--lev|--leverage`, `--tf|--timeframe`,
   `--bounceback-pct|--backoff-pct` are accepted everywhere those options
   exist.

@@ -45,7 +45,7 @@ import { cmdDegen, cmdDegenRecord, cmdPaperStats } from "./commands/degen.js";
 import { cmdTtm } from "./commands/ttm.js";
 import { cmdSpikes } from "./commands/spikes.js";
 import { cmdConnections, cmdDailyPrep, cmdDiary, cmdDiaryNote, cmdNews, cmdPropose, cmdRisk } from "./commands/extra.js";
-import { cmdProposeBracket, cmdProposeCloseAll, cmdProposeIdea, cmdProposePredict, cmdProposeWithdraw } from "./commands/propose-cards.js";
+import { cmdProposeBracket, cmdProposeCloseAll, cmdProposeIdea, cmdProposePredict } from "./commands/propose-cards.js";
 import { cmdFills, cmdPnl } from "./commands/fills.js";
 import { cmdPnlReconcile } from "./commands/pnl-reconcile.js";
 import {
@@ -146,7 +146,6 @@ Usage:
   jw3 propose-bracket --exchange kucoin --pair BTC/USDT --side buy --entry-type market --amount … --stop … --tp 70000:50,75000:50 --rationale "…" [--json]
   jw3 propose-predict --market-id <id> --side yes --jev-verdict "…" --rationale "…" [--json]
   jw3 propose-close-all --rationale "…" [--exchange kucoin] [--pair BTC/USDT] [--json]
-  jw3 propose-withdraw --source-exchange kucoin --asset USDT --network ETH --amount … --dest-address 0x… --rationale "…" [--json]
   jw3 market --exchange binance --pair BTC/USDT [--json]
   jw3 screener [--exchange binance] [--json]
   jw3 positions [--exchange kucoin] [--pair BTC/USDT] [--watch SEC] [--polls N] [--json] [--json-lines]
@@ -179,7 +178,7 @@ Usage:
   jw3 supervise --trail SOL/USDT:long:1 [--trail …] [--loop kucoin:SOL/USDT] [--config manifest.json] [--once] [--heartbeat-sec 15] [--max-restarts 10] [--allow-live] [--json]
   jw3d supervise …                   same supervisor via the jw3d alias (24/7 entrypoint)
 
-Aliases: diary note, daily prep, pnl reconcile, propose <idea|bracket|predict|close-all|withdraw|close all>, cancel all — spaced forms of the hyphenated commands.
+Aliases: diary note, daily prep, pnl reconcile, propose <idea|bracket|predict|close-all|close all>, cancel all — spaced forms of the hyphenated commands.
 Flag aliases (same meaning everywhere the option exists): --lev|--leverage, --tf|--timeframe, --bounceback-pct|--backoff-pct.
 
 Global:
@@ -1187,10 +1186,10 @@ async function main(): Promise<void> {
       });
       return;
     }
-    // Space forms (`propose idea|bracket|predict|close-all|withdraw`, plus
+    // Space forms (`propose idea|bracket|predict|close-all`, plus
     // `propose close all`) are handled by the card branches below — the
     // guard keeps them from falling into the bare propose ticket.
-    if (cmd === "propose" && sub !== "idea" && sub !== "bracket" && sub !== "predict" && sub !== "close-all" && sub !== "close" && sub !== "withdraw") {
+    if (cmd === "propose" && sub !== "idea" && sub !== "bracket" && sub !== "predict" && sub !== "close-all" && sub !== "close") {
       const g = globals(tail);
       const entry = Number(flagOf(g.rest, "--entry"));
       const stop = Number(flagOf(g.rest, "--stop"));
@@ -1291,23 +1290,6 @@ async function main(): Promise<void> {
           pair: flagOf(g.rest, "--pair"),
           orderType: flagOf(g.rest, "--order-type"),
           limitPrice: flagOf(g.rest, "--limit-price"),
-        },
-        { json: g.json, url: g.url, pat: g.pat },
-      );
-      return;
-    }
-    // Space form: `propose withdraw`.
-    if (cmd === "propose-withdraw" || (cmd === "propose" && sub === "withdraw")) {
-      const g = globals(tail);
-      await cmdProposeWithdraw(
-        {
-          sourceExchange: flagOf(g.rest, "--source-exchange") ?? flagOf(g.rest, "--exchange") ?? "",
-          asset: flagOf(g.rest, "--asset") ?? "",
-          network: flagOf(g.rest, "--network") ?? "",
-          amount: flagOf(g.rest, "--amount") ?? "",
-          destAddress: flagOf(g.rest, "--dest-address") ?? "",
-          destChain: flagOf(g.rest, "--dest-chain"),
-          rationale: flagOf(g.rest, "--rationale") ?? flagOf(g.rest, "--reason") ?? "",
         },
         { json: g.json, url: g.url, pat: g.pat },
       );

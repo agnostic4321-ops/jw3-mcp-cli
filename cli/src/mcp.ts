@@ -111,7 +111,6 @@ const NO_RETRY_TOOLS = new Set([
   "propose_bracket",
   "propose_predict_market",
   "propose_close_all_positions",
-  "propose_withdraw",
 ]);
 
 /**

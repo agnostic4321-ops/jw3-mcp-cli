@@ -19,7 +19,6 @@ import {
   DEFI_SLIPPAGE_MAX_BPS,
   DEFAULT_TOOL_RATE_LIMIT,
   IDEMPOTENCY_KEY_MAX_LEN,
-  MAX_PROPOSAL_ADDRESS_CHARS,
   MAX_PROPOSAL_JEV_CHARS,
   MAX_PROPOSAL_QUESTION_CHARS,
   MAX_PROPOSAL_RATIONALE_CHARS,
@@ -150,11 +149,6 @@ Deno.test("mcp tools: cycle-05 proposal cards are approval-only (never auto-exec
       required: ["rationale"],
       props: ["exchange", "pair", "order_type", "limit_price", "rationale"],
     },
-    {
-      name: "propose_withdraw",
-      required: ["source_exchange", "asset", "network", "amount", "dest_address", "rationale"],
-      props: ["source_exchange", "asset", "network", "amount", "dest_address", "dest_chain", "rationale"],
-    },
   ];
   for (const { name, required, props } of expected) {
     const tool = byName(name);
@@ -202,7 +196,6 @@ Deno.test("mcp hardening: proposal-card validators reject placeholders and bad s
   assert.equal(MAX_PROPOSAL_THESIS_CHARS, 2000);
   assert.equal(MAX_PROPOSAL_JEV_CHARS, 1000);
   assert.equal(MAX_PROPOSAL_QUESTION_CHARS, 500);
-  assert.equal(MAX_PROPOSAL_ADDRESS_CHARS, 128);
 });
 
 Deno.test("mcp tools: analyze_market shares the JEV contract + consult_jev shape", () => {

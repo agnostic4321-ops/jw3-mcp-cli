@@ -10,3 +10,4 @@ dist/
 # checkout, so these materialized copies are never committed.
 edge-functions/_shared/
 edge-functions/agent-chat/
+supabase/.temp/

@@ -40,7 +40,6 @@ import {
   DEFI_BUILD_ACTIONS,
   GATEWAY_RATE_LIMIT,
   MAX_DEFI_AMOUNT,
-  MAX_PROPOSAL_ADDRESS_CHARS,
   MAX_PROPOSAL_JEV_CHARS,
   MAX_PROPOSAL_QUESTION_CHARS,
   MAX_PROPOSAL_RATIONALE_CHARS,
@@ -76,7 +75,6 @@ import {
   buildMcpDiaryDayPayload,
   buildMcpFillsPayload,
   buildMcpPnlPayload,
-  executeDefiRead,
   executeDiaryDayRangeRead,
   executeMarketRead,
   executeOpenOrdersRead,
@@ -93,6 +91,7 @@ import {
   type ReadDeps,
   type ReadEdgeFn,
 } from "../agent-chat/read-tools.ts";
+import { executeDefiRead } from "./defi.ts";
 
 const PROTOCOL_VERSION = "2025-06-18";
 const SERVER_INFO = { name: "jw3-agent", version: "1.0.0" };
@@ -884,56 +883,6 @@ Deno.serve(withHandler("mcp-server", async (req) => {
             proposal_id: (data as { id: string }).id, status: "proposed",
             scope: { exchange, pair },
             approve_in: "Trading → Positions → Close all (review every leg before approving)",
-          });
-        }
-        if (name === "propose_withdraw") {
-          // CEX-withdrawal proposal. Trade-only keys mean the venue can never
-          // execute this — approval pre-fills the exchange withdrawal form and
-          // the user completes it inside their exchange account. Records the
-          // proposal only; no funds move.
-          if (viaPat && !scopes.includes("trade:propose") && !scopes.includes("trade:execute")) {
-            return toolError(body.id, "auth: propose_withdraw needs the trade:propose scope (mint it in Settings → Harness Access)");
-          }
-          const venueCheck = validateVenueSlug(args.source_exchange);
-          if (!venueCheck.ok) return toolError(body.id, `validation: propose_withdraw: ${venueCheck.error}`);
-          const asset = validateProposalText(args.asset, "asset", 32);
-          if (!asset.ok) return toolError(body.id, `validation: propose_withdraw: ${asset.error}`);
-          const network = validateProposalText(args.network, "network", 32);
-          if (!network.ok) return toolError(body.id, `validation: propose_withdraw: ${network.error}`);
-          const amountRaw = typeof args.amount === "string" ? args.amount.trim() : "";
-          if (!amountRaw || !Number.isFinite(parseFloat(amountRaw)) || parseFloat(amountRaw) <= 0) {
-            return toolError(body.id, "validation: propose_withdraw needs amount > 0 in human units");
-          }
-          const dest = validateProposalText(args.dest_address, "dest_address", MAX_PROPOSAL_ADDRESS_CHARS);
-          if (!dest.ok) return toolError(body.id, `validation: propose_withdraw: ${dest.error}`);
-          if (dest.value.length < 8) {
-            return toolError(body.id, "validation: propose_withdraw dest_address looks truncated (min 8 chars) — pass the full user-confirmed address");
-          }
-          const destChainRaw = typeof args.dest_chain === "string" ? args.dest_chain.trim().toLowerCase() : "";
-          if (destChainRaw.length > 32) {
-            return toolError(body.id, "validation: propose_withdraw dest_chain too long (max 32 chars)");
-          }
-          const rationale = validateProposalText(args.rationale, "rationale", MAX_PROPOSAL_RATIONALE_CHARS);
-          if (!rationale.ok) return toolError(body.id, `validation: propose_withdraw: ${rationale.error}`);
-          const { data, error } = await admin.from("agent_action_log").insert({
-            user_id: userId, action_type: "withdraw", status: "proposed",
-            params: {
-              tool: "propose_withdraw",
-              args: {
-                source_exchange: venueCheck.venue, asset: asset.value, network: network.value,
-                amount: amountRaw, dest_address: dest.value,
-                dest_chain: destChainRaw || null, rationale: rationale.value,
-              },
-            },
-            decided_via: "mcp-propose",
-          }).select("id").single();
-          if (error || !data) {
-            logServer(corr, "propose_withdraw insert failed:", error?.message ?? "no row");
-            return toolError(body.id, "upstream: could not record withdrawal proposal");
-          }
-          return toolOk(body.id, {
-            proposal_id: (data as { id: string }).id, status: "proposed",
-            approve_in: "Exchange withdrawal form — trade-only keys: approval pre-fills the form, you complete it inside your exchange account",
           });
         }
         if (name === "read_onchain_balances") {

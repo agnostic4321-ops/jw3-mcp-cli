@@ -17,8 +17,6 @@ import {
 import {
   LIST_CONNECTIONS_DESCRIPTION,
   LIST_CONNECTIONS_PARAMETERS,
-  READ_DEFI_DESCRIPTION,
-  READ_DEFI_PARAMETERS,
   READ_DIARY_DAY_DESCRIPTION,
   READ_DIARY_DAY_PARAMETERS,
   READ_LIVE_DATUM_DESCRIPTION,
@@ -28,6 +26,7 @@ import {
   TOOL_MESSAGE_BUDGET_CHARS,
   TOOL_MESSAGE_HARD_CAP,
 } from "../agent-chat/read-tools.ts";
+import { READ_DEFI_DESCRIPTION, READ_DEFI_PARAMETERS } from "./defi.ts";
 
 /** Shared analyze_market parameters — the same JEV verdict as chat
  *  consult_jev (see agent-chat/jev-gate.ts + agent-chat/tools.ts).
@@ -215,21 +214,6 @@ export const TOOLS = [
       limit_price: { type: "string", description: "Required for order_type=limit." },
       rationale: { type: "string", description: "Why flatten now" },
     }, required: ["rationale"], additionalProperties: false },
-  },
-  {
-    name: "propose_withdraw",
-    title: "Propose CEX withdrawal",
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-    description: "APPROVAL CARD ONLY — NEVER auto-executed: propose a CEX withdrawal (exchange → on-chain wallet) for in-app approval. JW3 holds trade-only keys (withdrawals disabled), so approving pre-fills the exchange withdrawal form and the user completes it inside their exchange account. Records the proposal only — no funds move. Needs the trade:propose scope (PAT).",
-    inputSchema: { type: "object", properties: {
-      source_exchange: { type: "string", description: "Source CEX slug, e.g. kucoin" },
-      asset: { type: "string", description: "Asset symbol, e.g. USDT, USDC, ETH, SOL" },
-      network: { type: "string", description: "Network the CEX withdraws on (e.g. ETH, ARBITRUM, BSC, SOL, TON, MATIC, TRX)" },
-      amount: { type: "string", description: "Amount in human units" },
-      dest_address: { type: "string", description: "Destination on-chain wallet address (user-confirmed, never invented)" },
-      dest_chain: { type: "string", description: "Optional destination chain slug (ethereum, base, arbitrum, polygon, bnb, avalanche, solana, ton)" },
-      rationale: { type: "string", description: "Why withdraw now" },
-    }, required: ["source_exchange", "asset", "network", "amount", "dest_address", "rationale"], additionalProperties: false },
   },
   {
     name: "read_onchain_balances",
@@ -750,8 +734,8 @@ export function validateTradeSide(raw: unknown): { ok: true; side: string } | { 
 
 /* ── propose_* card validators ──
  *
- * The five Cycle-05 proposal tools (trade_ideas, bracket, predict_market,
- * close_all_positions, withdraw) are approval cards: they record proposal
+ * The four Cycle-05 proposal tools (trade_ideas, bracket, predict_market,
+ * close_all_positions) are approval cards: they record proposal
  * rows and never execute. These pure validators keep malformed cards from
  * reaching the DB — same discipline as the execute_trade field validators
  * above. All caps mirror the agent-chat slice widths (thesis 2000,
@@ -764,7 +748,6 @@ export const MAX_PROPOSAL_RATIONALE_CHARS = 1000;
 export const MAX_PROPOSAL_THESIS_CHARS = 2000;
 export const MAX_PROPOSAL_JEV_CHARS = 1000;
 export const MAX_PROPOSAL_QUESTION_CHARS = 500;
-export const MAX_PROPOSAL_ADDRESS_CHARS = 128;
 
 /** Proposal side: buy|sell plus the long|short aliases the desk sends. */
 export function validateProposeSide(raw: unknown): { ok: true; side: "buy" | "sell" } | { ok: false; error: string } {

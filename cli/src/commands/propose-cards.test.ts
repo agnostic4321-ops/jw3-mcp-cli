@@ -11,16 +11,14 @@ import {
   validateProposeCloseAll,
   validateProposeIdea,
   validateProposePredict,
-  validateProposeWithdraw,
 } from "./propose-cards.js";
 
 describe("jw3 propose-* CLI validation", () => {
-  it("documents all five proposal-card subcommands", () => {
+  it("documents all four proposal-card subcommands", () => {
     assert.ok(PROPOSE_CARDS_USAGE.includes("jw3 propose-idea"), "usage must document `jw3 propose-idea`");
     assert.ok(PROPOSE_CARDS_USAGE.includes("jw3 propose-bracket"), "usage must document `jw3 propose-bracket`");
     assert.ok(PROPOSE_CARDS_USAGE.includes("jw3 propose-predict"), "usage must document `jw3 propose-predict`");
     assert.ok(PROPOSE_CARDS_USAGE.includes("jw3 propose-close-all"), "usage must document `jw3 propose-close-all`");
-    assert.ok(PROPOSE_CARDS_USAGE.includes("jw3 propose-withdraw"), "usage must document `jw3 propose-withdraw`");
   });
 
   it("parses --target legs and refuses bad shapes", () => {
@@ -99,23 +97,5 @@ describe("jw3 propose-* CLI validation", () => {
       "a market flatten with a price must be refused",
     );
     assert.ok(validateProposeCloseAll({ rationale: "" }), "a missing rationale must be refused");
-  });
-
-  it("validates withdrawal cards: full user-confirmed address required", () => {
-    const base = {
-      sourceExchange: "kucoin", asset: "USDT", network: "ETH",
-      amount: "500", destAddress: "0x1111111111111111111111111111111111111111",
-      rationale: "cold storage",
-    };
-    assert.equal(validateProposeWithdraw(base), null);
-    assert.ok(
-      validateProposeWithdraw({ ...base, destAddress: "" }),
-      "a missing destination must be refused — never invented",
-    );
-    assert.ok(
-      validateProposeWithdraw({ ...base, destAddress: "0x123" }),
-      "a truncated destination must be refused",
-    );
-    assert.ok(validateProposeWithdraw({ ...base, amount: "0" }), "a zero amount must be refused");
   });
 });
