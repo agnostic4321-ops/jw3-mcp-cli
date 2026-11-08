@@ -416,6 +416,15 @@ Deno.test("mcp hardening: central schema validation rejects bad shapes", () => {
   assert.match(lev, /leverage/);
 });
 
+Deno.test("mcp hardening: read_live_datum accepts legacy withExits flag", () => {
+  // Older CLI versions (daemon/loop/market/watchdog/heat/monitor) send
+  // withExits:true on positions reads. The flag is accepted for backward
+  // compatibility; exits enrichment is always on for positions.
+  const schema = byName("read_live_datum").inputSchema;
+  assert.equal(validateArgsAgainstSchema(schema, { kind: "positions", withExits: true }), null);
+  assert.equal(validateArgsAgainstSchema(schema, { kind: "positions" }), null);
+});
+
 Deno.test("mcp hardening: execute_trade declares every handled field", () => {
   const props = Object.keys(byName("execute_trade").inputSchema.properties ?? {});
   for (const f of ["actor", "leverage", "marginMode", "clientOid", "idempotency_key", "type"]) {
