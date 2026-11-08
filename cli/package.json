@@ -1,21 +1,34 @@
 {
   "name": "@jw3/cli",
   "version": "0.1.0",
-  "private": true,
-  "description": "JW3.ai command line — thin wrapper over the mcp-server JSON-RPC surface (read-only by default; propose-only, never executes).",
+  "description": "JW3.ai command line — market reads, Diary proposals, and confirm-gated execution over the mcp-server JSON-RPC surface. Dry runs send zero bytes; fund-moving commands need --yes plus server-side scope and kill-switch gates.",
+  "license": "MIT",
+  "author": "agnostic4321-ops",
+  "homepage": "https://github.com/agnostic4321-ops/jw3-mcp-cli",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/agnostic4321-ops/jw3-mcp-cli.git",
+    "directory": "cli"
+  },
+  "keywords": ["jw3", "trading", "kucoin", "mcp", "cli"],
   "type": "module",
   "bin": {
-    "jw3": "./dist/index.js",
-    "jw3d": "./dist/index.js"
+    "jw3": "dist/index.js",
+    "jw3d": "dist/index.js"
   },
   "files": [
     "dist",
     "!dist/**/*.test.js",
     "!dist/**/*.test.d.ts"
   ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build --silent && node --test \"dist/**/*.test.js\""
+    "test": "npm run build --silent && node --test \"dist/**/*.test.js\"",
+    "prepack": "npm run build --silent"
   },
   "engines": {
     "node": ">=20"
