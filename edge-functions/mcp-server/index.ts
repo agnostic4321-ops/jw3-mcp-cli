@@ -21,7 +21,7 @@
 // read_diary_day (trades/setups/recap), list_connections, plus the propose_*
 // and trade-execution tools below. Proposals ride the agent_action_log
 // propose→approve pattern, never direct execution.
-import { withHandler, fail, readJson } from "../_shared/respond.ts";
+import { withHandler, fail, ok, readJson } from "../_shared/respond.ts";
 import { planRealizedPnlReconcile, lossFromPnl } from "../_shared/realized-pnl-reconcile.ts";
 import { recordRealizedLossOnly, rollDailyWindowIfExpired } from "../_shared/risk-gate.ts";
 import { requireUser } from "../_shared/auth.ts";
@@ -36,7 +36,7 @@ import { cacheGet, cacheSet } from "../_shared/cache.ts";
 import { JEV_TTL_MS, jevCacheKey } from "../_shared/jev-cache.ts";
 import { requireYoloEligible } from "../_shared/execute-guard.ts";
 import { buildInsightsSnapshot } from "../_shared/insights-snapshot.ts";
-import { TOOLS, callEdge, rpcError, rpcOk, toolError, toolOk } from "./tools.ts";
+import { TOOLS, callEdge, rpcError, rpcOk, toolError, toolOk, protectedResourceDoc, rpcAuthChallenge } from "./tools.ts";
 import {
   DEFI_BUILD_ACTIONS,
   GATEWAY_RATE_LIMIT,
@@ -107,7 +107,27 @@ type RpcReq = { jsonrpc?: string; id?: unknown; method?: string; params?: Record
 Deno.serve(withHandler("mcp-server", async (req) => {
   const corr = newCorrelationId();
   try {
-    if (req.method !== "POST") return fail(405, "validation", "MCP Streamable HTTP: POST JSON-RPC only.");
+    if (req.method !== "POST") {
+      // RFC 9728 discovery: this resource server's own protected-resource
+      // metadata. Directory scanners and MCP clients fetch it to find the
+      // authorization server (https://www.jw3.ai/mcp).
+      if (req.method === "GET") {
+        try {
+          const metaUrl = new URL(req.url);
+          const suffix = "/.well-known/oauth-protected-resource";
+          if (metaUrl.pathname.endsWith(suffix)) {
+            // Never derive the public URL from req.url: inside the platform
+            // the request carries an internal host/path. The canonical
+            // resource URL is built from SUPABASE_URL (always set in prod).
+            const supaBase = (Deno.env.get("SUPABASE_URL") || "").replace(/\/$/, "");
+            return ok(protectedResourceDoc(`${supaBase}/functions/v1/mcp-server`));
+          }
+        } catch {
+          // fall through to the 405 below
+        }
+      }
+      return fail(405, "validation", "MCP Streamable HTTP: POST JSON-RPC only.");
+    }
     const admin = getServiceClient();
 
     // ── PRE-AUTH GATEWAY BUCKET (per IP, before anything parses) ──
@@ -152,7 +172,14 @@ Deno.serve(withHandler("mcp-server", async (req) => {
     const authResult = await requireUser(req);
     if (!authResult.ok) {
       logServer(corr, `auth rejected: status=${authResult.status}`);
-      return rpcError(reqId, -32001, `unauthorized: bad credentials (ref ${corr})`);
+      // RFC 9728 §3.1: HTTP 401 + WWW-Authenticate challenge (never a bare
+      // 200) so directory scanners and MCP clients discover the OAuth flow.
+      // The JSON-RPC body is preserved — the jw3 CLI parses envelopes out
+      // of non-2xx bodies, so existing clients keep working unchanged.
+      // The metadata URL is built from SUPABASE_URL, never req.url (the
+      // platform invokes the function on an internal host/path).
+      const supaBase = (Deno.env.get("SUPABASE_URL") || "").replace(/\/$/, "");
+      return rpcAuthChallenge(reqId, `${supaBase}/functions/v1/mcp-server/.well-known/oauth-protected-resource`, `unauthorized: bad credentials (ref ${corr})`);
     }
     const { userId, authHeader } = authResult;
     const scopes = authResult.scopes ?? [];
@@ -1732,4 +1759,4 @@ Deno.serve(withHandler("mcp-server", async (req) => {
     }
     return fail(500, "internal", internalErrorText(corr));
   }
-}));
+}, { allowGet: true }));

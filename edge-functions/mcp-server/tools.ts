@@ -9,6 +9,7 @@
 import { ok } from "../_shared/respond.ts";
 import { fetchWithTimeout } from "../_shared/http.ts";
 import type { AnyClient } from "../_shared/clients.ts";
+import { GRANTABLE_SCOPES } from "../_shared/mcp-auth.ts";
 import { JEV_CONSULT_CONTRACT } from "../agent-chat/jev-gate.ts";
 import {
   NEWS_BRIEF_DESCRIPTION,
@@ -863,6 +864,34 @@ export type { RpcReq };
 
 export function rpcError(id: unknown, code: number, message: string, data?: unknown) {
   return ok({ jsonrpc: "2.0", id: id ?? null, error: { code, message, ...(data !== undefined ? { data } : {}) } });
+}
+/** RFC 9728 §3.1: the resource server's own protected-resource metadata.
+ *  resourceUrl is the canonical MCP endpoint (no trailing slash); directory
+ *  scanners and MCP clients fetch this to discover the authorization server. */
+export function protectedResourceDoc(resourceUrl: string) {
+  return {
+    resource: resourceUrl,
+    authorization_servers: ["https://www.jw3.ai/mcp"],
+    scopes_supported: [...GRANTABLE_SCOPES],
+    bearer_methods_supported: ["header"],
+  };
+}
+/** RFC 9728 §3.1 + MCP auth spec: unauthenticated callers get HTTP 401 with a
+ *  WWW-Authenticate challenge pointing at this server's metadata doc — never
+ *  a bare 200. metadataUrl is the full doc URL (built from SUPABASE_URL by the
+ *  caller — req.url carries an internal host/path inside the platform).
+ *  The JSON-RPC error body is preserved so the jw3 CLI (which parses
+ *  envelopes out of non-2xx bodies) keeps working unchanged. */
+export function rpcAuthChallenge(id: unknown, metadataUrl: string, message: string) {
+  return ok(
+    { jsonrpc: "2.0", id: id ?? null, error: { code: -32001, message } },
+    {
+      status: 401,
+      headers: {
+        "WWW-Authenticate": `Bearer resource_metadata="${metadataUrl}", error="invalid_token"`,
+      },
+    },
+  );
 }
 export function rpcOk(id: unknown, result: unknown) {
   return ok({ jsonrpc: "2.0", id: id ?? null, result });

@@ -31,6 +31,8 @@ import {
   normalizeDefiChainId,
   normalizeIdempotencyKey,
   parseDefiAmount,
+  protectedResourceDoc,
+  rpcAuthChallenge,
   rpcError,
   rpcOk,
   toolError,
@@ -423,6 +425,25 @@ Deno.test("mcp hardening: read_live_datum accepts legacy withExits flag", () => 
   const schema = byName("read_live_datum").inputSchema;
   assert.equal(validateArgsAgainstSchema(schema, { kind: "positions", withExits: true }), null);
   assert.equal(validateArgsAgainstSchema(schema, { kind: "positions" }), null);
+});
+
+Deno.test("mcp auth discovery: protected-resource doc + 401 challenge shape", async () => {
+  const doc = protectedResourceDoc("https://x.supabase.co/functions/v1/mcp-server");
+  assert.equal(doc.resource, "https://x.supabase.co/functions/v1/mcp-server");
+  assert.deepEqual(doc.authorization_servers, ["https://www.jw3.ai/mcp"]);
+  for (const s of ["mcp:read", "trade:propose", "trade:execute"]) {
+    if (!(doc.scopes_supported as string[]).includes(s)) throw new Error(`doc lost scope: ${s}`);
+  }
+  const res = rpcAuthChallenge(7, "https://x.supabase.co/functions/v1/mcp-server/.well-known/oauth-protected-resource", "unauthorized: bad credentials (ref test)");
+  assert.equal(res.status, 401);
+  const www = res.headers.get("www-authenticate") ?? "";
+  if (!www.includes('resource_metadata="https://x.supabase.co/functions/v1/mcp-server/.well-known/oauth-protected-resource"')) {
+    throw new Error(`challenge lost resource_metadata: ${www}`);
+  }
+  const body = await res.json() as { jsonrpc: string; id: number; error: { code: number } };
+  assert.equal(body.jsonrpc, "2.0");
+  assert.equal(body.id, 7);
+  assert.equal(body.error.code, -32001);
 });
 
 Deno.test("mcp hardening: execute_trade declares every handled field", () => {
