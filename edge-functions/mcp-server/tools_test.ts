@@ -14,17 +14,21 @@
 import { strict as assert } from "node:assert";
 import {
   ANALYZE_MARKET_PARAMETERS,
+  ANONYMOUS_METHODS,
   DEFI_BUILD_ACTIONS,
   DEFI_SLIPPAGE_DEFAULT_BPS,
   DEFI_SLIPPAGE_MAX_BPS,
   DEFAULT_TOOL_RATE_LIMIT,
   IDEMPOTENCY_KEY_MAX_LEN,
+  MCP_PROTOCOL_VERSION,
+  MCP_SERVER_INFO,
   MAX_PROPOSAL_JEV_CHARS,
   MAX_PROPOSAL_QUESTION_CHARS,
   MAX_PROPOSAL_RATIONALE_CHARS,
   MAX_PROPOSAL_THESIS_CHARS,
   PROTECTION_TOOL_RATE_LIMIT,
   TOOLS,
+  anonymousDiscovery,
   clampSlippageBps,
   isEvmTokenAddress,
   isWalletAddress,
@@ -185,7 +189,9 @@ Deno.test("mcp tools: cycle-05 proposal cards are approval-only (never auto-exec
     const tool = byName(name);
     assert.deepEqual(tool.inputSchema.required ?? [], required);
     assert.deepEqual(Object.keys(tool.inputSchema.properties ?? {}), props);
-    // Proposal rows are state-changing (retry would duplicate the card).
+    // Proposal tools only write an approval card (additive: nothing moves
+    // until the user approves in-app), so destructiveHint stays false; a
+    // retry would duplicate the card, so idempotentHint is false too.
     assert.equal(tool.annotations?.readOnlyHint, false, `${name} must not claim readOnlyHint`);
     assert.equal(tool.annotations?.destructiveHint, false, `${name} moves nothing itself`);
     assert.equal(tool.annotations?.idempotentHint, false, `${name} is not idempotent`);
@@ -569,4 +575,124 @@ Deno.test("mcp hardening: idempotency is honored end to end", async () => {
   const replay = JSON.parse(text2) as Record<string, unknown>;
   assert.equal(replay.deduped, true);
   assert.equal(edgeCalls2.length, 0, "replay must not dispatch again");
+});
+
+Deno.test("mcp anonymous discovery: allowlist holds exactly the discovery methods", () => {
+  assert.deepEqual([...ANONYMOUS_METHODS], ["initialize", "notifications/initialized", "ping", "tools/list"]);
+});
+
+Deno.test("mcp anonymous discovery: initialize returns 200 with protocolVersion and serverInfo", async () => {
+  const res = anonymousDiscovery(null, { jsonrpc: "2.0", id: 1, method: "initialize" });
+  assert.ok(res instanceof Response, "anonymous initialize must dispatch without a token");
+  assert.equal(res.status, 200);
+  const body = await res.json() as { jsonrpc: string; id: number; result: { protocolVersion: string; serverInfo: unknown } };
+  assert.equal(body.jsonrpc, "2.0");
+  assert.equal(body.id, 1);
+  // Same negotiation + server identity as the authenticated initialize
+  // path (both read the one shared pair of consts).
+  assert.equal(body.result.protocolVersion, MCP_PROTOCOL_VERSION);
+  assert.deepEqual(body.result.serverInfo, MCP_SERVER_INFO);
+});
+
+Deno.test("mcp anonymous discovery: tools/list returns the full public catalog", async () => {
+  const res = anonymousDiscovery(null, { jsonrpc: "2.0", id: 2, method: "tools/list" });
+  assert.ok(res instanceof Response, "anonymous tools/list must dispatch without a token");
+  assert.equal(res.status, 200);
+  const body = await res.json() as { jsonrpc: string; id: number; result: { tools: unknown[] } };
+  assert.equal(body.jsonrpc, "2.0");
+  assert.equal(body.id, 2);
+  assert.equal(body.result.tools.length, (TOOLS as unknown[]).length);
+  // Exactly the registry: every tool with name, description and inputSchema.
+  assert.deepEqual(body.result.tools, TOOLS);
+});
+
+Deno.test("mcp anonymous discovery: ping returns 200", async () => {
+  const res = anonymousDiscovery(null, { jsonrpc: "2.0", id: 3, method: "ping" });
+  assert.ok(res instanceof Response, "anonymous ping must dispatch without a token");
+  assert.equal(res.status, 200);
+  const body = await res.json() as { jsonrpc: string; id: number; result: unknown };
+  assert.equal(body.jsonrpc, "2.0");
+  assert.equal(body.id, 3);
+  assert.deepEqual(body.result, {});
+});
+
+Deno.test("mcp anonymous discovery: notifications/initialized returns 202", () => {
+  const res = anonymousDiscovery(null, { jsonrpc: "2.0", method: "notifications/initialized" });
+  assert.ok(res instanceof Response, "anonymous notification must dispatch without a token");
+  assert.equal(res.status, 202);
+});
+
+Deno.test("mcp anonymous discovery: tools/call stays behind sign-in", async () => {
+  const gated = anonymousDiscovery(null, {
+    jsonrpc: "2.0",
+    id: 4,
+    method: "tools/call",
+    params: { name: "read_live_datum", arguments: { kind: "balances" } },
+  });
+  assert.equal(gated, null, "tools/call must fall through to the 401 challenge");
+  // The fall-through challenge is byte-identical to today's: HTTP 401, a
+  // WWW-Authenticate header carrying resource_metadata + invalid_token, and
+  // the JSON-RPC error body preserved.
+  const res = rpcAuthChallenge(
+    4,
+    "https://x.supabase.co/functions/v1/mcp-server/.well-known/oauth-protected-resource",
+    "unauthorized: bad credentials (ref test)",
+  );
+  assert.equal(res.status, 401);
+  const www = res.headers.get("www-authenticate") ?? "";
+  assert.ok(
+    www.includes('resource_metadata="https://x.supabase.co/functions/v1/mcp-server/.well-known/oauth-protected-resource"'),
+    `challenge lost resource_metadata: ${www}`,
+  );
+  assert.ok(www.includes('error="invalid_token"'), `challenge lost error code: ${www}`);
+  const body = await res.json() as { jsonrpc: string; id: number; error: { code: number } };
+  assert.equal(body.jsonrpc, "2.0");
+  assert.equal(body.id, 4);
+  assert.equal(body.error.code, -32001);
+});
+
+Deno.test("mcp anonymous discovery: a batch containing tools/call stays behind sign-in", () => {
+  const gated = anonymousDiscovery(null, [
+    { jsonrpc: "2.0", id: 1, method: "initialize" },
+    { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "read_live_datum", arguments: {} } },
+  ]);
+  assert.equal(gated, null, "a batch containing tools/call must fall through to the 401 challenge");
+});
+
+Deno.test("mcp anonymous discovery: a pure discovery batch returns one envelope per call", async () => {
+  const res = anonymousDiscovery(null, [
+    { jsonrpc: "2.0", id: 1, method: "initialize" },
+    { jsonrpc: "2.0", id: 2, method: "ping" },
+    { jsonrpc: "2.0", id: 3, method: "tools/list" },
+  ]);
+  assert.ok(res instanceof Response, "a pure discovery batch must dispatch without a token");
+  assert.equal(res.status, 200);
+  const arr = await res.json() as Array<{ jsonrpc: string; id: number; result: unknown }>;
+  assert.equal(arr.length, 3);
+  assert.deepEqual(arr.map((e) => e.id), [1, 2, 3]);
+  assert.equal((arr[0]!.result as { protocolVersion: string }).protocolVersion, MCP_PROTOCOL_VERSION);
+  assert.equal(((arr[2]!.result as { tools: unknown[] }).tools as unknown[]).length, (TOOLS as unknown[]).length);
+});
+
+Deno.test("mcp anonymous discovery: a Bearer token keeps today's path even for discovery", () => {
+  // An invalid or expired token must still get the 401 challenge (so OAuth
+  // clients refresh): the gate only serves tokenless callers, so any
+  // Authorization header falls through to requireUser.
+  assert.equal(anonymousDiscovery("Bearer bogus", { jsonrpc: "2.0", id: 5, method: "tools/list" }), null);
+  assert.equal(anonymousDiscovery("Bearer bogus", { jsonrpc: "2.0", id: 6, method: "initialize" }), null);
+});
+
+Deno.test("mcp annotations: every tool has annotations and a non-empty description", () => {
+  for (const t of tools) {
+    assert.ok(typeof t.title === "string" && t.title.trim().length > 0, `${t.name} needs a title`);
+    assert.equal(typeof t.annotations?.readOnlyHint, "boolean", `${t.name} needs readOnlyHint`);
+    if (t.annotations?.readOnlyHint === false) {
+      assert.equal(typeof t.annotations?.destructiveHint, "boolean", `${t.name} is state-changing: needs an explicit destructiveHint`);
+    }
+    assert.ok(
+      typeof t.description === "string" && t.description.trim().length > 0,
+      `${t.name} needs a non-empty description`,
+    );
+    assert.ok(t.description.length <= 4000, `${t.name} description exceeds 4000 chars`);
+  }
 });

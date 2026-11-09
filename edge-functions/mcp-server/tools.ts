@@ -150,7 +150,7 @@ export const TOOLS = [
   {
     name: "propose_diary_note",
     title: "Propose diary note",
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     description: "Append (default) or replace a markdown note on one diary day (diary_day_notes upsert — the same append/replace write the agent-chat approval path and daily_prep perform). Diary-only: never executes a trade, never moves funds. Needs the trade:propose scope (PAT).",
     inputSchema: { type: "object", properties: {
       day: { type: "string", description: "Day in YYYY-MM-DD format (default today UTC)" },
@@ -297,7 +297,7 @@ export const TOOLS = [
     title: "Reconcile realized PnL against the daily loss cap",
     // NOT read-only: it writes the daily risk counters. It never places
     // an order and never moves funds.
-    annotations: { readOnlyHint: false, openWorldHint: true },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
     description: RECONCILE_REALIZED_PNL_DESCRIPTION,
     inputSchema: RECONCILE_REALIZED_PNL_PARAMETERS,
   },
@@ -311,7 +311,7 @@ export const TOOLS = [
   {
     name: "daily_prep",
     title: "Daily pre-trading brief",
-    annotations: { readOnlyHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
     description: "Build the morning brief (risk header, positions, 5-venue funding/OI, liquidation proxy, macro 24h, regime, JEV bias per name) and record it as the day's 'Daily analysis' in the diary. Reads need mcp:read; the diary write needs trade:propose (or pass write:false for a dry run). Sections carry [DATA]/[PROXY]/[UNAVAILABLE] tags — gaps are never synthesized.",
     inputSchema: { type: "object", properties: {
       write: { type: "boolean", description: "Record into diary_day_notes (default true)" },
@@ -327,7 +327,7 @@ export const TOOLS = [
       exchange: { type: "string", description: "CEX slug, e.g. kucoin" },
       connectionId: { type: "string", description: "CEX connection id (see list_connections). Takes precedence over exchange." },
       pair: { type: "string", description: "e.g. BTC/USDT" },
-      side: { type: "string", enum: ["buy", "sell"] },
+      side: { type: "string", enum: ["buy", "sell"], description: "Order side: buy|sell" },
       actor: { type: "string", enum: ["machine", "owner"], description: "WHO is placing the order. 'machine' for the trading machine; 'owner' for the account owner's own manual trading. The account is SHARED, so this is what tells the machine's trades from the owner's when a closed trade is reconciled against the machine's daily loss cap. Defaults to 'owner'." },
       amount: { type: "string", description: "Base units, e.g. 0.05 (omit when risk_usd sizes the order)" },
       price: { type: "string", description: "Limit price. OMIT for a market order. When the order type is 'market' the price is only a reference for sizing and is NOT sent to the venue — a resting limit has no position to protect, so the exit legs cannot attach to it." },
@@ -338,7 +338,7 @@ export const TOOLS = [
       stop: { type: "number", description: "Protective stop price (> 0). Gated server-side: stops inside round-trip fees x factor are refused with the shortfall spelled out, and armed as a venue-native SL exit leg after the entry across all CEX venues." },
       tp: { type: "number", description: "Take-profit price (> 0) armed with the entry as a single 100%-share venue-native TP exit leg across all CEX venues. Must sit on the profit side of the entry (long: above, short: below)." },
       tpPrice: { type: "number", description: "Deprecated alias of tp." },
-      tpLegs: { type: "array", description: "Optional 1-3 split take-profit legs ({ price, share }, where share is 1..100 percent of entry size) armed as venue-native TP orders after the entry.", items: { type: "object", properties: { price: { type: "number" }, share: { type: "number" } }, required: ["price", "share"], additionalProperties: false } },
+      tpLegs: { type: "array", description: "Optional 1-3 split take-profit legs ({ price, share }, where share is 1..100 percent of entry size) armed as venue-native TP orders after the entry.", items: { type: "object", properties: { price: { type: "number", description: "Take-profit trigger price (> 0)" }, share: { type: "number", description: "Share of the entry to close at this leg, 1..100 percent" } }, required: ["price", "share"], additionalProperties: false } },
       risk_usd: { type: "number", description: "Max USD loss at the stop — sizes the order as risk_usd / stop distance (needs stop, else ATR stop from venue klines; capped by max_position_usd + lot step)." },
       clientOid: { type: "string", description: "Optional caller-supplied identity tag for the order (max 36 chars, [A-Za-z0-9_-]). A later session uses it to attribute the order to its owner instead of classifying it as foreign/unknown-origin. Omit it and the server generates a random UUID." },
       idempotency_key: { type: "string", description: "Optional per-INTENT key. Two submits with the same key are the same intent: the second is deduped and never dispatched again. Use it when a submission may be retried (a timeout, a reconnect) so a retry cannot double-fill." },
@@ -875,6 +875,68 @@ export function protectedResourceDoc(resourceUrl: string) {
     scopes_supported: [...GRANTABLE_SCOPES],
     bearer_methods_supported: ["header"],
   };
+}
+/* ── Anonymous discovery (no token) ──
+ *
+ * MCP spec allows unauthenticated discovery; tool calls stay behind sign-in.
+ * ANONYMOUS_METHODS is the allowlist and anonymousDiscovery is the one gate
+ * the POST handler calls before requireUser: anything it returns null for
+ * falls through to today's 401 challenge byte-for-byte.
+ */
+export const MCP_PROTOCOL_VERSION = "2025-06-18";
+export const MCP_SERVER_INFO = { name: "jw3-agent", version: "1.0.0" };
+
+/** Methods servable without a token: discovery only, never tool calls. */
+export const ANONYMOUS_METHODS: readonly string[] = [
+  "initialize",
+  "notifications/initialized",
+  "ping",
+  "tools/list",
+];
+
+function isAnonymousBody(body: RpcReq | RpcReq[]): boolean {
+  const one = (r: unknown): boolean =>
+    typeof r === "object" && r !== null &&
+    (ANONYMOUS_METHODS as readonly string[]).includes((r as { method?: unknown }).method as string);
+  return Array.isArray(body) ? body.length > 0 && body.every(one) : one(body);
+}
+
+function anonymousPayload(method: string): unknown {
+  if (method === "initialize") {
+    return {
+      protocolVersion: MCP_PROTOCOL_VERSION,
+      capabilities: { tools: { listChanged: false } },
+      serverInfo: MCP_SERVER_INFO,
+    };
+  }
+  if (method === "ping") return {};
+  // tools/list serves the full public catalog: TOOLS is a static registry
+  // (name/description/inputSchema only) — no user data, no DB/token lookups.
+  if (method === "tools/list") return { tools: TOOLS };
+  return null;
+}
+
+/** Anonymous discovery gate: ready Response when no token is needed (single
+ *  request or a batch made only of discovery methods), null when the caller
+ *  must go through requireUser (which 401s without a valid token). Pure: no
+ *  user, no DB, no token lookups. */
+export function anonymousDiscovery(authHeader: string | null, body: RpcReq | RpcReq[]): Response | null {
+  // A caller carrying a token keeps today's path exactly: an invalid or
+  // expired token still gets the 401 challenge, even for discovery, so
+  // OAuth clients refresh.
+  if ((authHeader ?? "").trim() !== "") return null;
+  if (!isAnonymousBody(body)) return null;
+  if (Array.isArray(body)) {
+    const out: unknown[] = [];
+    for (const r of body) {
+      if (r.method === "notifications/initialized") continue;
+      out.push({ jsonrpc: "2.0", id: r.id ?? null, result: anonymousPayload(r.method ?? "") });
+    }
+    if (out.length === 0) return new Response(null, { status: 202 });
+    return ok(out);
+  }
+  if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+  return rpcOk(body.id ?? null, anonymousPayload(body.method ?? ""));
 }
 /** RFC 9728 §3.1 + MCP auth spec: unauthenticated callers get HTTP 401 with a
  *  WWW-Authenticate challenge pointing at this server's metadata doc — never

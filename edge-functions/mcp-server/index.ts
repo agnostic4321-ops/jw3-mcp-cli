@@ -7,7 +7,9 @@
 // user client.
 //
 // Protocol: JSON-RPC 2.0 at POST / (methods: initialize, tools/list,
-// tools/call). Stateless per request — no session ids, no sockets (edge
+// tools/call). Discovery (initialize, notifications/initialized, ping,
+// tools/list) is servable without a token; everything else needs sign-in.
+// Stateless per request — no session ids, no sockets (edge
 // runtime has no long-lived connections). Errors use the MCP error codes.
 // PATs carry scopes: mcp:read (market/account/diary/analysis),
 // trade:propose (Diary setup queue, never executes), trade:execute (live
@@ -36,7 +38,7 @@ import { cacheGet, cacheSet } from "../_shared/cache.ts";
 import { JEV_TTL_MS, jevCacheKey } from "../_shared/jev-cache.ts";
 import { requireYoloEligible } from "../_shared/execute-guard.ts";
 import { buildInsightsSnapshot } from "../_shared/insights-snapshot.ts";
-import { TOOLS, callEdge, rpcError, rpcOk, toolError, toolOk, protectedResourceDoc, rpcAuthChallenge } from "./tools.ts";
+import { TOOLS, anonymousDiscovery, callEdge, rpcError, rpcOk, toolError, toolOk, protectedResourceDoc, rpcAuthChallenge, MCP_PROTOCOL_VERSION, MCP_SERVER_INFO } from "./tools.ts";
 import {
   DEFI_BUILD_ACTIONS,
   GATEWAY_RATE_LIMIT,
@@ -93,9 +95,6 @@ import {
   type ReadEdgeFn,
 } from "../agent-chat/read-tools.ts";
 import { executeDefiRead } from "./defi.ts";
-
-const PROTOCOL_VERSION = "2025-06-18";
-const SERVER_INFO = { name: "jw3-agent", version: "1.0.0" };
 
 type RpcReq = { jsonrpc?: string; id?: unknown; method?: string; params?: Record<string, unknown> };
 
@@ -157,11 +156,17 @@ Deno.serve(withHandler("mcp-server", async (req) => {
     // limiter cost. Invalid/over-cap bodies fall back to {} so the
     // JSON-RPC Invalid Request envelope below is preserved (id null:
     // nothing parseable to echo).
-    const jr = await readJson<RpcReq>(req, undefined, { maxBytes: 256 * 1024 });
-    const body = (jr.ok ? jr.value : {}) as RpcReq;
+    const jr = await readJson<RpcReq | RpcReq[]>(req, undefined, { maxBytes: 256 * 1024 });
+    const rawBody = (jr.ok ? jr.value : {}) as RpcReq | RpcReq[];
     // Echo the caller's id on auth/rate-limit errors whenever a body
     // parsed (null only when nothing parseable arrived).
-    const reqId = (jr.ok && body && typeof body === "object" && "id" in body ? body.id : null) ?? null;
+    const reqId = (jr.ok && rawBody && typeof rawBody === "object" && "id" in rawBody ? (rawBody as RpcReq).id : null) ?? null;
+    // MCP spec allows unauthenticated discovery; tool calls stay behind sign-in.
+    const anon = anonymousDiscovery(req.headers.get("authorization"), rawBody);
+    if (anon) return anon;
+    // Batches (other than anonymous discovery, handled above) keep today's
+    // behavior: not a single JSON-RPC object, so Invalid Request.
+    const body = (Array.isArray(rawBody) ? {} : rawBody) as RpcReq;
     if (body?.jsonrpc !== "2.0" || typeof body?.method !== "string") {
       return rpcError(reqId, -32600, "Invalid Request: expected JSON-RPC 2.0 with method.");
     }
@@ -263,9 +268,9 @@ Deno.serve(withHandler("mcp-server", async (req) => {
 
     if (body.method === "initialize") {
       return rpcOk(body.id, {
-        protocolVersion: PROTOCOL_VERSION,
+        protocolVersion: MCP_PROTOCOL_VERSION,
         capabilities: { tools: { listChanged: false } },
-        serverInfo: SERVER_INFO,
+        serverInfo: MCP_SERVER_INFO,
       });
     }
     if (body.method === "ping") {
