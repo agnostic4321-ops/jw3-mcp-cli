@@ -33,6 +33,26 @@ export function pickConnection(rows: Conn[], exchange?: string, wantFutures = fa
   return pool[0] ?? null;
 }
 
+/** One CEX connection targeted by a fan-out read. */
+export type CexReadTarget = { id: string; exchange: string; label: string | null };
+
+/**
+ * Resolve fan-out targets: every active connection bare, or EVERY
+ * connection matching one venue slug with --exchange (never pool[0]).
+ */
+export function resolveReadTargets(rows: Conn[], exchange?: string): CexReadTarget[] {
+  const pool = exchange
+    ? rows.filter((c) => c.exchange.toLowerCase() === exchange.toLowerCase())
+    : rows;
+  return pool.map((c) => ({ id: c.id, exchange: c.exchange, label: c.label ?? null }));
+}
+
+export function noTargetsError(exchange?: string): string {
+  return exchange
+    ? `No connection for ${exchange} — connect it in-app first.`
+    : "No CEX connections — connect one in-app first.";
+}
+
 export function needPat(flag?: string): string | null {
   const pat = resolvePat(flag);
   if (!pat) {
@@ -168,7 +188,8 @@ export async function cmdPositions(opts: {
   url?: string;
   pat?: string;
 }, deps?: {
-  fetchOnce?: (connectionId: string, pat: string, url?: string) => Promise<unknown>;
+  list?: (pat: string, url?: string) => Promise<Conn[]>;
+  call?: (tool: string, args: Record<string, unknown>, pat: string, url?: string) => Promise<unknown>;
   sleepMs?: (ms: number) => Promise<void>;
 }): Promise<void> {
   const pairFilter = opts.pair?.trim() ? opts.pair.trim() : undefined;
@@ -193,17 +214,30 @@ export async function cmdPositions(opts: {
       return;
     }
   }
-  const ctx = await withConnection(opts, true);
-  if (!ctx) return;
-  const fetchOnce =
-    deps?.fetchOnce ??
-    ((connectionId: string, pat: string, url?: string) =>
-      callTool(
-        "read_live_datum",
-        { kind: "positions", connectionId, withExits: true },
-        pat,
-        url,
-      ));
+  const pat = needPat(opts.pat);
+  if (!pat) return;
+  // Friendly pre-check only — the fan-out itself is one server call (the
+  // server answers the {kind, observedAt, venues:[...]} envelope with a
+  // per-connection status). Never narrow to pool[0] client-side.
+  try {
+    const rows = await (deps?.list ?? listConnections)(pat, opts.url);
+    if (resolveReadTargets(rows, opts.exchange).length === 0) {
+      console.error(noTargetsError(opts.exchange));
+      process.exitCode = 1;
+      return;
+    }
+  } catch (e) {
+    fail(e);
+    return;
+  }
+  const readArgs: Record<string, unknown> = {
+    kind: "positions",
+    withExits: true,
+    ...(opts.exchange ? { exchange: opts.exchange } : {}),
+  };
+  const pollOnce = () =>
+    (deps?.call ?? callTool)("read_live_datum", { ...readArgs }, pat, opts.url);
+  const where = opts.exchange ?? "all connections";
   const sleep = deps?.sleepMs ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   const jsonLine = Boolean(opts.json || opts.jsonLines);
   const printOneShot = (out: unknown): void => {
@@ -213,7 +247,7 @@ export async function cmdPositions(opts: {
   };
   try {
     if (opts.watchSec === undefined) {
-      const out = await fetchOnce(ctx.conn.id, ctx.pat, ctx.url);
+      const out = await pollOnce();
       printOneShot(out);
       return;
     }
@@ -222,14 +256,14 @@ export async function cmdPositions(opts: {
     const totalLabel = Number.isFinite(total) ? String(total) : "∞";
     if (!jsonLine) {
       console.log(
-        `WATCH positions${pairFilter ? ` ${pairFilter}` : ""} on ${ctx.conn.exchange} every ${opts.watchSec}s (${totalLabel} polls) — Ctrl-C to stop`,
+        `WATCH positions${pairFilter ? ` ${pairFilter}` : ""} on ${where} every ${opts.watchSec}s (${totalLabel} polls) — Ctrl-C to stop`,
       );
     } else {
       console.log(
         JSON.stringify({
           event: "start",
           kind: "positions-watch",
-          exchange: ctx.conn.exchange,
+          ...(opts.exchange ? { exchange: opts.exchange } : { scope: "all" }),
           ...(pairFilter ? { pair: pairFilter } : {}),
           intervalSec: opts.watchSec,
           polls: Number.isFinite(total) ? total : null,
@@ -239,7 +273,7 @@ export async function cmdPositions(opts: {
     for (let i = 1; i <= total; i++) {
       let out: unknown;
       try {
-        out = await fetchOnce(ctx.conn.id, ctx.pat, ctx.url);
+        out = await pollOnce();
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         if (jsonLine) console.log(JSON.stringify({ poll: i, status: "error", error: msg }));
@@ -415,15 +449,28 @@ export async function cmdBalances(opts: {
   json: boolean;
   url?: string;
   pat?: string;
+}, deps?: {
+  list?: (pat: string, url?: string) => Promise<Conn[]>;
+  call?: (tool: string, args: Record<string, unknown>, pat: string, url?: string) => Promise<unknown>;
 }): Promise<void> {
-  const ctx = await withConnection(opts, false);
-  if (!ctx) return;
+  const pat = needPat(opts.pat);
+  if (!pat) return;
   try {
-    const out = await callTool(
+    const rows = await (deps?.list ?? listConnections)(pat, opts.url);
+    if (resolveReadTargets(rows, opts.exchange).length === 0) {
+      console.error(noTargetsError(opts.exchange));
+      process.exitCode = 1;
+      return;
+    }
+    // One server call — the server fans out across every active connection
+    // (or every same-slug connection with --exchange) and answers the
+    // {kind, observedAt, venues:[...]} envelope with a per-connection
+    // status. Never narrow to pool[0] client-side.
+    const out = await (deps?.call ?? callTool)(
       "read_live_datum",
-      { kind: "balances", connectionId: ctx.conn.id },
-      ctx.pat,
-      ctx.url,
+      { kind: "balances", ...(opts.exchange ? { exchange: opts.exchange } : {}) },
+      pat,
+      opts.url,
     );
     console.log(JSON.stringify(out, null, opts.json ? 0 : 2));
   } catch (e) {
@@ -432,23 +479,25 @@ export async function cmdBalances(opts: {
 }
 
 export async function cmdOrders(opts: {
-  exchange: string;
+  exchange?: string;
   pair?: string;
   json: boolean;
   url?: string;
   pat?: string;
+}, deps?: {
+  call?: (tool: string, args: Record<string, unknown>, pat: string, url?: string) => Promise<unknown>;
 }): Promise<void> {
   const pat = needPat(opts.pat);
   if (!pat) return;
-  if (!opts.exchange) {
-    console.error("Usage: jw3 orders --exchange kucoin [--pair BTC/USDT] [--json]");
-    process.exitCode = 2;
-    return;
-  }
+  // --exchange is optional: omit it and the server fans out across every
+  // active connection (same per-venue envelope as agent-chat open_orders).
   try {
-    const out = await callTool(
+    const out = await (deps?.call ?? callTool)(
       "list_open_orders",
-      { exchange: opts.exchange, ...(opts.pair ? { pair: opts.pair } : {}) },
+      {
+        ...(opts.exchange ? { exchange: opts.exchange } : {}),
+        ...(opts.pair ? { pair: opts.pair } : {}),
+      },
       pat,
       opts.url,
     );
@@ -466,8 +515,10 @@ export async function cmdOrderStatus(opts: {
   json: boolean;
   url?: string;
   pat?: string;
+}, deps?: {
+  list?: (pat: string, url?: string) => Promise<Conn[]>;
 }): Promise<void> {
-  const ctx = await withConnection({ exchange: opts.exchange, json: opts.json, url: opts.url, pat: opts.pat }, false);
+  const ctx = await withConnection({ exchange: opts.exchange, json: opts.json, url: opts.url, pat: opts.pat }, false, deps);
   if (!ctx) return;
   if (!opts.orderId) {
     console.error("Usage: jw3 order --exchange kucoin --order-id … [--pair …] [--market spot|futures]");
@@ -498,11 +549,16 @@ export async function cmdOnchain(opts: {
   json: boolean;
   url?: string;
   pat?: string;
+}, deps?: {
+  call?: (tool: string, args: Record<string, unknown>, pat: string, url?: string) => Promise<unknown>;
 }): Promise<void> {
   const pat = needPat(opts.pat);
   if (!pat) return;
   try {
-    const out = await callTool(
+    // read_onchain_balances now carries a per-wallet `reads` array (ok |
+    // empty | invalid-address | no-wallet) next to balances + aggregate —
+    // every linked wallet and every requested chain is accounted for.
+    const out = await (deps?.call ?? callTool)(
       "read_onchain_balances",
       opts.chains ? { chains: opts.chains } : {},
       pat,

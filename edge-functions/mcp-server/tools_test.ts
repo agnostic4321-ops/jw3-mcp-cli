@@ -378,6 +378,29 @@ Deno.test("mcp hardening: heavy tools cost more than default reads", () => {
   assert.equal(toolRateLimitFor("read_live_datum", false).bucket, DEFAULT_TOOL_RATE_LIMIT.bucket);
 });
 
+Deno.test("mcp tools: list_open_orders fans out like chat open_orders (exchange optional)", async () => {
+  const orders = byName("list_open_orders");
+  // Chat open_orders shape wins: every narrower is optional, bare call reads
+  // every active connection. required must NOT pin exchange.
+  assert.deepEqual(orders.inputSchema.required ?? [], []);
+  assert.deepEqual(Object.keys(orders.inputSchema.properties ?? {}), ["exchange", "connectionId", "pair"]);
+  assert.equal(orders.annotations?.readOnlyHint, true);
+  // Bare {} validates (no exchange key at all).
+  assert.equal(validateArgsAgainstSchema(orders.inputSchema, {}), null);
+  // The handler must ride the shared fan-out reader, not a single-target
+  // resolve — parity with agent-chat by construction, not by copy.
+  const index = await handlerSource("./index.ts");
+  const rest = index.slice(index.indexOf('if (name === "list_open_orders")'));
+  const nextBranch = rest.indexOf('if (name === "', 10);
+  const branch = nextBranch > 0 ? rest.slice(0, nextBranch) : rest;
+  if (!branch.includes("executeOpenOrdersRead")) {
+    throw new Error("list_open_orders handler bypasses the shared executeOpenOrdersRead fan-out");
+  }
+  if (branch.includes("resolveOrderTarget")) {
+    throw new Error("list_open_orders handler still single-targets via resolveOrderTarget");
+  }
+});
+
 Deno.test("mcp hardening: selectors are allowlisted and bounded", () => {
   assert.equal(validateVenueSlug("KuCoin").ok, true);
   assert.equal(validateVenueSlug("nope").ok, false);

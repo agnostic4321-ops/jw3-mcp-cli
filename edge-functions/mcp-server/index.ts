@@ -90,11 +90,13 @@ import {
   fetchConnectionMetadata,
   fetchOnchainSnapshot,
   resolveDiaryDayRange,
+  resolveOnchainPairs,
   type DiaryDayOut,
   type ReadDeps,
   type ReadEdgeFn,
 } from "../agent-chat/read-tools.ts";
 import { executeDefiRead } from "./defi.ts";
+import { buildWalletReads } from "./onchain-reads.ts";
 
 type RpcReq = { jsonrpc?: string; id?: unknown; method?: string; params?: Record<string, unknown> };
 
@@ -272,6 +274,35 @@ Deno.serve(withHandler("mcp-server", async (req) => {
       }
       return toolOk(id, payload);
     };
+    // Onchain reads carry an explicit per-wallet `reads` array next to the
+    // shared balances + aggregate (same reader as agent-chat, additive
+    // shape): every linked wallet and every requested chain is accounted
+    // for — ok | empty | invalid-address (lowercased solana/tron rows whose
+    // real address is unrecoverable: re-link with exact case) | no-wallet.
+    // Fail-closed like the shared reader: a snapshot that carries `error`
+    // stays an error, never a partial wallet list.
+    const withWalletReads = async (
+      snapshot: unknown,
+      chainsArg: unknown,
+    ): Promise<Record<string, unknown>> => {
+      const snap = (snapshot ?? {}) as Record<string, unknown>;
+      if ("error" in snap) return snap;
+      const pairs = await resolveOnchainPairs(admin, userId, chainsArg);
+      const balances = (Array.isArray(snap.balances) ? snap.balances : []) as Array<{
+        chain: string;
+        address?: string;
+      }>;
+      const raw = typeof chainsArg === "string" ? chainsArg : "";
+      const requested = raw.trim()
+        ? [...new Set(
+          raw.split(",").map((c) => {
+            const s = c.trim().toLowerCase();
+            return s === "bitcoin" ? "btc" : s;
+          }).filter(Boolean),
+        )]
+        : null;
+      return { ...snap, reads: buildWalletReads(pairs, balances, requested) };
+    };
 
     if (body.method === "initialize") {
       return rpcOk(body.id, {
@@ -347,11 +378,13 @@ Deno.serve(withHandler("mcp-server", async (req) => {
             return readResult(body.id, "screener read", await executeScreenerRead(args, readDeps));
           }
           if (kind === "onchain") {
-            // Shared wallet-scope reader (same fetch + aggregate as agent-chat).
+            // Shared wallet-scope reader (same fetch + aggregate as agent-chat),
+            // plus the MCP per-wallet `reads` array (owned enrichment — the
+            // chat snapshot shape stays untouched).
             const chainsCheck = validateChainsCsv(args.chains);
             if (!chainsCheck.ok) return toolError(body.id, `validation: read_live_datum onchain: ${chainsCheck.error}`);
             const chainsArg = chainsCheck.chains || args.chains;
-            return readResult(body.id, "onchain read", await fetchOnchainSnapshot(chainsArg, readDeps));
+            return readResult(body.id, "onchain read", await withWalletReads(await fetchOnchainSnapshot(chainsArg, readDeps), chainsArg));
           }
           if (kind === "order") {
             // Single-order status ("did my order fill?"). connectionId is
@@ -931,7 +964,7 @@ Deno.serve(withHandler("mcp-server", async (req) => {
           const chainsCheck = validateChainsCsv(args.chains);
           if (!chainsCheck.ok) return toolError(body.id, `validation: read_onchain_balances: ${chainsCheck.error}`);
           const chainsArg = chainsCheck.chains || args.chains;
-          return readResult(body.id, "onchain read", await fetchOnchainSnapshot(chainsArg, readDeps));
+          return readResult(body.id, "onchain read", await withWalletReads(await fetchOnchainSnapshot(chainsArg, readDeps), chainsArg));
         }
         // Write tools share one gate: trade:execute PAT + per-call YOLO
         // eligibility via the shared execute guard (same predicate as
@@ -1074,21 +1107,21 @@ Deno.serve(withHandler("mcp-server", async (req) => {
           );
         }
         if (name === "list_open_orders") {
+          // Shared open-orders fan-out (same reader + per-venue envelope as
+          // agent-chat kind=open_orders): one connectionId, one venue slug,
+          // or every connection (capped). A single-target resolve would
+          // re-narrow what the server already fans out — see read_live_datum.
           if (typeof args.exchange === "string" && args.exchange.trim() !== "") {
             const venueCheck = validateVenueSlug(args.exchange);
             if (!venueCheck.ok) return toolError(body.id, `validation: list_open_orders: ${venueCheck.error}`);
+            args = { ...args, exchange: venueCheck.venue };
           }
           if (typeof args.pair === "string" && args.pair.trim() !== "") {
             const pairCheck = validatePairSymbol(args.pair);
             if (!pairCheck.ok) return toolError(body.id, `validation: list_open_orders: ${pairCheck.error}`);
+            args = { ...args, symbol: pairCheck.value };
           }
-          const target = await resolveOrderTarget(admin as unknown as ConnectionAdmin, userId, { exchange: args.exchange, connectionId: args.connectionId });
-          if (!target.ok) return toolError(body.id, `not_found: order target failed: ${target.error}`);
-          const out = await callEdge(supaUrl, authHeader, "cex-proxy", {
-            action: "openOrders", connectionId: target.connectionId,
-            ...(typeof args.pair === "string" && args.pair ? { symbol: args.pair } : {}),
-          });
-          return toolOk(body.id, out);
+          return readResult(body.id, "open_orders read", await executeOpenOrdersRead(args, readDeps));
         }
         if (name === "list_fills") {
           // Read-only executions read (Activity history, never Diary rows:

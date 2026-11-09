@@ -220,7 +220,7 @@ export const TOOLS = [
     name: "read_onchain_balances",
     title: "Read onchain balances",
     annotations: { readOnlyHint: true, openWorldHint: true },
-    description: "Read-only onchain wallet balances across EVM/Solana/TON/Tron/BTC via the balance cache + public RPCs. Server resolves the user's wallet addresses itself (addresses only, never keys). The chains filter uses canonical slugs and matches non-EVM chains exactly — `sol` never matches `solana`, `bitcoin` reads as `btc`; one linked EVM address is readable on any requested EVM chain. TON matches by chain slug, not address form — raw (0:…), bounceable (EQ…) and non-bounceable (UQ…) versions of one wallet resolve to the same balance.",
+    description: "Read-only onchain wallet balances across EVM/Solana/TON/Tron/BTC via the balance cache + public RPCs. Server resolves the user's wallet addresses itself (addresses only, never keys). The chains filter uses canonical slugs and matches non-EVM chains exactly — `sol` never matches `solana`, `bitcoin` reads as `btc`; one linked EVM address is readable on any requested EVM chain. TON matches by chain slug, not address form — raw (0:…), bounceable (EQ…) and non-bounceable (UQ…) versions of one wallet resolve to the same balance. Every linked wallet and every requested chain gets an explicit row in `reads` (ok | empty | invalid-address | no-wallet): lowercased Solana/Tron rows surface as invalid-address with a re-link hint instead of vanishing.",
     inputSchema: { type: "object", properties: {
       chains: { type: "string", description: "Optional comma list of canonical chain slugs, e.g. ethereum,solana. Non-EVM slugs (solana, ton, tron, btc) match exactly — no aliases or substrings; ton covers every TON address version. EVM slugs expand: one linked EVM address reads on any requested EVM chain." },
     }, additionalProperties: false },
@@ -271,12 +271,12 @@ export const TOOLS = [
     name: "list_open_orders",
     title: "List open CEX orders",
     annotations: { readOnlyHint: true, openWorldHint: true },
-    description: "List open orders on a CEX connection (spot + futures). Read-only.",
+    description: "READ-ONLY: resting open orders across the user's CEX connections (spot + futures) — the same per-venue envelope as agent-chat kind=open_orders ({kind, observedAt, venues:[{connectionId, exchange, label, ok, orders, count}]}). Narrow with exchange and/or connectionId, filter one market with pair; omit all three to fan out across every active connection. An empty book reads as no resting orders, never as a flat position.",
     inputSchema: { type: "object", properties: {
-      exchange: { type: "string", description: "CEX slug, e.g. kucoin" },
-      connectionId: { type: "string", description: "CEX connection id (see list_connections). Takes precedence over exchange." },
+      exchange: { type: "string", description: "CEX slug, e.g. kucoin (resolved to active connection(s); connectionId wins when both are given). Omit to read every active connection." },
+      connectionId: { type: "string", description: "CEX connection id (see list_connections). Takes precedence over exchange. Omit to read every active connection." },
       pair: { type: "string", description: "Optional filter, e.g. BTC/USDT" },
-    }, required: ["exchange"], additionalProperties: false },
+    }, additionalProperties: false },
   },
   {
     name: "list_fills",

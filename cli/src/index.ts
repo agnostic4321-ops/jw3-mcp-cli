@@ -152,7 +152,7 @@ Usage:
   jw3 screener [--exchange binance] [--json]
   jw3 positions [--exchange kucoin] [--pair BTC/USDT] [--watch SEC] [--polls N] [--json] [--json-lines]
   jw3 balances [--exchange kucoin] [--json]
-  jw3 orders --exchange kucoin [--pair BTC/USDT] [--json]
+  jw3 orders [--exchange kucoin] [--pair BTC/USDT] [--json]
   jw3 order --exchange kucoin --order-id … [--pair …] [--market spot|futures] [--json]
   jw3 fills --exchange kucoin [--pair BTC/USDT] [--market spot|futures|all] [--days 30] [--limit 50] [--json]
   jw3 pnl --exchange kucoin [--pair BTC/USDT] [--days 30] [--limit 100] [--json]
@@ -1385,7 +1385,7 @@ async function main(): Promise<void> {
     if (cmd === "orders") {
       const g = globals(tail);
       await cmdOrders({
-        exchange: flagOf(g.rest, "--exchange") ?? "",
+        exchange: flagOf(g.rest, "--exchange"),
         pair: flagOf(g.rest, "--pair"),
         json: g.json,
         url: g.url,
