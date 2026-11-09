@@ -1,0 +1,31 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.agnostic4321-ops/jw3-mcp-cli",
+  "title": "JW3 MCP Server",
+  "description": "JW3.ai remote MCP server for market reads and confirm-gated trading execution.",
+  "websiteUrl": "https://www.jw3.ai",
+  "repository": {
+    "url": "https://github.com/agnostic4321-ops/jw3-mcp-cli",
+    "source": "github"
+  },
+  "version": "0.1.0",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://nzhbfeahymmyqerzjgbt.supabase.co/functions/v1/mcp-server"
+    }
+  ],
+  "_meta": {
+    "io.modelcontextprotocol.registry/publisher-provided": {
+      "tool": "mcp-publisher",
+      "auth": "oauth2.1-pkce-dcr-plus-pat",
+      "authorizationServer": "https://www.jw3.ai/mcp",
+      "protectedResource": "https://nzhbfeahymmyqerzjgbt.supabase.co/functions/v1/mcp-server",
+      "discovery": {
+        "protectedResourceMetadata": "https://nzhbfeahymmyqerzjgbt.supabase.co/functions/v1/mcp-server/.well-known/oauth-protected-resource",
+        "authorizationServerMetadata": "https://www.jw3.ai/.well-known/oauth-authorization-server/mcp"
+      },
+      "transport": "streamable-http"
+    }
+  }
+}
