@@ -682,6 +682,59 @@ Deno.test("mcp anonymous discovery: a Bearer token keeps today's path even for d
   assert.equal(anonymousDiscovery("Bearer bogus", { jsonrpc: "2.0", id: 6, method: "initialize" }), null);
 });
 
+Deno.test("mcp anonymous discovery: gate answers with fetch stubbed to throw (no network I/O)", async () => {
+  // The warm-ping budget (~110 ms OPTIONS baseline) leaves no room for a
+  // PostgREST round trip: the gate must be pure. Supabase clients, callEdge
+  // and requireUser all ride globalThis.fetch, so a throwing stub proves it.
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (() => {
+    throw new Error("network I/O attempted on the anonymous path");
+  }) as typeof fetch;
+  try {
+    for (const [id, method, expect] of [[9, "ping", 200], [10, "initialize", 200], [11, "tools/list", 200]] as Array<[number, string, number]>) {
+      const res = anonymousDiscovery(null, { jsonrpc: "2.0", id, method });
+      assert.ok(res instanceof Response, `${method} must dispatch without a token`);
+      assert.equal(res.status, expect);
+      await res.json();
+    }
+    const notif = anonymousDiscovery(null, { jsonrpc: "2.0", method: "notifications/initialized" });
+    assert.ok(notif instanceof Response);
+    assert.equal(notif.status, 202);
+    const batch = anonymousDiscovery(null, [
+      { jsonrpc: "2.0", id: 1, method: "initialize" },
+      { jsonrpc: "2.0", id: 9, method: "ping" },
+      { jsonrpc: "2.0", id: 2, method: "tools/list" },
+    ]);
+    assert.ok(batch instanceof Response);
+    assert.equal(batch.status, 200);
+    await batch.json();
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+Deno.test("mcp anonymous discovery: POST path gates before any network/database I/O", async () => {
+  // Guards the warm-ping latency: index.ts must parse the body and run the
+  // pure gate BEFORE getServiceClient / the gateway rate-limit RPC /
+  // requireUser. Importing index.ts would Deno.serve-bind, so this asserts
+  // ordering on the real source instead.
+  const index = await handlerSource("./index.ts");
+  const at = (needle: string): number => {
+    const i = index.indexOf(needle);
+    if (i < 0) throw new Error(`index.ts lost ${needle} — ordering guard cannot verify`);
+    return i;
+  };
+  const read = at("await readJson");
+  const gate = at("anonymousDiscovery(req.headers");
+  const svc = at("getServiceClient()");
+  const gw = at("await checkRateLimit");
+  const auth = at("await requireUser(req)");
+  if (!(read < gate)) throw new Error("anonymous gate must run on the parsed body (readJson before anonymousDiscovery)");
+  if (!(gate < svc && gate < gw && gate < auth)) {
+    throw new Error("anonymous discovery must answer before getServiceClient/checkRateLimit/requireUser (no network or DB I/O on the warm ping path)");
+  }
+});
+
 Deno.test("mcp annotations: every tool has annotations and a non-empty description", () => {
   for (const t of tools) {
     assert.ok(typeof t.title === "string" && t.title.trim().length > 0, `${t.name} needs a title`);

@@ -127,9 +127,28 @@ Deno.serve(withHandler("mcp-server", async (req) => {
       }
       return fail(405, "validation", "MCP Streamable HTTP: POST JSON-RPC only.");
     }
+    // Capped read FIRST: anonymous discovery (below) answers before any
+    // network/database I/O (service client, gateway limiter, auth).
+    // Unbounded req.json() burns isolate memory with zero limiter cost, so
+    // the 256 KiB cap stays. Invalid/over-cap bodies fall back to {} so the
+    // JSON-RPC Invalid Request envelope below is preserved (id null:
+    // nothing parseable to echo).
+    const jr = await readJson<RpcReq | RpcReq[]>(req, undefined, { maxBytes: 256 * 1024 });
+    const rawBody = (jr.ok ? jr.value : {}) as RpcReq | RpcReq[];
+    // Echo the caller's id on auth/rate-limit errors whenever a body
+    // parsed (null only when nothing parseable arrived).
+    const reqId = (jr.ok && rawBody && typeof rawBody === "object" && "id" in rawBody ? (rawBody as RpcReq).id : null) ?? null;
+    // MCP spec allows unauthenticated discovery; tool calls stay behind sign-in.
+    // Answered here — before getServiceClient and the gateway rate-limit RPC —
+    // because these responses are static (no user, no DB): a tokenless ping
+    // must not wait on a PostgREST round trip. Requests carrying an
+    // Authorization header always fall through to today's path below.
+    const anon = anonymousDiscovery(req.headers.get("authorization"), rawBody);
+    if (anon) return anon;
+
     const admin = getServiceClient();
 
-    // ── PRE-AUTH GATEWAY BUCKET (per IP, before anything parses) ──
+    // ── PRE-AUTH GATEWAY BUCKET (per IP, before auth) ──
     // Unauthenticated callers share the user's budget otherwise: a blind
     // flood would eat the per-user minute before requireUser rejects it.
     // Fail closed: when the limiter itself is down, refuse rather than
@@ -152,18 +171,6 @@ Deno.serve(withHandler("mcp-server", async (req) => {
       return rpcError(null, -32002, `rate_limited: limiter unavailable (ref ${corr})`);
     }
 
-    // Capped read: unbounded req.json() burns isolate memory with zero
-    // limiter cost. Invalid/over-cap bodies fall back to {} so the
-    // JSON-RPC Invalid Request envelope below is preserved (id null:
-    // nothing parseable to echo).
-    const jr = await readJson<RpcReq | RpcReq[]>(req, undefined, { maxBytes: 256 * 1024 });
-    const rawBody = (jr.ok ? jr.value : {}) as RpcReq | RpcReq[];
-    // Echo the caller's id on auth/rate-limit errors whenever a body
-    // parsed (null only when nothing parseable arrived).
-    const reqId = (jr.ok && rawBody && typeof rawBody === "object" && "id" in rawBody ? (rawBody as RpcReq).id : null) ?? null;
-    // MCP spec allows unauthenticated discovery; tool calls stay behind sign-in.
-    const anon = anonymousDiscovery(req.headers.get("authorization"), rawBody);
-    if (anon) return anon;
     // Batches (other than anonymous discovery, handled above) keep today's
     // behavior: not a single JSON-RPC object, so Invalid Request.
     const body = (Array.isArray(rawBody) ? {} : rawBody) as RpcReq;
