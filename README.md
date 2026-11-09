@@ -1,5 +1,11 @@
 # JW3 MCP + CLI
 
+[![mcptry](https://mcptry.com/badge/io.github.agnostic4321-ops/jw3-mcp-cli.svg)](https://mcptry.com/servers/io.github.agnostic4321-ops/jw3-mcp-cli)
+
+Listed in the official MCP Registry as `io.github.agnostic4321-ops/jw3-mcp-cli`
+(remote, Streamable HTTP). Discovery (`initialize`, `tools/list`) is open;
+every tool call needs OAuth sign-in or a scoped PAT.
+
 Standalone harness repo: the MCP tool server (Supabase edge functions) and the
 `jw3` command-line thin wrapper over its JSON-RPC surface.
 
