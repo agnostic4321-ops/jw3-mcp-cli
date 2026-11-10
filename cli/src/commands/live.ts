@@ -866,8 +866,10 @@ export type LiveOpts = {
  *     preview, kill switch, caps) throws `LiveRefusal` with nothing sent,
  *     and a venue error propagates untouched (never retried here).
  */
-export async function runLive(a: LiveArgs, opts: LiveOpts): Promise<LiveResult>;
+// The candidate overload is LAST on purpose: `Parameters<typeof runLive>`
+// resolves to the last signature, and callers type candidate args with it.
 export async function runLive(d: OrderDecision, opts: DecisionOpts): Promise<unknown>;
+export async function runLive(a: LiveArgs, opts: LiveOpts): Promise<LiveResult>;
 export async function runLive(a: LiveArgs | OrderDecision, opts: LiveOpts | DecisionOpts): Promise<unknown> {
   if (isOrderDecision(a)) return sendOrder(a, opts as DecisionOpts);
   return runCandidate(a, opts as LiveOpts);
