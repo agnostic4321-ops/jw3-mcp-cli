@@ -87,6 +87,7 @@ import {
   executePredictionsRead,
   executeRiskLimitsRead,
   executeScreenerRead,
+  executeVenueBalancesRead,
   fetchConnectionMetadata,
   fetchOnchainSnapshot,
   resolveDiaryDayRange,
@@ -97,6 +98,7 @@ import {
 } from "../agent-chat/read-tools.ts";
 import { executeDefiRead } from "./defi.ts";
 import { buildWalletReads } from "./onchain-reads.ts";
+import { normalizeVenueBalanceFilter } from "../_shared/venue-balances.ts";
 
 type RpcReq = { jsonrpc?: string; id?: unknown; method?: string; params?: Record<string, unknown> };
 
@@ -965,6 +967,16 @@ Deno.serve(withHandler("mcp-server", async (req) => {
           if (!chainsCheck.ok) return toolError(body.id, `validation: read_onchain_balances: ${chainsCheck.error}`);
           const chainsArg = chainsCheck.chains || args.chains;
           return readResult(body.id, "onchain read", await withWalletReads(await fetchOnchainSnapshot(chainsArg, readDeps), chainsArg));
+        }
+        if (name === "read_venue_balances") {
+          // Venue-held funds per linked wallet (same reader + shape as the
+          // agent-chat tool). Read-only: mcp:read suffices. Public reads
+          // against the EXPLICIT owner address, never an agent address.
+          const venueRaw = typeof args.venue === "string" ? args.venue : "all";
+          if (normalizeVenueBalanceFilter(venueRaw) === null) {
+            return toolError(body.id, "validation: read_venue_balances: unknown venue (dydx|hyperliquid|polymarket|aster|pacifica|all)");
+          }
+          return readResult(body.id, "venue read", await executeVenueBalancesRead({ venue: venueRaw }, readDeps));
         }
         // Write tools share one gate: trade:execute PAT + per-call YOLO
         // eligibility via the shared execute guard (same predicate as

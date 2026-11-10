@@ -64,6 +64,10 @@ import {
   READ_RISK_LIMITS_DESCRIPTION,
   READ_RISK_LIMITS_PARAMETERS,
 } from "../agent-chat/read-tools.ts";
+import {
+  READ_VENUE_BALANCES_DESCRIPTION,
+  READ_VENUE_BALANCES_PARAMETERS,
+} from "../_shared/venue-balances.ts";
 import { JEV_CONSULT_CONTRACT } from "../agent-chat/jev-gate.ts";
 import {
   NEWS_BRIEF_DESCRIPTION,
@@ -110,6 +114,15 @@ Deno.test("mcp tools: read transports reuse the shared chat schemas (no copies)"
   assert.equal(byName("read_risk_limits").description, READ_RISK_LIMITS_DESCRIPTION);
   assert.equal(byName("read_risk_limits").inputSchema, READ_RISK_LIMITS_PARAMETERS);
   assert.equal(byName("list_connections").description, LIST_CONNECTIONS_DESCRIPTION);
+});
+
+Deno.test("mcp tools: read_venue_balances reuses the shared venue copy (no fork)", () => {
+  const venue = byName("read_venue_balances");
+  assert.equal(venue.description, READ_VENUE_BALANCES_DESCRIPTION);
+  assert.equal(venue.inputSchema, READ_VENUE_BALANCES_PARAMETERS);
+  // Public venue reads: open-world read, same as the onchain reader.
+  assert.equal(venue.annotations?.readOnlyHint, true);
+  assert.equal(venue.annotations?.openWorldHint, true);
 });
 
 Deno.test("mcp tools: read_news_brief reuses the shared chat schema (no copy)", () => {

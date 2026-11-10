@@ -28,6 +28,10 @@ import {
   TOOL_MESSAGE_HARD_CAP,
 } from "../agent-chat/read-tools.ts";
 import { READ_DEFI_DESCRIPTION, READ_DEFI_PARAMETERS } from "./defi.ts";
+import {
+  READ_VENUE_BALANCES_DESCRIPTION,
+  READ_VENUE_BALANCES_PARAMETERS,
+} from "../_shared/venue-balances.ts";
 
 /** Shared analyze_market parameters — the same JEV verdict as chat
  *  consult_jev (see agent-chat/jev-gate.ts + agent-chat/tools.ts).
@@ -224,6 +228,13 @@ export const TOOLS = [
     inputSchema: { type: "object", properties: {
       chains: { type: "string", description: "Optional comma list of canonical chain slugs, e.g. ethereum,solana. Non-EVM slugs (solana, ton, tron, btc) match exactly — no aliases or substrings; ton covers every TON address version. EVM slugs expand: one linked EVM address reads on any requested EVM chain." },
     }, additionalProperties: false },
+  },
+  {
+    name: "read_venue_balances",
+    title: "Read venue-held balances",
+    annotations: { readOnlyHint: true, openWorldHint: true },
+    description: READ_VENUE_BALANCES_DESCRIPTION,
+    inputSchema: READ_VENUE_BALANCES_PARAMETERS,
   },
   {
     name: "close_position",
