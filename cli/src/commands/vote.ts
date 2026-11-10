@@ -332,6 +332,12 @@ export function resolveVote(
 
 const fmtW = (w: number): string => w.toFixed(2);
 
+/** Injectable model fetchers (tests pin the ballot offline; defaults are the real fetchers). */
+export type VoteDeps = {
+  jevTrend?: typeof fetchJevTrend;
+  kronos?: typeof fetchKronosVerdict;
+};
+
 export async function cmdVote(opts: {
   pair: string;
   exchange: string;
@@ -340,6 +346,7 @@ export async function cmdVote(opts: {
   url?: string;
   pat?: string;
   storePath?: string;
+  deps?: VoteDeps;
 }): Promise<void> {
   const pairErr = validateVotePair(opts.pair);
   if (pairErr || !opts.exchange) {
@@ -357,7 +364,7 @@ export async function cmdVote(opts: {
     signals.push({ skill: "jev", side: "flat", confidence: 0, abstained: true, detail: "not authenticated — run `jw3 auth login --browser` first" });
   } else {
     try {
-      signals.push(jevToSignal(await fetchJevTrend(opts.exchange, pair, pat, opts.url)));
+      signals.push(jevToSignal(await (opts.deps?.jevTrend ?? fetchJevTrend)(opts.exchange, pair, pat, opts.url)));
     } catch (e) {
       signals.push({
         skill: "jev",
@@ -369,7 +376,7 @@ export async function cmdVote(opts: {
     }
   }
   try {
-    signals.push(kronosToSignal(await fetchKronosVerdict(pair, opts.horizon)));
+    signals.push(kronosToSignal(await (opts.deps?.kronos ?? fetchKronosVerdict)(pair, opts.horizon)));
   } catch (e) {
     signals.push({
       skill: "kronos",

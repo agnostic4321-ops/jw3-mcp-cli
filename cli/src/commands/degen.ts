@@ -327,6 +327,10 @@ export type DegenDeps = {
   now?: () => number;
   /** Session context for the short bounce gate (price + 60min session low). */
   sessionCtx?: (pair: string) => Promise<PrefilterCtx>;
+  /** The production oracle's model fetchers (tests pin the real combine offline; defaults are the real fetchers). */
+  kronos?: typeof fetchKronosVerdict;
+  marketState?: typeof buildMarketState;
+  laya?: typeof fetchLayaVerdict;
 };
 
 export type DegenRunOpts = {
@@ -346,12 +350,13 @@ async function prodOracle(
   url: string | undefined,
   pat: string | undefined,
   storePath: string | undefined,
+  deps: Pick<DegenDeps, "kronos" | "marketState" | "laya"> = {},
 ): Promise<DegenOracle> {
   const store = loadStore(storePath ?? voteStorePath());
   const weights = oracleWeightsFromStore(store.weights);
   const [kSettled, lSettled] = await Promise.allSettled([
     (async () => {
-      const v = await fetchKronosVerdict(pair, horizon);
+      const v = await (deps.kronos ?? fetchKronosVerdict)(pair, horizon);
       if (!v || v.direction === "flat") return null;
       const conf = Math.min(Math.max(Math.abs(v.expected_move_pct) / 1, 0.1), 1);
       return {
@@ -362,8 +367,8 @@ async function prodOracle(
       };
     })(),
     (async () => {
-      const state = await buildMarketState(pair, exchange, { url, pat });
-      return layaToSignal(await fetchLayaVerdict(state));
+      const state = await (deps.marketState ?? buildMarketState)(pair, exchange, { url, pat });
+      return layaToSignal(await (deps.laya ?? fetchLayaVerdict)(state));
     })(),
   ]);
   const signals: OracleSignal[] = [];
@@ -450,7 +455,7 @@ export async function cmdDegen(
     : loadHeat(heatPath, nowMs);
   const sizeEff = effectiveSize(a.sizeUsd, heat.stopsToday);
   const fade = deps?.fade ?? futuresFade;
-  const oracleFetch = deps?.oracle ?? ((pair: string) => prodOracle(pair, a.exchange, a.horizon, opts.url, opts.pat, deps?.storePath));
+  const oracleFetch = deps?.oracle ?? ((pair: string) => prodOracle(pair, a.exchange, a.horizon, opts.url, opts.pat, deps?.storePath, deps));
 
   // ── 1. volatility screen ──
   let row: FadeRow;
