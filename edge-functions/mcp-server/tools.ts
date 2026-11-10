@@ -6,6 +6,31 @@
 // JEV contract (see agent-chat/jev-gate.ts), and list_connections shares its
 // copy + implementation with the chat loop. Tool names, titles, and route
 // behavior are unchanged — only the home moved.
+//
+// PROPOSE SURFACE MAP (C10-11) — MCP propose_* vs chat propose_* executors.
+// No shared executor: both sides validate separately and write the same
+// storage (trade_setups / agent_analyses / proposal trail / diary_day_notes),
+// all approval-card-only, never auto-executed.
+//   mcp propose_trade            → trade_setups row (mode live, proposed) for
+//      Diary → setups → Send to ticket. Chat analogue: propose_trade_setup
+//      (structured card); propose_trade_cex/perps are the venue-executable
+//      variants (no MCP equivalent — MCP never routes to execution).
+//   mcp propose_diary_note       → diary_day_notes append/replace upsert.
+//      Same table + semantics as chat propose_diary_note.
+//   mcp propose_trade_ideas      → one trade_setups row per idea + batch
+//      agent_action_log trail row. Same shape as chat propose_trade_ideas.
+//   mcp propose_bracket          → trade_setups row (proposal_kind bracket,
+//      legs in targets) + trail row. Same shape as chat propose_bracket.
+//   mcp propose_predict_market   → agent_analyses row, JEV-gated
+//      (jev_verdict required — run analyze_market family=prediction first).
+//      Same gate as chat propose_predict_market.
+//   mcp propose_close_all_positions → proposal-only record, no orders placed
+//      or cancelled. Same as chat propose_close_all_positions.
+//   Chat-only (no MCP/CLI surface): propose_trade_cex/perps/limit/cancel/
+//      reduce/close/move_stop_be/set_exits, propose_swap/bridge/transfer/
+//      connect, navigate_trading. CLI propose-cards covers idea/bracket/
+//      predict/close-all against the MCP tools above; bare `propose`
+//      covers propose_trade.
 import { ok } from "../_shared/respond.ts";
 import { fetchWithTimeout } from "../_shared/http.ts";
 import type { AnyClient } from "../_shared/clients.ts";
@@ -33,28 +58,47 @@ import {
   READ_VENUE_BALANCES_PARAMETERS,
 } from "../_shared/venue-balances.ts";
 
+/**
+ * Shared JEV market-param properties: the field set MCP analyze_market
+ * shares with chat consult_jev (agent-chat/tools.ts). The chat schema is
+ * this base PLUS token_id (Opinion market grounding) with required
+ * [family,venue,symbol]; the MCP schema below reuses the base WITHOUT
+ * token_id and requires only [family]. The divergence is deliberate and
+ * pinned by tools_test.ts:
+ * - token_id: the mcp-server analyze_market handler (index.ts) forwards
+ *   only family/venue/symbol (+snapshot) to jev-analyze, so an MCP caller
+ *   cannot ground by token. Opinion prediction calls must either ride
+ *   chat consult_jev or embed the market in snapshot.market+brief.
+ * - required [family]: CEX calls ride server-built candles from
+ *   venue+symbol (or a caller snapshot that already carries timeframes);
+ *   prediction needs snapshot.market+brief. venue/symbol also accept the
+ *   chat aliases exchange/pair at the handler.
+ */
+export const JEV_MARKET_PARAM_PROPERTIES = {
+  family: { type: "string", enum: ["cex", "dex_perps", "prediction"], description: "Market family matching the planned trade." },
+  venue: { type: "string", description: "Venue slug (e.g. binance, kucoin, polymarket). Required for cex unless the snapshot already carries timeframes; prediction defaults to polymarket." },
+  symbol: { type: "string", description: "Pair, ticker, or condition id (e.g. BTC/USDT). Required for cex unless the snapshot already carries timeframes; prediction takes the Polymarket conditionId/slug or Opinion market id." },
+  exchange: { type: "string", description: "Alias of venue (chat compat)." },
+  pair: { type: "string", description: "Alias of symbol (chat compat)." },
+  snapshot: { type: "object", description: "Optional override: { timeframes: [{tf, candles: [{o,h,l,c,v?}]}] } for cex/dex_perps, { market, brief: [{title, snippet, url, at}] } for prediction. Omit for CEX — the server builds candles itself; dex_perps/prediction need the snapshot shapes above." },
+};
+
 /** Shared analyze_market parameters — the same JEV verdict as chat
- *  consult_jev (see agent-chat/jev-gate.ts + agent-chat/tools.ts).
- *  required stays ["family"]: CEX calls ride server-built candles from
- *  venue+symbol (or a caller snapshot that already carries timeframes);
- *  prediction needs snapshot.market+brief. venue/symbol also accept the
- *  chat aliases exchange/pair at the handler. */
+ *  consult_jev (see agent-chat/jev-gate.ts + agent-chat/tools.ts),
+ *  minus token_id (see above). required stays ["family"]. */
 export const ANALYZE_MARKET_PARAMETERS = {
   type: "object",
-  properties: {
-    family: { type: "string", enum: ["cex", "dex_perps", "prediction"], description: "Market family matching the planned trade." },
-    venue: { type: "string", description: "Venue slug (e.g. binance, kucoin, polymarket). Required for cex unless the snapshot already carries timeframes; prediction defaults to polymarket." },
-    symbol: { type: "string", description: "Pair, ticker, or condition id (e.g. BTC/USDT). Required for cex unless the snapshot already carries timeframes; prediction takes the Polymarket conditionId/slug or Opinion market id." },
-    exchange: { type: "string", description: "Alias of venue (chat compat)." },
-    pair: { type: "string", description: "Alias of symbol (chat compat)." },
-    snapshot: { type: "object", description: "Optional override: { timeframes: [{tf, candles: [{o,h,l,c,v?}]}] } for cex/dex_perps, { market, brief: [{title, snippet, url, at}] } for prediction. Omit for CEX — the server builds candles itself; dex_perps/prediction need the snapshot shapes above." },
-  },
+  properties: JEV_MARKET_PARAM_PROPERTIES,
   required: ["family"], additionalProperties: false,
 };
 
 /** Shared list_fills copy — execution fills (spot + futures) via cex-proxy.
  *  Activity history, NOT Diary rows: one closed position already yields one
- *  NET-pnl row via read_closed_pnl, so fills must never be written as trades. */
+ *  NET-pnl row via read_closed_pnl, so fills must never be written as trades.
+ *  HARNESS-CANONICAL (C10-10): no agent-chat/read-tools.ts export exists for
+ *  this copy yet (only the payload builders live there), so it is defined
+ *  here until the app side promotes it — then swap to the import. Same for
+ *  READ_CLOSED_PNL_* and RECONCILE_REALIZED_PNL_* below. */
 export const LIST_FILLS_DESCRIPTION =
   "READ-ONLY: list recent execution fills on a CEX connection (individual order executions with price/qty/fee, spot + futures). Never moves funds, never writes Diary rows — fills are Activity history (see read_closed_pnl for realized PnL). Unimplemented venues return an empty list; a venue walk that exceeds its time budget fails loud, never truncated-as-empty.";
 export const LIST_FILLS_PARAMETERS = {

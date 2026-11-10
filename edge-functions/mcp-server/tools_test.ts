@@ -20,6 +20,7 @@ import {
   DEFI_SLIPPAGE_MAX_BPS,
   DEFAULT_TOOL_RATE_LIMIT,
   IDEMPOTENCY_KEY_MAX_LEN,
+  JEV_MARKET_PARAM_PROPERTIES,
   MCP_PROTOCOL_VERSION,
   MCP_SERVER_INFO,
   MAX_PROPOSAL_JEV_CHARS,
@@ -252,6 +253,9 @@ Deno.test("mcp tools: analyze_market shares the JEV contract + consult_jev shape
   const analyze = byName("analyze_market");
   assert.equal(analyze.description, JEV_CONSULT_CONTRACT);
   assert.equal(analyze.inputSchema, ANALYZE_MARKET_PARAMETERS);
+  // Derived from the shared base (C10-10), not a hand copy: the schema's
+  // properties ARE the shared properties object.
+  assert.equal(ANALYZE_MARKET_PARAMETERS.properties, JEV_MARKET_PARAM_PROPERTIES);
   const props = Object.keys(ANALYZE_MARKET_PARAMETERS.properties);
   for (const field of ["family", "venue", "symbol", "snapshot"]) {
     if (!props.includes(field)) throw new Error(`analyze_market lost field: ${field}`);
@@ -259,6 +263,13 @@ Deno.test("mcp tools: analyze_market shares the JEV contract + consult_jev shape
   if (!ANALYZE_MARKET_PARAMETERS.required.includes("family")) {
     throw new Error("analyze_market lost required family");
   }
+  // Deliberate consult_jev divergence, pinned: token_id is chat-only (the
+  // mcp-server handler forwards only family/venue/symbol+snapshot to
+  // jev-analyze) and required stays ["family"] (server builds CEX candles).
+  if (props.includes("token_id")) {
+    throw new Error("analyze_market must not take token_id (chat consult_jev only)");
+  }
+  assert.deepEqual(ANALYZE_MARKET_PARAMETERS.required, ["family"]);
 });
 
 Deno.test("mcp tools: every tool has a handler branch (no dead tools)", async () => {

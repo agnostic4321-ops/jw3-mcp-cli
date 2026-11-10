@@ -161,7 +161,10 @@ jw3d supervise …                   same supervisor via the jw3d alias (24/7 en
   (public Gamma read, no auth).
 - `propose` queues a Diary setup via `propose_trade` for in-app
   approve-and-sign — never executes. Needs the `trade:propose` PAT
-  scope or the server refuses (surfaced, not hidden).
+  scope or the server refuses (surfaced, not hidden). Full MCP
+  `propose_*` ↔ chat `propose_*` map: `edge-functions/mcp-server/tools.ts`
+  header (PROPOSE SURFACE MAP) — MCP and chat validate separately and
+  write the same storage, all approval-card-only.
 - `positions` reads open derivatives positions (`read_live_datum` with
   venue exits); `--pair` filters client-side (canonical BTC/USDT form,
   XBT/flat/dashed all match), `--watch SEC` re-polls every SEC seconds
@@ -225,6 +228,14 @@ machine re-run `jw3 auth login` instead of copying the file.
 ```bash
 cd cli && npm test   # tsc build + node --test dist/
 ```
+
+## Versions
+
+Two independent artifacts, versioned separately (C10-13 documents the
+split rather than forcing one number): the CLI client version lives in
+`cli/package.json` (printed by `jw3 --help`); the MCP server/registry
+version lives in `server.json`. Bump each where it ships — a CLI-only
+change never needs a server version bump and vice versa.
 
 ## Launch + auth
 
