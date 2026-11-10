@@ -11,10 +11,11 @@
  *                    the 24h high/low, ATR regime. Uses `jevToFeatures`
  *                    (decide.ts) for the JEV 7-timeframe structure leg.
  *   momentum         multi-timeframe trend agreement (1h/4h/1d) plus the
- *                    model legs: `combineWeightedVote` (vote.ts) over
- *                    `jevToSignal`/`kronosToSignal` ballots and
- *                    `combineOracleVote` (oracle.ts) over the oracle legs
- *                    (`layaToSignal`).
+ *                    model legs: the ONE ballot (`combineBallot`,
+ *                    weighting.ts) over the vote ballots
+ *                    (`jevToSignal`/`kronosToSignal`) and over the oracle
+ *                    legs (`layaToSignal`) — the same combine `jw3 vote`
+ *                    and `jw3 oracle` run.
  *   flow             volume confirmation + top-5 book imbalance from the
  *                    public depth20 read (`spikeImbalance`).
  *   mean_reversion   stretch vs VWAP/EMA, Wilder RSI extreme, z-score vs
@@ -42,6 +43,11 @@
  *
  * Exit codes: 0 = actionable (LONG/SHORT), 1 = no trade (FLAT),
  * 2 = usage error, 3 = VETO (blocked by a seat).
+ *
+ * Tuning (OQ-09): the default params, the seat weights and every weight or
+ * threshold inside a seat's read come from the rubric
+ * (`VERDICT_TUNING.committee`), the single tuning surface; per-call
+ * overrides (`params`, `weights`, `consensusThreshold`) work as before.
  */
 import { resolvePat } from "../config.js";
 import {
@@ -66,18 +72,26 @@ import { fetchJevTrend, type TrendVerdict } from "./analyze.js";
 import { fetchKronosVerdict, type ForecastVerdict } from "./forecast.js";
 import { jevToFeatures, type LayaVerdict } from "./decide.js";
 import { klinesSymbolForPair, parseKlineRows, rsiWilder, vwapCumulative, type KlineCandle } from "./klines.js";
-import { combineOracleVote, layaToSignal, type OracleSignal, type OracleSkill } from "./oracle.js";
 import { blackoutWindowVetoes, type HeatBlackoutWindow } from "./heat.js";
+import { normalizeVotePair, validateVotePair } from "./vote.js";
+import { VERDICT_TUNING } from "./rubric.js";
 import {
-  combineWeightedVote,
+  combineBallot,
+  DEFAULT_ORACLE_WEIGHTS,
+  DEFAULT_WEIGHTS,
   jevToSignal,
   kronosToSignal,
-  normalizeVotePair,
-  validateVotePair,
-  DEFAULT_WEIGHTS,
+  layaToSignal,
+  type Ballot,
+  type OracleSkill,
   type SkillId,
-  type SkillSignal,
-} from "./vote.js";
+} from "./weighting.js";
+
+type SkillSignal = Ballot<SkillId>;
+type OracleSignal = Ballot<OracleSkill>;
+
+/** The seats' inner weights and thresholds (rubric — the single tuning surface). */
+const SEAT_TUNING = VERDICT_TUNING.committee.seats;
 
 /* ------------------------------------------------------------------ */
 /* Types                                                               */
@@ -156,7 +170,7 @@ export function committeeModelLegs(raw: CommitteeRawVerdicts): CommitteeModelLeg
     voteSignals,
     voteWeights: raw.voteWeights ?? DEFAULT_WEIGHTS,
     oracleSignals,
-    oracleWeights: raw.oracleWeights ?? { kronos: 0.5, laya: 1.0, rfdetr: 0 },
+    oracleWeights: raw.oracleWeights ?? DEFAULT_ORACLE_WEIGHTS,
   };
 }
 
@@ -361,38 +375,11 @@ export const COMMITTEE_SEATS: CommitteeSeatId[] = [
   "execution",
 ];
 
-export const DEFAULT_COMMITTEE_PARAMS: CommitteeParams = {
-  consensusThreshold: 0.2,
-  minAgreement: 0.5,
-  minVoters: 1,
-  sizeStep: 0,
-  structure: { swingWindow: 12, atrRefPct: 1.0 },
-  momentum: {
-    emaPeriod: 20,
-    tfWeights: { "1h": 0.2, "4h": 0.3, "1d": 0.5 },
-    slopeRefPct: 0.5,
-    legWeights: { mtf: 1.0, vote: 0.8, oracle: 0.8 },
-  },
-  flow: { imbalanceFull: 0.25, volRatioCap: 2, minVolRatio: 0.7 },
-  meanReversion: { vwapRefPct: 0.5, rsiBand: 20, zRef: 2 },
-  eventRisk: { fundingVetoPct: 0.1, avoidUtcMinutes: [], thinUtcMinutes: [] },
-  execution: {
-    roundTripFeePct: 0.12,
-    feeDragVeto: 1 / 3,
-    maxSpreadBps: 15,
-    edgeCostCap: 0.6,
-    minBookNotionalUsd: 5000,
-  },
-};
+/** The committee's default params — read from the rubric (`VERDICT_TUNING.committee.params`). */
+export const DEFAULT_COMMITTEE_PARAMS: CommitteeParams = VERDICT_TUNING.committee.params;
 
-export const DEFAULT_SEAT_WEIGHTS: Record<CommitteeSeatId, number> = {
-  structure: 1.0,
-  momentum: 1.2,
-  flow: 0.9,
-  mean_reversion: 0.6,
-  event_risk: 1.0,
-  execution: 1.0,
-};
+/** The default seat weights — read from the rubric (`VERDICT_TUNING.committee.seatWeights`). */
+export const DEFAULT_SEAT_WEIGHTS: Record<CommitteeSeatId, number> = VERDICT_TUNING.committee.seatWeights;
 
 /* ------------------------------------------------------------------ */
 /* Pure math helpers                                                   */
@@ -542,13 +529,16 @@ export const structureSeat: CommitteeSeat = {
     const atrFactor =
       typeof market.atrPct === "number" && Number.isFinite(market.atrPct)
         ? clamp(market.atrPct / params.structure.atrRefPct, 0, 1)
-        : 0.5;
+        : SEAT_TUNING.structure.atrFactorUnknown;
 
-    let score = 0.45 * swingBias + 0.25 * rangeBias + 0.3 * jevScore;
-    score *= 0.5 + 0.5 * atrFactor;
+    let score =
+      SEAT_TUNING.structure.swingWeight * swingBias +
+      SEAT_TUNING.structure.rangeWeight * rangeBias +
+      SEAT_TUNING.structure.jevWeight * jevScore;
+    score *= SEAT_TUNING.structure.deadTapeBase + SEAT_TUNING.structure.deadTapeSpan * atrFactor;
     score = clampScore(score);
 
-    if (Math.abs(score) < 0.05) {
+    if (Math.abs(score) < SEAT_TUNING.abstainBand) {
       return {
         score: 0,
         position: null,
@@ -578,8 +568,8 @@ export const structureSeat: CommitteeSeat = {
  * MOMENTUM — multi-timeframe trend agreement (1h/4h/1d) plus the model
  * legs. The candle leg scores each timeframe off its EMA slope and the
  * price's distance from that EMA (in ATRs); the model legs come straight
- * from the existing combiners (combineWeightedVote over the vote.ts
- * ballots, combineOracleVote over the oracle.ts legs).
+ * from the one ballot (weighting.ts combineBallot over the vote ballots
+ * and over the oracle legs).
  */
 export const momentumSeat: CommitteeSeat = {
   id: "momentum",
@@ -597,11 +587,11 @@ export const momentumSeat: CommitteeSeat = {
       const w = params.momentum.tfWeights[tf] ?? 0;
       if (!(w > 0)) continue;
       const candles = candlesFor(market, tf);
-      if (candles.length < params.momentum.emaPeriod + 6) continue;
+      if (candles.length < params.momentum.emaPeriod + SEAT_TUNING.momentum.slopeLookbackBars) continue;
       const closes = candles.map((c) => c.close);
       const emas = emaSeries(closes, params.momentum.emaPeriod);
       const emaNow = emas[emas.length - 1];
-      const emaPast = emas[emas.length - 6];
+      const emaPast = emas[emas.length - SEAT_TUNING.momentum.slopeLookbackBars];
       const close = lastClose(candles);
       if (emaNow === null || emaPast === null || close === null || !(emaPast > 0)) continue;
       const slopePct = ((emaNow - emaPast) / emaPast) * 100;
@@ -622,28 +612,28 @@ export const momentumSeat: CommitteeSeat = {
       for (const tf of ["1h", "4h", "1d"] as CommitteeTimeframe[]) {
         const w = params.momentum.tfWeights[tf] ?? 0;
         const candles = candlesFor(market, tf);
-        if (!(w > 0) || candles.length < params.momentum.emaPeriod + 6) continue;
+        if (!(w > 0) || candles.length < params.momentum.emaPeriod + SEAT_TUNING.momentum.slopeLookbackBars) continue;
         const closes = candles.map((c) => c.close);
         const emas = emaSeries(closes, params.momentum.emaPeriod);
         const emaNow = emas[emas.length - 1];
-        const emaPast = emas[emas.length - 6];
+        const emaPast = emas[emas.length - SEAT_TUNING.momentum.slopeLookbackBars];
         if (emaNow === null || emaPast === null || !(emaPast > 0)) continue;
         const bias = clamp(((emaNow - emaPast) / emaPast) * 100 / params.momentum.slopeRefPct, -1, 1);
         total += w;
         if (signOf(bias) === signOf(raw)) agree += w;
       }
-      const agreeFactor = total > 0 ? agree / total : 0.5;
+      const agreeFactor = total > 0 ? agree / total : SEAT_TUNING.momentum.agreeFactorUnknown;
       legs.push({ name: "mtf", score: raw * agreeFactor, weight: params.momentum.legWeights.mtf });
     }
 
-    // --- model legs: vote.ts ballots + oracle.ts legs ---------------
+    // --- model legs: the vote ballot + the oracle ballot (weighting.ts) ---
     const models = market.models ?? {};
     if (models.voteSignals && models.voteSignals.length > 0) {
-      const v = combineWeightedVote(models.voteSignals, models.voteWeights ?? DEFAULT_WEIGHTS);
+      const v = combineBallot(models.voteSignals, models.voteWeights ?? DEFAULT_WEIGHTS, "skill");
       if (v.voters > 0) legs.push({ name: "vote", score: v.score, weight: params.momentum.legWeights.vote });
     }
     if (models.oracleSignals && models.oracleSignals.length > 0) {
-      const o = combineOracleVote(models.oracleSignals, models.oracleWeights ?? { kronos: 0.5, laya: 1.0, rfdetr: 0 });
+      const o = combineBallot(models.oracleSignals, models.oracleWeights ?? DEFAULT_ORACLE_WEIGHTS, "model");
       if (o.voters > 0) legs.push({ name: "oracle", score: o.score, weight: params.momentum.legWeights.oracle });
     }
 
@@ -652,7 +642,7 @@ export const momentumSeat: CommitteeSeat = {
     }
     const wsum = legs.reduce((a, l) => a + l.weight, 0);
     const score = clampScore(legs.reduce((a, l) => a + l.score * l.weight, 0) / (wsum > 0 ? wsum : 1));
-    if (Math.abs(score) < 0.05) {
+    if (Math.abs(score) < SEAT_TUNING.abstainBand) {
       return {
         score: 0,
         position: null,
@@ -700,11 +690,14 @@ export const flowSeat: CommitteeSeat = {
       return ABSTAIN(`volume not confirming — ratio ${volRatio.toFixed(2)} below ${params.flow.minVolRatio}`);
     }
     const imbScore = clamp(imbalance / params.flow.imbalanceFull, -1, 1);
-    const volFactor = volRatio === null ? 0.5 : clamp(volRatio, 0, params.flow.volRatioCap) / params.flow.volRatioCap;
-    let score = imbScore * (0.4 + 0.6 * volFactor);
-    if (market.volSlope === "down") score *= 0.7;
+    const volFactor =
+      volRatio === null
+        ? SEAT_TUNING.flow.volFactorUnknown
+        : clamp(volRatio, 0, params.flow.volRatioCap) / params.flow.volRatioCap;
+    let score = imbScore * (SEAT_TUNING.flow.volBase + SEAT_TUNING.flow.volSpan * volFactor);
+    if (market.volSlope === "down") score *= SEAT_TUNING.flow.fadingVolDamp;
     score = clampScore(score);
-    if (Math.abs(score) < 0.05) {
+    if (Math.abs(score) < SEAT_TUNING.abstainBand) {
       return {
         score: 0,
         position: null,
@@ -746,27 +739,27 @@ export const meanReversionSeat: CommitteeSeat = {
 
     if (typeof market.vwap === "number" && market.vwap > 0) {
       const distPct = ((last - market.vwap) / market.vwap) * 100;
-      parts.push({ name: "vwap", value: clamp(distPct / params.meanReversion.vwapRefPct, -1, 1), weight: 0.3 });
+      parts.push({ name: "vwap", value: clamp(distPct / params.meanReversion.vwapRefPct, -1, 1), weight: SEAT_TUNING.meanReversion.vwapWeight });
     }
     if (typeof market.ema20 === "number" && market.ema20 > 0) {
       const distPct = ((last - market.ema20) / market.ema20) * 100;
-      parts.push({ name: "ema", value: clamp(distPct / params.meanReversion.vwapRefPct, -1, 1), weight: 0.2 });
+      parts.push({ name: "ema", value: clamp(distPct / params.meanReversion.vwapRefPct, -1, 1), weight: SEAT_TUNING.meanReversion.emaWeight });
     }
     if (typeof market.rsi === "number" && Number.isFinite(market.rsi)) {
-      parts.push({ name: "rsi", value: clamp((market.rsi - 50) / params.meanReversion.rsiBand, -1, 1), weight: 0.25 });
+      parts.push({ name: "rsi", value: clamp((market.rsi - 50) / params.meanReversion.rsiBand, -1, 1), weight: SEAT_TUNING.meanReversion.rsiWeight });
     }
     const closes = candlesFor(market, "1h").map((c) => c.close);
-    const z = zScore(closes, 20);
+    const z = zScore(closes, SEAT_TUNING.meanReversion.zPeriod);
     if (z !== null) {
-      parts.push({ name: "z", value: clamp(z / params.meanReversion.zRef, -1, 1), weight: 0.25 });
+      parts.push({ name: "z", value: clamp(z / params.meanReversion.zRef, -1, 1), weight: SEAT_TUNING.meanReversion.zWeight });
     }
-    if (parts.length < 2) {
-      return ABSTAIN("not enough stretch measures (need 2 of vwap/ema/rsi/z)");
+    if (parts.length < SEAT_TUNING.meanReversion.minMeasures) {
+      return ABSTAIN(`not enough stretch measures (need ${SEAT_TUNING.meanReversion.minMeasures} of vwap/ema/rsi/z)`);
     }
     const wsum = parts.reduce((a, p) => a + p.weight, 0);
     const stretch = parts.reduce((a, p) => a + p.value * p.weight, 0) / (wsum > 0 ? wsum : 1);
     const score = clampScore(-stretch);
-    if (Math.abs(score) < 0.05) {
+    if (Math.abs(score) < SEAT_TUNING.abstainBand) {
       return {
         score: 0,
         position: null,
@@ -891,9 +884,9 @@ export const eventRiskSeat: CommitteeSeat = {
     let support = 1;
     if (typeof funding === "number" && Number.isFinite(funding)) {
       const paying = (side === "long" && funding > 0) || (side === "short" && funding < 0);
-      if (paying) support -= 0.5;
+      if (paying) support -= SEAT_TUNING.eventRisk.fundingPayPenalty;
     }
-    if (thin) support -= 0.3;
+    if (thin) support -= SEAT_TUNING.eventRisk.thinPenalty;
     support = clamp(support, 0, 1);
 
     const veto = vetoes.length > 0 ? (vetoes[0] as { rule: string; detail: string }) : null;
@@ -1056,7 +1049,7 @@ export function mergeCommitteeParams(
  * still trades) and never exceeds 1 (the proposal size is the cap).
  */
 export function convictionSizeScale(score: number): number {
-  return clamp(0.5 + 0.5 * Math.abs(clampScore(score)), 0, 1);
+  return clamp(SEAT_TUNING.conviction.base + SEAT_TUNING.conviction.span * Math.abs(clampScore(score)), 0, 1);
 }
 
 /**
@@ -1373,9 +1366,9 @@ export function defaultProposal(
   atrPct: number | null,
   size: number,
 ): CommitteePosition {
-  const atr = atrPct !== null && atrPct > 0 ? atrPct : 0.5;
+  const atr = atrPct !== null && atrPct > 0 ? atrPct : SEAT_TUNING.proposal.atrFallbackPct;
   const stopDist = (atr / 100) * last;
-  const targetDist = stopDist * 1.5;
+  const targetDist = stopDist * SEAT_TUNING.proposal.targetR;
   return {
     pair: normalizeVotePair(pair),
     side,

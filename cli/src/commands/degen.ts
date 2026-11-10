@@ -11,7 +11,8 @@
  *      pass. `--pair X` screens that pair; no pair = auto-screen the
  *      default watchlist and take the most exhausted row.
  *   2. Oracle — Kronos + Laya fan-out combined by the vote-calibrated
- *      ballot (`combineOracleVote`). `flat` = NO TRADE (never a
+ *      ballot (weighting.ts `combineBallot`, the one `jw3 oracle` runs,
+ *      weights from vote.json). `flat` = NO TRADE (never a
  *      smaller trade). RF-DETR abstains (no chart in the loop).
  *   3. Heat governor — owner-ordered 30%-risk math: $3 risk steps,
  *      halve size after one full stop, flat for the day after two,
@@ -76,15 +77,8 @@ import {
 import { roundToTick, scalpContracts, contractsToAmountBaseUnits } from "./scalp.js";
 import { buildMarketState, fetchLayaVerdict } from "./decide.js";
 import { fetchKronosVerdict } from "./forecast.js";
-import {
-  combineOracleVote,
-  fetchSessionCtx,
-  layaToSignal,
-  oracleWeightsFromStore,
-  rfdetrOracleSignal,
-  type OracleSide,
-  type OracleSignal,
-} from "./oracle.js";
+import { fetchSessionCtx, type OracleSide, type OracleSignal } from "./oracle.js";
+import { combineBallot, kronosToSignal, layaToSignal, oracleWeights, rfdetrOracleSignal } from "./weighting.js";
 import {
   BOUNCE_REQUIRED_PCT,
   bounceOffLowPct,
@@ -104,12 +98,8 @@ import {
   type DegenHeat,
   type HeatCaps,
 } from "./heat.js";
-import {
-  loadStore,
-  normalizeVotePair,
-  validateVotePair,
-  voteStorePath,
-} from "./vote.js";
+import { normalizeVotePair, validateVotePair } from "./vote.js";
+import { loadStore, voteStorePath } from "./track-store.js";
 import { fail, needPat } from "./market.js";
 import { cmdTrail } from "./trail.js";
 
@@ -352,19 +342,14 @@ async function prodOracle(
   storePath: string | undefined,
   deps: Pick<DegenDeps, "kronos" | "marketState" | "laya"> = {},
 ): Promise<DegenOracle> {
+  // The one track store (vote.json) and the one weighting module: the
+  // same ballot, mappings and weights `jw3 oracle` uses.
   const store = loadStore(storePath ?? voteStorePath());
-  const weights = oracleWeightsFromStore(store.weights);
+  const weights = oracleWeights(store.weights);
   const [kSettled, lSettled] = await Promise.allSettled([
     (async () => {
-      const v = await (deps.kronos ?? fetchKronosVerdict)(pair, horizon);
-      if (!v || v.direction === "flat") return null;
-      const conf = Math.min(Math.max(Math.abs(v.expected_move_pct) / 1, 0.1), 1);
-      return {
-        skill: "kronos" as const,
-        side: (v.direction === "up" ? "long" : "short") as "long" | "short",
-        confidence: conf,
-        detail: `${v.direction} ${v.expected_move_pct.toFixed(2)}% over ${v.horizon}x15m`,
-      };
+      const k = kronosToSignal(await (deps.kronos ?? fetchKronosVerdict)(pair, horizon));
+      return k.abstained ? null : k;
     })(),
     (async () => {
       const state = await (deps.marketState ?? buildMarketState)(pair, exchange, { url, pat });
@@ -373,8 +358,7 @@ async function prodOracle(
   ]);
   const signals: OracleSignal[] = [];
   if (kSettled.status === "fulfilled" && kSettled.value) {
-    const k = kSettled.value;
-    signals.push({ skill: k.skill, side: k.side, confidence: k.confidence, abstained: false, detail: k.detail });
+    signals.push(kSettled.value);
   } else {
     signals.push({ skill: "kronos", side: "flat", confidence: 0, abstained: true, detail: "kronos failed/abstained" });
   }
@@ -384,7 +368,7 @@ async function prodOracle(
     signals.push({ skill: "laya", side: "flat", confidence: 0, abstained: true, detail: "laya failed" });
   }
   signals.push(rfdetrOracleSignal());
-  const verdict = combineOracleVote(signals, weights);
+  const verdict = combineBallot(signals, weights, "model");
   return { side: verdict.side, score: verdict.score, detail: verdict.reason };
 }
 

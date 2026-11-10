@@ -17,7 +17,7 @@ import { cmdAlert } from "./commands/alert.js";
 import { cmdLearningRecord, cmdLearningStats } from "./commands/learning.js";
 import { cmdHarness } from "./commands/harness.js";
 import { cmdBacktestLive } from "./commands/backtest-live.js";
-import { cmdScoreRecord, cmdScoreReport, cmdScoreStats } from "./commands/score.js";
+import { HOLDOUT_DEFAULT_SIZE, cmdScoreRecord, cmdScoreReport, cmdScoreStats } from "./commands/score.js";
 import { cmdCommittee } from "./commands/committee.js";
 import { cmdDaemon, loadDaemonManifest } from "./commands/daemon.js";
 import { resolvePat } from "./config.js";
@@ -755,7 +755,7 @@ const ROUTES: CliRoute[] = [
     run: async (cmd, sub, tail) => {
       const g = globals(tail);
       if (sub === "report") {
-        await cmdScoreReport({ json: g.json, storePath: flagOf(g.rest, "--store"), holdoutSize: numOf(g.rest, "--holdout", 64) });
+        await cmdScoreReport({ json: g.json, storePath: flagOf(g.rest, "--store"), holdoutSize: numOf(g.rest, "--holdout", HOLDOUT_DEFAULT_SIZE) });
         return;
       }
       if (sub === "record") {

@@ -254,6 +254,162 @@ export type RubricOverrides = {
 };
 
 /* ------------------------------------------------------------------ */
+/* Verdict-stack tuning (OQ-09): THE single tuning surface             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Every weight and every threshold the verdict seats read — the vote and
+ * oracle ballots, the committee's seats, the scorer's evidence bar and the
+ * learning loop's seat gate — is defined here and nowhere else.
+ * `weighting.ts` (the one weighting module), `track-store.ts` (the one
+ * track store) and the seat modules import these values; they never
+ * restate one. The rubric's own rules (`DEFAULT_RUBRIC_CONFIG` above) are
+ * the other half of the surface. OQ-09 phase 1 moved every value here
+ * unchanged (pinned byte-identical by verdict-golden.test.ts).
+ *
+ * The per-call overrides that already existed keep working unchanged:
+ * `RubricOverrides`, `CommitteeParamsOverride`, the committee's per-seat
+ * `weights`, and the learning gate options.
+ */
+export const VERDICT_TUNING = {
+  /** The confidence-weighted ballot (`jw3 vote`, `jw3 oracle`, the committee's model legs, degen's oracle). */
+  ballot: {
+    /** Ballot-open weight per vote.json track: JEV leads, Kronos halves, RF-DETR silent until wired. */
+    defaultWeights: { jev: 1.0, kronos: 0.5, rfdetr: 0 },
+    /** |weighted score| at or above this decides long/short; below is flat (no consensus). */
+    consensusThreshold: 0.15,
+    /** Kronos conviction: an expected move of this many % (or more) is full conviction. */
+    kronosFullMovePct: 1,
+    /** Kronos conviction floor while the model makes a directional call. */
+    kronosMinConviction: 0.1,
+  },
+  /** The rolling hit-rate auto-tune every vote.json / score.json track runs. */
+  autoTune: {
+    /** Rolling window of scored outcomes per track. */
+    window: 20,
+    /** Samples needed before the auto-tune touches a weight. */
+    minSamples: 5,
+    /** Rolling hit-rate at or above which the weight steps up. */
+    promoteAt: 0.6,
+    /** Rolling hit-rate at or below which the weight steps down. */
+    demoteAt: 0.4,
+    step: 0.1,
+    cap: 2.0,
+    floor: 0,
+  },
+  /** Earn-the-seat gate: a model votes on real money only past both bars. */
+  seatGate: {
+    minSamples: 30,
+    hitFloor: 0.55,
+    /** Weight a model that earned the seat starts from (one auto-tune step). */
+    seatWeight: 0.1,
+  },
+  /** The scorer's evidence bar for any reported rate. */
+  evidence: {
+    /** Minimum samples before a rate is reported as measured (per side, per window). */
+    rateFloorSamples: 5,
+    /** Default holdout window (the Kronos precedent: 64 windows). */
+    holdoutSize: 64,
+    /** Confidence level of the reported Wilson interval, and its two-sided normal quantile. */
+    confidenceLevel: 0.95,
+    confidenceZ: 1.959963984540054,
+  },
+  /** The learning report's pair-split and dissent reads. */
+  learning: {
+    /** A pair must split this many times before "systematically right" is claimed. */
+    minSplitSamples: 5,
+    /** A dissenter needs this many dissents before its dissent rate means anything. */
+    minDissentSamples: 5,
+    /** A dissenter is "systematically wrong" above this share of wrong dissents. */
+    dissentWrongRate: 0.6,
+  },
+  /** The committee (`jw3 committee`, the harness). */
+  committee: {
+    /** The committee's default params (`CommitteeParams`; per-call overrides merge onto these). */
+    params: {
+      consensusThreshold: 0.2,
+      minAgreement: 0.5,
+      minVoters: 1,
+      sizeStep: 0,
+      structure: { swingWindow: 12, atrRefPct: 1.0 },
+      momentum: {
+        emaPeriod: 20,
+        tfWeights: { "1h": 0.2, "4h": 0.3, "1d": 0.5 },
+        slopeRefPct: 0.5,
+        legWeights: { mtf: 1.0, vote: 0.8, oracle: 0.8 },
+      },
+      flow: { imbalanceFull: 0.25, volRatioCap: 2, minVolRatio: 0.7 },
+      meanReversion: { vwapRefPct: 0.5, rsiBand: 20, zRef: 2 },
+      eventRisk: { fundingVetoPct: 0.1, avoidUtcMinutes: [] as number[], thinUtcMinutes: [] as number[] },
+      execution: {
+        roundTripFeePct: 0.12,
+        feeDragVeto: 1 / 3,
+        maxSpreadBps: 15,
+        edgeCostCap: 0.6,
+        minBookNotionalUsd: 5000,
+      },
+    },
+    /** Default seat weights (per-call `weights` override them). */
+    seatWeights: {
+      structure: 1.0,
+      momentum: 1.2,
+      flow: 0.9,
+      mean_reversion: 0.6,
+      event_risk: 1.0,
+      execution: 1.0,
+    },
+    /** The weights and thresholds inside each seat's read. */
+    seats: {
+      /** A directional seat whose |score| is under this abstains (no edge). */
+      abstainBand: 0.05,
+      structure: {
+        swingWeight: 0.45,
+        rangeWeight: 0.25,
+        jevWeight: 0.3,
+        /** ATR factor when the ATR is unknown. */
+        atrFactorUnknown: 0.5,
+        /** A dead tape keeps this share of the read; the rest scales with the ATR factor. */
+        deadTapeBase: 0.5,
+        deadTapeSpan: 0.5,
+      },
+      momentum: {
+        /** EMA slope is read over this many bars back. */
+        slopeLookbackBars: 6,
+        /** Timeframe agreement factor when no timeframe can be read. */
+        agreeFactorUnknown: 0.5,
+      },
+      flow: {
+        /** Volume factor when the volume ratio is unknown. */
+        volFactorUnknown: 0.5,
+        volBase: 0.4,
+        volSpan: 0.6,
+        /** Damp on the read when volume is fading. */
+        fadingVolDamp: 0.7,
+      },
+      meanReversion: {
+        vwapWeight: 0.3,
+        emaWeight: 0.2,
+        rsiWeight: 0.25,
+        zWeight: 0.25,
+        zPeriod: 20,
+        /** Stretch measures needed (of vwap/ema/rsi/z) before the seat reads. */
+        minMeasures: 2,
+      },
+      eventRisk: {
+        /** Support lost when the proposal pays funding. */
+        fundingPayPenalty: 0.5,
+        /** Support lost in a thin-liquidity minute. */
+        thinPenalty: 0.3,
+      },
+      /** Conviction → size: base share plus the conviction-scaled span (never 0, never above 1). */
+      conviction: { base: 0.5, span: 0.5 },
+      /** The proposal the CLI debates when no levels are given. */
+      proposal: { atrFallbackPct: 0.5, targetR: 1.5 },
+    },
+  },
+};
+
+/* ------------------------------------------------------------------ */
 /* Adapters                                                            */
 /* ------------------------------------------------------------------ */
 

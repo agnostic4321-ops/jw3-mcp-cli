@@ -46,49 +46,53 @@
  * `appendRecordToLog`, `compactLearningLog`, `syncVoteStore` and
  * `applyPromotionGate` are pure over injected text/objects. The `cmd*`
  * wrappers are the thin filesystem shell around them.
+ *
+ * OQ-09: the models, the slots and the slot feed order are weighting.ts's;
+ * the rolling windows and vote.json are the one track store's
+ * (track-store.ts); the gate bar, the seat weight and the pair/dissent
+ * sample floors are read from the rubric (VERDICT_TUNING).
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { configDir } from "../config.js";
+import { normalizeVotePair, validateVotePair } from "./vote.js";
+import { VERDICT_TUNING } from "./rubric.js";
+import { clampWeight as clampToBand, MODELS, SKILLS, TRACK_FEED_PRIORITY, type ModelId, type SkillId } from "./weighting.js";
 import {
-  HISTORY_WINDOW,
-  WEIGHT_CAP,
-  WEIGHT_FLOOR,
   loadStore,
-  normalizeVotePair,
   recordOutcome,
+  rollWindow,
+  sanitizeWindow,
   saveStore,
-  validateVotePair,
   voteStorePath,
-  type SkillId,
   type VoteStore,
-} from "./vote.js";
+} from "./track-store.js";
+
+/** The one rolling window (rubric). */
+const HISTORY_WINDOW = VERDICT_TUNING.autoTune.window;
 
 /* ------------------------------------------------------------------ */
 /* Constants                                                           */
 /* ------------------------------------------------------------------ */
 
 /** The models this loop measures. JEV/Laya/Kronos vote live; RF-DETR abstains until wired. */
-export type LearningModelId = "jev" | "laya" | "kronos" | "rfdetr";
-export const LEARNING_MODELS: LearningModelId[] = ["jev", "laya", "kronos", "rfdetr"];
+export type LearningModelId = ModelId;
+export const LEARNING_MODELS: LearningModelId[] = MODELS;
 
 /** The three weight slots vote.json carries. */
-export const LEARNING_TRACKS: SkillId[] = ["jev", "kronos", "rfdetr"];
+export const LEARNING_TRACKS: SkillId[] = SKILLS;
 
 /**
- * Which learning models feed which vote.json weight slot, in priority.
+ * Which learning models feed which vote.json weight slot, in priority
+ * (weighting.ts TRACK_FEED_PRIORITY).
  *
- * oracle.ts's `oracleWeightsFromStore` gives Laya the JEV slot (the
- * decision leg supersedes the raw trend leg), so the JEV slot is fed by
- * Laya first and falls back to the raw JEV trend when Laya abstained —
- * one trade contributes at most ONE outcome per slot, so a slot's rolling
- * window stays a window over trades, not over model-reads.
+ * The one track mapping gives Laya the JEV slot (the decision leg
+ * supersedes the raw trend leg), so the JEV slot is fed by Laya first and
+ * falls back to the raw JEV trend when Laya abstained — one trade
+ * contributes at most ONE outcome per slot, so a slot's rolling window
+ * stays a window over trades, not over model-reads.
  */
-export const TRACK_MODELS: Record<SkillId, LearningModelId[]> = {
-  jev: ["laya", "jev"],
-  kronos: ["kronos"],
-  rfdetr: ["rfdetr"],
-};
+export const TRACK_MODELS: Record<SkillId, LearningModelId[]> = TRACK_FEED_PRIORITY;
 
 /** Model versions recorded per signal when the caller does not supply one. */
 export const DEFAULT_MODEL_VERSIONS: Record<LearningModelId, string> = {
@@ -107,18 +111,18 @@ export function kronosVersion(finetuned: boolean): string {
 export const LEARNING_WINDOW_BARS = 400;
 export const LEARNING_WINDOW_MINUTES = 15;
 
-/** Promotion gate: a model votes on real money only past both bars. */
-export const GATE_MIN_SAMPLES = 30;
-export const GATE_MIN_HIT_RATE = 0.55;
+/** Promotion gate: a model votes on real money only past both bars (rubric seat gate). */
+export const GATE_MIN_SAMPLES = VERDICT_TUNING.seatGate.minSamples;
+export const GATE_MIN_HIT_RATE = VERDICT_TUNING.seatGate.hitFloor;
 /** Weight a model that earned the seat starts from (one auto-tune step). */
-export const GATE_SEAT_WEIGHT = 0.1;
+export const GATE_SEAT_WEIGHT = VERDICT_TUNING.seatGate.seatWeight;
 
 /** A pair must split this many times before "systematically right" is claimed. */
-export const MIN_SPLIT_SAMPLES = 5;
+export const MIN_SPLIT_SAMPLES = VERDICT_TUNING.learning.minSplitSamples;
 /** A dissenter needs this many dissents before its dissent rate means anything. */
-export const MIN_DISSENT_SAMPLES = 5;
+export const MIN_DISSENT_SAMPLES = VERDICT_TUNING.learning.minDissentSamples;
 /** A dissenter is "systematically wrong" above this share of wrong dissents. */
-export const DISSENT_WRONG_RATE = 0.6;
+export const DISSENT_WRONG_RATE = VERDICT_TUNING.learning.dissentWrongRate;
 
 /** Compaction: fold the log into a snapshot past this many trade records, keeping the tail. */
 export const LEARNING_COMPACT_AT = 500;
@@ -512,11 +516,6 @@ function pairAccFor(acc: LedgerAcc, a: LearningModelId, b: LearningModelId): Pai
   return p;
 }
 
-function rollWindow(window: boolean[], hit: boolean): void {
-  window.push(hit);
-  if (window.length > HISTORY_WINDOW) window.splice(0, window.length - HISTORY_WINDOW);
-}
-
 function updateCounters(
   c: SideCounters,
   sideA: string,
@@ -760,9 +759,7 @@ function restoreLedger(snapshot: LedgerAcc): LedgerAcc {
     acc.models[m] = {
       hits: numOr(src.hits, 0),
       total: numOr(src.total, 0),
-      window: Array.isArray(src.window)
-        ? src.window.filter((r): r is boolean => typeof r === "boolean").slice(-HISTORY_WINDOW)
-        : [],
+      window: sanitizeWindow(src.window),
     };
   }
   for (const t of LEARNING_TRACKS) {
@@ -773,9 +770,7 @@ function restoreLedger(snapshot: LedgerAcc): LedgerAcc {
     acc.tracks[t] = {
       hits: numOr(src.hits, 0),
       total: numOr(src.total, 0),
-      window: Array.isArray(src.window)
-        ? src.window.filter((r): r is boolean => typeof r === "boolean").slice(-HISTORY_WINDOW)
-        : [],
+      window: sanitizeWindow(src.window),
       contrib,
     };
   }
@@ -1002,15 +997,14 @@ export type GateChange = {
   reason: string;
 };
 
-const clampWeight = (w: number): number =>
-  Math.min(Math.max(Math.round(w * 100) / 100, WEIGHT_FLOOR), WEIGHT_CAP);
+const clampWeight = (w: number): number => clampToBand(Math.round(w * 100) / 100);
 
 /**
  * Pure-ish: score the trade into the vote.json rolling windows the
  * auto-tune reads (`skills[track].results`) — one outcome per slot, taken
  * from the slot's first voting candidate. Abstentions score nothing.
  *
- * MUTATES `store.skills[track].results` and (via vote.ts's
+ * MUTATES `store.skills[track].results` and (via the track store's
  * `recordOutcome`) `store.weights[track]`.
  */
 export function syncVoteStore(

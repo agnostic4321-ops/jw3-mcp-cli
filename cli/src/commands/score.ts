@@ -46,10 +46,11 @@
  *   store.skills[<track>].hits    <- patch.hits
  *   store.skills[<track>].total   <- patch.total
  *
- * Track mapping mirrors oracle.ts (oracleWeightsFromStore): Laya inherits
- * the JEV track — it is the decision leg that supersedes the raw JEV
- * trend — so JEV and Laya score against the same vote-store track while
- * keeping SEPARATE per-model statistics (they are different signals).
+ * Track mapping is the one in weighting.ts (MODEL_TRACK, also behind
+ * oracle.ts's oracleWeightsFromStore): Laya inherits the JEV track — it is
+ * the decision leg that supersedes the raw JEV trend — so JEV and Laya
+ * score against the same vote-store track while keeping SEPARATE
+ * per-model statistics (they are different signals).
  *
  * Two integration modes; pick ONE per trade (running both double-counts
  * the track):
@@ -60,52 +61,53 @@
  *      applyGateMask() zeroes the weight while the gate excludes.
  *      The scorer keeps the richer stats in score.json.
  *
- * The auto-tune here (autoTuneWeight) is a faithful replica of vote.ts's
- * recordOutcome() rule — the test suite pins the two together so the
- * weights cannot drift apart.
+ * OQ-09: the auto-tune (autoTuneWeight) is THE auto-tune rule
+ * (weighting.ts tuneWeight — the one vote.ts's recordOutcome() runs), the
+ * tracks are the one track type with the one roll/sanitizer
+ * (track-store.ts), and every gate/evidence number is read from the rubric
+ * (VERDICT_TUNING). score.json keeps its path and shape.
  */
 import { configDir } from "../config.js";
 import { loadJsonStore, resolveStorePath, saveJsonStore } from "./json-store.js";
+import { VERDICT_TUNING } from "./rubric.js";
 import {
+  clampWeight,
   DEFAULT_WEIGHTS,
-  DEMOTE_AT,
-  HISTORY_WINDOW,
-  MIN_SAMPLES as VOTE_MIN_SAMPLES,
-  PROMOTE_AT,
-  WEIGHT_CAP,
-  WEIGHT_FLOOR,
-  WEIGHT_STEP,
+  MODEL_TRACK,
+  MODELS,
+  rollingHitRate,
+  SKILLS,
+  TRACK_MODELS,
+  tuneWeight,
+  type ModelId,
   type SkillId,
+} from "./weighting.js";
+import {
+  cloneTrack,
+  emptyTrack,
+  emptyTracks,
+  pushTrackOutcome,
+  rollWindow,
+  sanitizeCount,
+  sanitizeTracksInto,
+  sanitizeWeightsInto,
+  sanitizeWindow,
+  type SkillTrack,
   type VoteRecord,
   type VoteStore,
-} from "./vote.js";
+} from "./track-store.js";
+
+export { MODEL_TRACK, MODELS, rollingHitRate, TRACK_MODELS, type ModelId } from "./weighting.js";
 
 /* ------------------------------------------------------------------ */
 /* Constants — the promotion-gate contract                            */
 /* ------------------------------------------------------------------ */
 
-/** Models this component scores. Laya is the decision leg (JEV track). */
-export type ModelId = "jev" | "laya" | "kronos" | "rfdetr";
-
-export const MODELS: ModelId[] = ["jev", "laya", "kronos", "rfdetr"];
-/** The live comparison set (JEV, Laya, Kronos). */
+/** The live comparison set (JEV, Laya, Kronos). Models, tracks and the
+ * model → track mapping are weighting.ts's (re-exported above). */
 export const LIVE_MODELS: ModelId[] = ["jev", "laya", "kronos"];
-/** Vote-store tracks (vote.ts SkillId set). */
-export const TRACKS: SkillId[] = ["jev", "kronos", "rfdetr"];
-
-/** Model -> vote-store track (Laya inherits the JEV track, oracle.ts). */
-export const MODEL_TRACK: Record<ModelId, SkillId> = {
-  jev: "jev",
-  laya: "jev",
-  kronos: "kronos",
-  rfdetr: "rfdetr",
-};
-/** Track -> the models that score against it. */
-export const TRACK_MODELS: Record<SkillId, ModelId[]> = {
-  jev: ["jev", "laya"],
-  kronos: ["kronos"],
-  rfdetr: ["rfdetr"],
-};
+/** Vote-store tracks (the vote.json slots). */
+export const TRACKS: SkillId[] = SKILLS;
 
 /**
  * PROMOTION GATE CONSTANTS.
@@ -117,19 +119,19 @@ export const TRACK_MODELS: Record<SkillId, ModelId[]> = {
  * GATE_HIT_FLOOR — the rolling hit rate (over the last 20 scored
  *   outcomes) a model must hold to be eligible.
  */
-export const GATE_MIN_SAMPLES = 30;
-export const GATE_HIT_FLOOR = 0.55;
+export const GATE_MIN_SAMPLES = VERDICT_TUNING.seatGate.minSamples;
+export const GATE_HIT_FLOOR = VERDICT_TUNING.seatGate.hitFloor;
 
 /** Minimum-sample guard for ANY rate we report (per-side, per-window). */
-export const RATE_FLOOR_SAMPLES = 5;
-/** Rolling window for hit rates — same 20-outcome window as vote.ts. */
-export const SCORE_WINDOW = HISTORY_WINDOW;
+export const RATE_FLOOR_SAMPLES = VERDICT_TUNING.evidence.rateFloorSamples;
+/** Rolling window for hit rates — the one auto-tune window (rubric). */
+export const SCORE_WINDOW = VERDICT_TUNING.autoTune.window;
 /** Default holdout window size (the Kronos precedent: 64 windows). */
-export const HOLDOUT_DEFAULT_SIZE = 64;
+export const HOLDOUT_DEFAULT_SIZE = VERDICT_TUNING.evidence.holdoutSize;
 /** Two-sided 95% normal quantile for the Wilson interval. */
-export const CONFIDENCE_Z = 1.959963984540054;
+export const CONFIDENCE_Z = VERDICT_TUNING.evidence.confidenceZ;
 /** Confidence level reported alongside the interval. */
-export const CONFIDENCE_LEVEL = 0.95;
+export const CONFIDENCE_LEVEL = VERDICT_TUNING.evidence.confidenceLevel;
 /** Cap on the per-model audit history kept in score.json. */
 export const SCORE_MAX_HISTORY = 500;
 
@@ -198,12 +200,8 @@ export type ModelScorecard = {
   history: ScoredOutcome[];
 };
 
-/** Mirrors vote.ts's SkillTrack exactly (same three fields). */
-export type TrackState = {
-  results: boolean[];
-  hits: number;
-  total: number;
-};
+/** The one track type (track-store.ts SkillTrack — same three fields as vote.json). */
+export type TrackState = SkillTrack;
 
 export type ScoreStore = {
   version: 1;
@@ -236,15 +234,6 @@ export type RateInterval = {
 
 const clamp01 = (v: number): number => (Number.isFinite(v) ? Math.min(Math.max(v, 0), 1) : 0);
 const round2 = (v: number): number => Math.round(v * 100) / 100;
-
-/**
- * Pure: rolling-window hit rate, or null when the window is empty.
- * A null is NOT 0% — an empty window means "not measured yet".
- */
-export function rollingHitRate(results: readonly boolean[]): number | null {
-  if (!results || results.length === 0) return null;
-  return results.filter(Boolean).length / results.length;
-}
 
 /**
  * Pure: minimum-sample guard. Returns null when the sample is below the
@@ -315,23 +304,16 @@ export function rateInterval(
 }
 
 /**
- * Pure: the vote.ts auto-tune rule, replica'd so the scorer can own the
- * merit weight without editing vote.ts. Identical to vote.ts's
- * recordOutcome(): promote +0.1 when the rolling rate >= 60% (and the
- * window holds >= 5 samples), demote -0.1 at <= 40%, clamped to
- * [0, 2.0] and rounded to 2dp.
+ * Pure: THE auto-tune rule (weighting.ts tuneWeight — the same rule
+ * vote.ts's recordOutcome() runs), with the scorer's input guard: a
+ * stored weight outside [floor, cap] is clamped first, and a non-finite
+ * one starts from 0. Promote/demote bands, step, band and the sample
+ * floor come from the rubric.
  *
  * `results` is the window AFTER the new outcome was pushed.
  */
 export function autoTuneWeight(results: readonly boolean[], weightBefore: number): number {
-  const before = Number.isFinite(weightBefore) ? Math.min(Math.max(weightBefore, WEIGHT_FLOOR), WEIGHT_CAP) : 0;
-  const rate = rollingHitRate(results);
-  let after = before;
-  if (results.length >= VOTE_MIN_SAMPLES && rate !== null) {
-    if (rate >= PROMOTE_AT) after = Math.min(WEIGHT_CAP, before + WEIGHT_STEP);
-    else if (rate <= DEMOTE_AT) after = Math.max(WEIGHT_FLOOR, before - WEIGHT_STEP);
-  }
-  return round2(after);
+  return tuneWeight(Number.isFinite(weightBefore) ? clampWeight(weightBefore) : 0, results);
 }
 
 /* ------------------------------------------------------------------ */
@@ -561,13 +543,11 @@ export function scoreTrade(store: ScoreStore, trade: TradeContext): ScoreTradeRe
 
     card.total += 1;
     if (hit) card.hits += 1;
-    card.results.push(hit);
-    trimWindow(card.results);
+    rollWindow(card.results, hit);
 
     side.total += 1;
     if (hit) side.hits += 1;
-    side.results.push(hit);
-    trimWindow(side.results);
+    rollWindow(side.results, hit);
     side.pnlUsd += trade.netPnlUsd;
     if (hit) side.pnlWhenHitUsd += trade.netPnlUsd;
     else side.pnlWhenMissUsd += trade.netPnlUsd;
@@ -587,12 +567,9 @@ export function scoreTrade(store: ScoreStore, trade: TradeContext): ScoreTradeRe
     });
     if (card.history.length > SCORE_MAX_HISTORY) card.history.splice(0, card.history.length - SCORE_MAX_HISTORY);
 
-    // The vote-store track mirrors vote.ts's SkillTrack, and the merit
-    // weight follows vote.ts's auto-tune rule exactly.
-    trackState.results.push(hit);
-    trimWindow(trackState.results);
-    if (hit) trackState.hits += 1;
-    trackState.total += 1;
+    // The one track roll (track-store.ts) and the one auto-tune rule
+    // (weighting.ts) — the same pair vote.json's tracks run.
+    pushTrackOutcome(trackState, hit);
     next.weights[track] = autoTuneWeight(trackState.results, next.weights[track] ?? 0);
 
     scored.push({ model: signal.model, track, side: signal.side as DirectionalSide, confidence: signal.confidence, hit });
@@ -808,11 +785,10 @@ export function emptyModelCard(model: ModelId): ModelScorecard {
 export function defaultScoreStore(): ScoreStore {
   const models = {} as Record<ModelId, ModelScorecard>;
   for (const m of MODELS) models[m] = emptyModelCard(m);
-  const tracks = {} as Record<SkillId, TrackState>;
-  for (const t of TRACKS) tracks[t] = { results: [], hits: 0, total: 0 };
-  // The merit weights start where vote.ts starts them (JEV leads, Kronos
-  // halves, RF-DETR silent until wired) so the scorer's auto-tune begins
-  // from the same baseline the vote store uses.
+  const tracks = emptyTracks();
+  // The merit weights start where vote.json starts them (the rubric's
+  // ballot-open weights: JEV leads, Kronos halves, RF-DETR silent until
+  // wired) so the scorer's auto-tune begins from the same baseline.
   const weights = {} as Record<SkillId, number>;
   for (const t of TRACKS) weights[t] = DEFAULT_WEIGHTS[t];
   return { version: 1, models, tracks, weights, updatedAt: "" };
@@ -831,39 +807,22 @@ function cloneCard(c: ModelScorecard): ModelScorecard {
   };
 }
 
-function cloneTrack(t: TrackState): TrackState {
-  return { ...t, results: [...t.results] };
-}
-
 export function cloneStore(store: ScoreStore): ScoreStore {
   const models = {} as Record<ModelId, ModelScorecard>;
   for (const m of MODELS) models[m] = cloneCard(store.models?.[m] ?? emptyModelCard(m));
   const tracks = {} as Record<SkillId, TrackState>;
-  for (const t of TRACKS) tracks[t] = cloneTrack(store.tracks?.[t] ?? { results: [], hits: 0, total: 0 });
+  for (const t of TRACKS) tracks[t] = cloneTrack(store.tracks?.[t] ?? emptyTrack());
   const weights = {} as Record<SkillId, number>;
   for (const t of TRACKS) {
     const w = store.weights?.[t];
-    weights[t] = Number.isFinite(w) ? Math.min(Math.max(w as number, WEIGHT_FLOOR), WEIGHT_CAP) : 0;
+    weights[t] = Number.isFinite(w) ? clampWeight(w as number) : 0;
   }
   return { version: 1, models, tracks, weights, updatedAt: store.updatedAt ?? "" };
-}
-
-function trimWindow(arr: boolean[]): void {
-  if (arr.length > SCORE_WINDOW) arr.splice(0, arr.length - SCORE_WINDOW);
 }
 
 /** Store file path (score.json beside vote.json). */
 export function scoreStorePath(dir?: string): string {
   return resolveStorePath(dir, "score.json", configDir());
-}
-
-function saneInt(v: unknown): number {
-  return Number.isInteger(v) && (v as number) >= 0 ? (v as number) : 0;
-}
-
-function saneResults(v: unknown): boolean[] {
-  if (!Array.isArray(v)) return [];
-  return v.filter((r): r is boolean => typeof r === "boolean").slice(-SCORE_WINDOW);
 }
 
 /** Load the score store; missing/corrupt files fall back to defaults (never throws). */
@@ -876,18 +835,18 @@ export function loadScoreStore(path: string): ScoreStore {
         const c = rawModels[m];
         if (!c || typeof c !== "object") continue;
         const card = store.models[m]!;
-        card.total = saneInt(c.total);
-        card.hits = saneInt(c.hits);
-        card.results = saneResults(c.results);
+        card.total = sanitizeCount(c.total);
+        card.hits = sanitizeCount(c.hits);
+        card.results = sanitizeWindow(c.results);
         card.history = Array.isArray(c.history)
           ? (c.history as ScoredOutcome[]).filter((h) => h && typeof h.pair === "string").slice(-SCORE_MAX_HISTORY)
           : [];
         for (const side of ["long", "short"] as DirectionalSide[]) {
           const s = (c.sides as Record<string, Partial<SideScorecard>> | undefined)?.[side];
           if (!s || typeof s !== "object") continue;
-          card.sides[side].total = saneInt(s.total);
-          card.sides[side].hits = saneInt(s.hits);
-          card.sides[side].results = saneResults(s.results);
+          card.sides[side].total = sanitizeCount(s.total);
+          card.sides[side].hits = sanitizeCount(s.hits);
+          card.sides[side].results = sanitizeWindow(s.results);
           card.sides[side].pnlUsd = Number.isFinite(s.pnlUsd) ? (s.pnlUsd as number) : 0;
           card.sides[side].pnlWhenHitUsd = Number.isFinite(s.pnlWhenHitUsd) ? (s.pnlWhenHitUsd as number) : 0;
           card.sides[side].pnlWhenMissUsd = Number.isFinite(s.pnlWhenMissUsd) ? (s.pnlWhenMissUsd as number) : 0;
@@ -900,23 +859,9 @@ export function loadScoreStore(path: string): ScoreStore {
         }
       }
     }
-    const rawTracks = r.tracks as Record<string, Partial<TrackState>> | undefined;
-    if (rawTracks && typeof rawTracks === "object") {
-      for (const t of TRACKS) {
-        const s = rawTracks[t];
-        if (!s || typeof s !== "object") continue;
-        store.tracks[t] = { results: saneResults(s.results), hits: saneInt(s.hits), total: saneInt(s.total) };
-      }
-    }
-    const rawWeights = r.weights as Record<string, unknown> | undefined;
-    if (rawWeights && typeof rawWeights === "object") {
-      for (const t of TRACKS) {
-        const w = rawWeights[t];
-        store.weights[t] = Number.isFinite(w) && (w as number) >= WEIGHT_FLOOR && (w as number) <= WEIGHT_CAP
-          ? (w as number)
-          : store.weights[t]!;
-      }
-    }
+    // The tracks and weights load through the one track-store sanitizer.
+    sanitizeTracksInto(r.tracks, store.tracks);
+    sanitizeWeightsInto(r.weights, store.weights);
     store.updatedAt = typeof r.updatedAt === "string" ? r.updatedAt : "";
   });
 }
@@ -963,7 +908,7 @@ export function projectVotePatches(store: ScoreStore, opts: { minSamples?: numbe
   const gates = gatesFor(store, opts);
   return TRACKS.map((track) => {
     const models = TRACK_MODELS[track];
-    const trackState = store.tracks[track] ?? { results: [], hits: 0, total: 0 };
+    const trackState = store.tracks[track] ?? emptyTrack();
     const merit = store.weights[track] ?? 0;
     const excluded = models.every((m) => !gates[m]!.eligible);
     const blockedBy = models.filter((m) => !gates[m]!.eligible).map((m) => gates[m]!.reason);

@@ -10,12 +10,13 @@
  *           --chart or when no pattern box clears the threshold.
  *
  * Calibrated combiner: weights come from the vote.json rolling store
- * (loadStore), so scored merit auto-tunes the oracle too. Laya inherits
- * the JEV track weight — it is the decision leg that supersedes the raw
- * JEV trend (it fuses JEV + tape + book), and the oracle keeps no
- * separate track until it accrues its own history. Same confidence-weighted
- * ballot as `vote` (|score| >= 0.15 decides, else flat) via
- * CONSENSUS_THRESHOLD; empty ballot → flat, never a fabricated direction.
+ * (track-store.ts `loadStore`), so scored merit auto-tunes the oracle too.
+ * Laya inherits the JEV track weight — it is the decision leg that
+ * supersedes the raw JEV trend (it fuses JEV + tape + book), and the
+ * oracle keeps no separate track until it accrues its own history. Same
+ * confidence-weighted ballot as `vote` (weighting.ts `combineBallot`,
+ * consensus threshold from the rubric); empty ballot → flat, never a
+ * fabricated direction.
  *
  * The oracle only READS vote.json (never records ballots — scoring stays
  * in `vote record`) and never proposes, executes, or closes. Nothing here
@@ -25,7 +26,6 @@ import { resolvePat } from "../config.js";
 import {
   buildMarketState,
   fetchLayaVerdict,
-  type LayaVerdict,
 } from "./decide.js";
 import { fetchKronosVerdict } from "./forecast.js";
 import {
@@ -35,15 +35,21 @@ import {
   type RfdetrChart,
   type RfdetrVerdict,
 } from "./rfdetr.js";
+import { normalizeVotePair, validateVotePair } from "./vote.js";
 import {
-  CONSENSUS_THRESHOLD,
-  loadStore,
-  normalizeVotePair,
-  rfdetrSignal,
-  validateVotePair,
-  voteStorePath,
+  combineBallot,
+  kronosToSignal,
+  layaToSignal,
+  oracleWeights,
+  rfdetrOracleSignal,
+  type Ballot,
+  type BallotBreakdown,
+  type BallotSide,
+  type BallotVerdict,
+  type OracleSkill,
   type SkillId,
-} from "./vote.js";
+} from "./weighting.js";
+import { loadStore, voteStorePath } from "./track-store.js";
 import {
   btcFeeVeto,
   clampShortVerdict,
@@ -53,60 +59,12 @@ import {
 import { klinesSymbolForPair, parseKlineRows } from "./klines.js";
 import { futuresKlines } from "../kucoin.js";
 
-export type OracleSkill = "kronos" | "laya" | "rfdetr";
-export type OracleSide = "long" | "short" | "flat";
+export { ORACLE_SKILLS, layaToSignal, rfdetrOracleSignal, type OracleSkill } from "./weighting.js";
 
-export const ORACLE_SKILLS: OracleSkill[] = ["kronos", "laya", "rfdetr"];
-
-export type OracleSignal = {
-  skill: OracleSkill;
-  side: OracleSide;
-  /** 0..1 directional conviction. 0 when abstained. */
-  confidence: number;
-  abstained: boolean;
-  detail: string;
-};
-
-export type OracleBreakdown = {
-  skill: OracleSkill;
-  side: OracleSide;
-  confidence: number;
-  weight: number;
-  contribution: number;
-  abstained: boolean;
-};
-
-export type OracleVerdict = {
-  side: OracleSide;
-  /** Confidence-weighted mean in [-1, 1] (+long / −short). 0 when nobody votes. */
-  score: number;
-  voters: number;
-  breakdown: OracleBreakdown[];
-  reason: string;
-};
-
-/**
- * Pure: Laya verdict → oracle ballot. long/short vote with the bridge's
- * (JEV-capped) confidence; flat abstains — a no-call is not a direction.
- */
-export function layaToSignal(v: LayaVerdict | null): OracleSignal {
-  const abstain = (detail: string): OracleSignal => ({ skill: "laya", side: "flat", confidence: 0, abstained: true, detail });
-  if (!v) return abstain("no laya verdict");
-  if (v.choice === "flat") return abstain("flat — no direction");
-  const conf = Number.isFinite(v.confidence) ? Math.min(Math.max(v.confidence, 0), 1) : 0;
-  return { skill: "laya", side: v.choice, confidence: conf, abstained: false, detail: `${v.choice} conf ${conf.toFixed(2)} · ${v.reasons[0] ?? "no reason"}` };
-}
-
-/**
- * RF-DETR chart-vision ballot — abstains without a chart. Wiring point:
- * pass a chart PNG (see --chart) and the pattern-reader bridge votes off
- * the top pattern box; failures abstain so a down model never blocks the
- * verdict. Reuses vote's mapping so both ballots agree.
- */
-export function rfdetrOracleSignal(): OracleSignal {
-  const s = rfdetrSignal();
-  return { skill: "rfdetr", side: "flat", confidence: 0, abstained: true, detail: s.detail };
-}
+export type OracleSide = BallotSide;
+export type OracleSignal = Ballot<OracleSkill>;
+export type OracleBreakdown = BallotBreakdown<OracleSkill>;
+export type OracleVerdict = BallotVerdict<OracleSkill>;
 
 /**
  * Run the RF-DETR bridge over one chart PNG and map its boxes to an
@@ -128,49 +86,24 @@ export async function fetchRfdetrOracleSignal(
 }
 
 /**
- * Pure: confidence-weighted ballot over oracle skills. Zero-weight and
- * abstained skills sit out (neither push the score nor dilute the
- * denominator). Empty ballot → flat with a reason, never fabricated.
+ * Pure: the oracle ballot — weighting.ts `combineBallot` over the oracle
+ * skills. Zero-weight and abstained skills sit out; an empty ballot is
+ * flat with a reason, never fabricated.
  */
 export function combineOracleVote(
   signals: OracleSignal[],
   weights: Record<OracleSkill, number>,
 ): OracleVerdict {
-  const breakdown: OracleBreakdown[] = signals.map((s) => {
-    const w = weights[s.skill] ?? 0;
-    const voting = !s.abstained && w > 0;
-    const dir = s.side === "long" ? 1 : s.side === "short" ? -1 : 0;
-    return {
-      skill: s.skill,
-      side: s.side,
-      confidence: s.confidence,
-      weight: w,
-      contribution: voting ? dir * s.confidence * w : 0,
-      abstained: !voting,
-    };
-  });
-  const voters = breakdown.filter((b) => !b.abstained);
-  if (voters.length === 0) {
-    return { side: "flat", score: 0, voters: 0, breakdown, reason: "no consensus — every model abstained" };
-  }
-  const num = voters.reduce((a, b) => a + b.contribution, 0);
-  const den = voters.reduce((a, b) => a + b.weight, 0);
-  const score = den > 0 ? num / den : 0;
-  const side: OracleSide = score >= CONSENSUS_THRESHOLD ? "long" : score <= -CONSENSUS_THRESHOLD ? "short" : "flat";
-  const reason =
-    side === "flat"
-      ? `weighted score ${score.toFixed(2)} inside ±${CONSENSUS_THRESHOLD} — no consensus`
-      : `weighted score ${score.toFixed(2)} decides ${side.toUpperCase()}`;
-  return { side, score, voters: voters.length, breakdown, reason };
+  return combineBallot(signals, weights, "model");
 }
 
 /**
- * Pure: vote.json rolling weights → oracle weights. Laya inherits the
- * JEV track (the decision leg supersedes the raw trend leg); Kronos and
- * RF-DETR map straight across.
+ * Pure: vote.json rolling weights → oracle weights (weighting.ts
+ * `oracleWeights`): Laya inherits the JEV track (the decision leg
+ * supersedes the raw trend leg); Kronos and RF-DETR map straight across.
  */
 export function oracleWeightsFromStore(weights: Record<SkillId, number>): Record<OracleSkill, number> {
-  return { kronos: weights["kronos"] ?? 0.5, laya: weights["jev"] ?? 1.0, rfdetr: weights["rfdetr"] ?? 0 };
+  return oracleWeights(weights);
 }
 
 export type OracleDeps = {
@@ -295,12 +228,7 @@ export async function cmdOracle(opts: {
   const [kronosSettled, layaSettled, rfdetrSettled, sessionSettled] = await Promise.allSettled([
     (async (): Promise<OracleSignal> => {
       try {
-        const v = await fetchKronos(pair, opts.horizon);
-        if (!v || v.direction === "flat") {
-          return { skill: "kronos", side: "flat", confidence: 0, abstained: true, detail: v ? `flat (expected ${v.expected_move_pct.toFixed(2)}%) — no direction` : "no kronos verdict" };
-        }
-        const conf = Math.min(Math.max(Math.abs(v.expected_move_pct) / 1, 0.1), 1);
-        return { skill: "kronos", side: v.direction === "up" ? "long" : "short", confidence: conf, abstained: false, detail: `${v.direction} ${v.expected_move_pct.toFixed(2)}% over ${v.horizon}x15m` };
+        return kronosToSignal(await fetchKronos(pair, opts.horizon));
       } catch (e) {
         return { skill: "kronos", side: "flat", confidence: 0, abstained: true, detail: `kronos failed: ${e instanceof Error ? e.message : String(e)}` };
       }
