@@ -151,7 +151,7 @@ Usage:
   jw3 market --exchange binance --pair BTC/USDT [--json]
   jw3 screener [--exchange binance] [--json]
   jw3 positions [--exchange kucoin] [--pair BTC/USDT] [--watch SEC] [--polls N] [--json] [--json-lines]
-  jw3 balances [--exchange kucoin] [--json]
+  jw3 balances [--exchange kucoin] [--venue hyperliquid|aster|dydx|pacifica|polymarket|all] [--json]
   jw3 orders [--exchange kucoin] [--pair BTC/USDT] [--json]
   jw3 order --exchange kucoin --order-id … [--pair …] [--market spot|futures] [--json]
   jw3 fills --exchange kucoin [--pair BTC/USDT] [--market spot|futures|all] [--days 30] [--limit 50] [--json]
@@ -1379,7 +1379,13 @@ async function main(): Promise<void> {
     }
     if (cmd === "balances") {
       const g = globals(tail);
-      await cmdBalances({ exchange: flagOf(g.rest, "--exchange"), json: g.json, url: g.url, pat: g.pat });
+      await cmdBalances({
+        exchange: flagOf(g.rest, "--exchange"),
+        venue: flagOf(g.rest, "--venue") ?? (g.rest.includes("--venue") ? "all" : undefined),
+        json: g.json,
+        url: g.url,
+        pat: g.pat,
+      });
       return;
     }
     if (cmd === "orders") {

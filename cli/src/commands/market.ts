@@ -444,8 +444,79 @@ export function formatPositionLine(r: PositionRow): string {
   return `${symbol} ${side} ${sizeS} @ ${entryS} → ${markS}  uPnL ${pnl}${Number.isFinite(lev) && lev > 0 ? `  x${lev}` : ""}`;
 }
 
+/** Venue slugs for --venue (same registry as read_venue_balances). */
+export const VENUE_BALANCE_SLUGS = [
+  "hyperliquid",
+  "aster",
+  "dydx",
+  "pacifica",
+  "polymarket",
+  "all",
+] as const;
+
+/** Normalize a --venue value (`hl` alias accepted). Null = unknown venue. */
+export function normalizeVenueFlag(v: unknown): string | null {
+  const s = String(v ?? "").trim().toLowerCase();
+  if (s === "hl") return "hyperliquid";
+  return (VENUE_BALANCE_SLUGS as readonly string[]).includes(s) ? s : null;
+}
+
+export type VenueBalanceRowView = {
+  venue?: unknown;
+  address?: unknown;
+  ok?: unknown;
+  equityUsd?: unknown;
+  state?: unknown;
+  detail?: unknown;
+};
+
+/** Short address form (0x581A…0868); non-EVM addresses print whole. */
+export function shortVenueAddress(a: unknown): string {
+  const s = String(a ?? "");
+  if (/^0x[0-9a-fA-F]{40}$/.test(s)) return `${s.slice(0, 6)}…${s.slice(-4)}`;
+  return s || "—";
+}
+
+/** One human line per venue-balance row (never $0 for an unknown value). */
+export function formatVenueRow(r: VenueBalanceRowView): string {
+  const venue = String(r.venue ?? "—");
+  const addr = r.address ? shortVenueAddress(r.address) : "—";
+  const state = String(r.state ?? "—");
+  if (state === "ok" || state === "zero") {
+    const money = typeof r.equityUsd === "string" ? fmtMoney(Number(r.equityUsd)) : "—";
+    const tail = r.detail ? `  (${String(r.detail)})` : "";
+    return `${venue}  ${addr}  ${money}${tail}`;
+  }
+  const tail = r.detail ? `  ${String(r.detail)}` : "";
+  return `${venue}  ${addr}  ${state}${tail}`;
+}
+
+/** Print a read_venue_balances result: one line per row, total, partial reasons. */
+export function printVenueBalances(out: unknown, json: boolean): void {
+  if (json) {
+    console.log(JSON.stringify(out));
+    return;
+  }
+  const o = (out ?? {}) as {
+    venues?: VenueBalanceRowView[];
+    totalUsd?: unknown;
+    partial?: unknown;
+    partialReasons?: unknown;
+    observedAt?: unknown;
+  };
+  const at = typeof o.observedAt === "string" ? ` @ ${o.observedAt}` : "";
+  console.log(`venue-held funds${at}:`);
+  for (const r of o.venues ?? []) console.log(`  ${formatVenueRow(r)}`);
+  const total = typeof o.totalUsd === "string" ? fmtMoney(Number(o.totalUsd)) : "—";
+  console.log(`total ${total}${o.partial ? "  (partial)" : ""}`);
+  if (Array.isArray(o.partialReasons)) {
+    for (const reason of o.partialReasons) console.log(`  ! ${String(reason)}`);
+  }
+}
+
 export async function cmdBalances(opts: {
   exchange?: string;
+  venue?: string;
   json: boolean;
   url?: string;
   pat?: string;
@@ -455,6 +526,45 @@ export async function cmdBalances(opts: {
 }): Promise<void> {
   const pat = needPat(opts.pat);
   if (!pat) return;
+  // Venue-held funds (read_venue_balances): --venue <slug|all> reads the
+  // venue legs. `all` prints the CEX fan-out AND the venue rows side by
+  // side, NOT merged. Omit --venue for the CEX-only read (unchanged).
+  if (opts.venue !== undefined) {
+    const venue = normalizeVenueFlag(opts.venue === "" ? "all" : opts.venue);
+    if (!venue) {
+      console.error(`Unknown venue '${String(opts.venue).slice(0, 32)}' — use dydx|hyperliquid|polymarket|aster|pacifica|all. Nothing was called.`);
+      process.exitCode = 2;
+      return;
+    }
+    try {
+      const call = deps?.call ?? callTool;
+      if (venue !== "all") {
+        const out = await call("read_venue_balances", { venue }, pat, opts.url);
+        printVenueBalances(out, opts.json);
+        return;
+      }
+      const rows = await (deps?.list ?? listConnections)(pat, opts.url);
+      const targets = resolveReadTargets(rows, opts.exchange);
+      const cexOut = targets.length > 0
+        ? await call(
+          "read_live_datum",
+          { kind: "balances", ...(opts.exchange ? { exchange: opts.exchange } : {}) },
+          pat,
+          opts.url,
+        )
+        : null;
+      if (targets.length === 0) console.error("CEX: no connections — venue rows only.");
+      const venuesOut = await call("read_venue_balances", { venue: "all" }, pat, opts.url);
+      if (opts.json) {
+        console.log(JSON.stringify({ cex: cexOut, venues: venuesOut }));
+        return;
+      }
+      printVenueBalances(venuesOut, false);
+    } catch (e) {
+      fail(e);
+    }
+    return;
+  }
   try {
     const rows = await (deps?.list ?? listConnections)(pat, opts.url);
     if (resolveReadTargets(rows, opts.exchange).length === 0) {
