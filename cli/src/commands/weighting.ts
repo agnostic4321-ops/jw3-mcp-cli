@@ -7,7 +7,7 @@
  * module owns:
  *
  *   - the ballot: model read → signed, confidence-weighted signal
- *     (`jevToSignal`, `kronosToSignal`, `layaToSignal`, `rfdetrSignal`)
+ *     (`kronosToSignal`, `layaToSignal`, `rfdetrSignal`)
  *     and the ONE confidence-weighted combine (`combineBallot`);
  *   - the track mapping: which vote.json track each model votes with and
  *     is scored against (`MODEL_TRACK` — Laya inherits the JEV track);
@@ -21,7 +21,6 @@
  */
 import { VERDICT_TUNING } from "./rubric.js";
 import { rfdetrBoxesToSignal, type RfdetrVerdict } from "./rfdetr.js";
-import type { TrendVerdict } from "./analyze.js";
 import type { ForecastVerdict } from "./forecast.js";
 import type { LayaVerdict } from "./decide.js";
 
@@ -40,13 +39,10 @@ export const SKILLS: SkillId[] = ["jev", "kronos", "rfdetr"];
 
 /** The oracle ballot's skills (Laya is the decision leg on the JEV track). */
 export type OracleSkill = "kronos" | "laya" | "rfdetr";
-export const ORACLE_SKILLS: OracleSkill[] = ["kronos", "laya", "rfdetr"];
 
 /** Degen's live direction comes from this ballot (kept when the oracle command retired). */
 export type OracleSide = BallotSide;
 export type OracleSignal = Ballot<OracleSkill>;
-export type OracleBreakdown = BallotBreakdown<OracleSkill>;
-export type OracleVerdict = BallotVerdict<OracleSkill>;
 
 /** Every model a seat hears from. */
 export type ModelId = "jev" | "laya" | "kronos" | "rfdetr";
@@ -156,31 +152,6 @@ export function combineBallot<S extends string>(
       ? `weighted score ${score.toFixed(2)} inside ±${threshold} — no consensus`
       : `weighted score ${score.toFixed(2)} decides ${side.toUpperCase()}`;
   return { side, score, voters: voters.length, breakdown, reason };
-}
-
-/**
- * Pure: JEV trend → ballot. Only directional verdicts vote — uncertain,
- * neutral, or unknown verdicts abstain (no directional edge to count).
- */
-export function jevToSignal(t: TrendVerdict | null): Ballot<"jev"> {
-  const abstain = (detail: string): Ballot<"jev"> => ({ skill: "jev", side: "flat", confidence: 0, abstained: true, detail });
-  if (!t) return abstain("no trend verdict returned");
-  const trend = t.verdict?.trend;
-  if (!trend) return abstain("no trend verdict returned");
-  if (trend.uncertain) return abstain("timeframes conflict — no signal, not a call");
-  const v = trend.verdict.toLowerCase();
-  const conf = clamp01(trend.agreement);
-  // The server's verdict vocabulary is long/short/strong_long/strong_short
-  // (combineTrendVerdict in edge _shared/jev.ts) — NOT bull/bear. Matching
-  // only "bull"/"bear" made JEV abstain on every directional verdict, so the
-  // primary oracle silently never voted. Accept both vocabularies.
-  if (v.includes("bull") || v.includes("long")) {
-    return { skill: "jev", side: "long", confidence: conf, abstained: false, detail: trend.verdict };
-  }
-  if (v.includes("bear") || v.includes("short")) {
-    return { skill: "jev", side: "short", confidence: conf, abstained: false, detail: trend.verdict };
-  }
-  return abstain(`neutral verdict (${trend.verdict}) — no directional edge`);
 }
 
 /**

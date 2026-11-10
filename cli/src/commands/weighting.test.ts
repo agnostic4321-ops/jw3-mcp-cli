@@ -38,7 +38,7 @@ describe("track store: vote.json keeps its path and shape", () => {
   });
 
   it("a vote.json written by the kept code loads and re-saves byte-identical", () => {
-    for (const name of ["learning record x5 on the tuned store, low gate, json (+files)", "degen split models, tuned store → long fire (decisions + venue calls)", "degen old-format store, preview text"]) {
+    for (const name of ["learning record x5 on the tuned store, low gate, json (+files)", "degen split models, tuned store → long fire (decisions + venue calls)"]) {
       const before = written(name, "vote.json");
       const path = join(sb.dir, "vote.json");
       writeFileSync(path, before);

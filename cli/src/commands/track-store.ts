@@ -60,10 +60,6 @@ export function emptyTracks(): Record<SkillId, SkillTrack> {
   return tracks;
 }
 
-export function cloneTrack(t: SkillTrack): SkillTrack {
-  return { ...t, results: [...t.results] };
-}
-
 /** Trim a rolling window to the rubric's window size (oldest dropped). */
 export function trimWindow(window: boolean[]): void {
   if (window.length > TUNE.window) window.splice(0, window.length - TUNE.window);
