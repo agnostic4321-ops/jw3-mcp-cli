@@ -6,6 +6,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { runCli } from "./test-fixtures.js";
 
 describe("dispatch pins (table-driven index.ts)", () => {
@@ -69,5 +70,20 @@ describe("dispatch pins (table-driven index.ts)", () => {
     const spaced = runCli(["cancel", "all", "--exchange", "kucoin", "--pair", "BTC/USDT", "--yes"]);
     assert.equal(hyphen.exit, spaced.exit);
     assert.equal(hyphen.stderr, spaced.stderr);
+  });
+
+  it("HELP version is single-sourced from cli/package.json (cannot drift)", () => {
+    const r = runCli(["--help"]);
+    assert.equal(r.exit, 0);
+    const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
+    assert.match(r.stdout, new RegExp(`jw3 — JW3\\.ai command line \\(v${pkg.version.replace(/\./g, "\\.")}\\)`));
+  });
+
+  it("removed supervise falls through to the normal unknown-command help", () => {
+    const r = runCli(["supervise", "--trail", "SOL/USDT:long:1"]);
+    assert.equal(r.exit, 2);
+    assert.match(r.stderr, /Unknown command: supervise/);
+    assert.match(r.stderr, /jw3 — JW3\.ai command line/);
+    assert.ok(!r.stderr.includes("jw3 supervise --trail"), "help must not advertise the deleted command");
   });
 });

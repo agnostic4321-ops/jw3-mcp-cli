@@ -67,6 +67,7 @@ import { fetchKronosVerdict, type ForecastVerdict } from "./forecast.js";
 import { jevToFeatures, type LayaVerdict } from "./decide.js";
 import { klinesSymbolForPair, parseKlineRows, rsiWilder, vwapCumulative, type KlineCandle } from "./klines.js";
 import { combineOracleVote, layaToSignal, type OracleSignal, type OracleSkill } from "./oracle.js";
+import { blackoutWindowVetoes, type HeatBlackoutWindow } from "./heat.js";
 import {
   combineWeightedVote,
   jevToSignal,
@@ -114,13 +115,7 @@ export type CommitteeBook = {
   spreadBps?: number | null;
 };
 
-export type CommitteeBlackout = {
-  name: string;
-  /** Minutes since UTC midnight, inclusive. */
-  startMin: number;
-  /** Minutes since UTC midnight, exclusive. */
-  endMin: number;
-};
+export type CommitteeBlackout = HeatBlackoutWindow;
 
 /** Model legs — assembled by the caller (or by `jw3 oracle` output). */
 export type CommitteeModelLegs = {
@@ -453,17 +448,7 @@ export function zScore(values: number[], period = 20): number | null {
   return (last - mean) / sd;
 }
 
-/** Pure: true when `minutes` (UTC minutes-of-day) falls inside the window. */
-export function inUtcWindow(minutes: number, startMin: number, endMin: number): boolean {
-  if (!Number.isFinite(minutes) || !Number.isFinite(startMin) || !Number.isFinite(endMin)) return false;
-  if (startMin === endMin) return false;
-  if (startMin < endMin) return minutes >= startMin && minutes < endMin;
-  // window wraps past midnight
-  return minutes >= startMin || minutes < endMin;
-}
-
-/**
- * Pure: mirror a position onto the other side (levels mirrored around the
+/** Pure: mirror a position onto the other side (levels mirrored around the
  * entry). Used when the committee flips the proposal's direction.
  */
 export function mirrorPosition(p: CommitteePosition, side: CommitteeSide): CommitteePosition {
@@ -827,15 +812,8 @@ export const eventRiskSeat: CommitteeSeat = {
     const vetoes: { rule: string; detail: string }[] = [];
     const notes: string[] = [];
 
-    // Calendar-verified blackout windows always apply.
-    for (const bw of market.blackouts ?? []) {
-      if (inUtcWindow(minutes, bw.startMin, bw.endMin)) {
-        vetoes.push({
-          rule: `blackout:${bw.name}`,
-          detail: `${bw.name} blackout ${String(bw.startMin).padStart(4, "0")}-${String(bw.endMin).padStart(4, "0")}Z — no directional entries`,
-        });
-      }
-    }
+    // Calendar-verified blackout windows always apply (one matcher in heat.ts).
+    vetoes.push(...blackoutWindowVetoes(market.blackouts, minutes));
     // The built-in CPI window only vetoes on a real release day.
     if (market.macroEventToday && cpiBlackout(nowMs)) {
       vetoes.push({

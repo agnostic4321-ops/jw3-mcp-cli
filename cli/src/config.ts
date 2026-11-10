@@ -93,7 +93,7 @@ export function clearPat(): boolean {
 /**
  * Pure: redact bearer-like args for log lines. Masks the value after
  * `--pat`/`--token`/secret-ish flags, `--flag=value` forms, and bare
- * `jw3_mcp_...` tokens. For supervise/daemon child-argv START lines:
+ * `jw3_mcp_...` tokens. For daemon child-argv START lines:
  * log `maskBearerArgs(argv).join(" ")`, never the raw argv, whenever a
  * bearer flag may be present.
  */

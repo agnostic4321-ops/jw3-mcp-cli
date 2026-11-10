@@ -20,9 +20,8 @@
  * (~/.config/jw3/vote.json, JW3_CONFIG_HOME override); a missing or
  * corrupt file falls back to defaults and is rewritten on the next vote.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { configDir, resolvePat } from "../config.js";
+import { loadJsonStore, resolveStorePath, saveJsonStore } from "./json-store.js";
 import { fetchJevTrend, type TrendVerdict } from "./analyze.js";
 import { fetchKronosVerdict, type ForecastVerdict } from "./forecast.js";
 import { rfdetrBoxesToSignal, type RfdetrVerdict } from "./rfdetr.js";
@@ -225,7 +224,7 @@ export function defaultStore(): VoteStore {
 
 /** Store file path (vote.json beside credentials.json). */
 export function voteStorePath(dir?: string): string {
-  return join(dir ?? configDir(), "vote.json");
+  return resolveStorePath(dir, "vote.json", configDir());
 }
 
 function saneWeight(v: unknown, fallback: number): number {
@@ -235,18 +234,16 @@ function saneWeight(v: unknown, fallback: number): number {
 /** Load the store; missing/corrupt files fall back to defaults (never throws). */
 export function loadStore(path: string): VoteStore {
   const dflt = defaultStore();
-  try {
-    if (!existsSync(path)) return dflt;
-    const raw = JSON.parse(readFileSync(path, "utf8")) as Partial<VoteStore>;
-    const store = defaultStore();
-    if (raw.weights && typeof raw.weights === "object") {
-      for (const s of SKILLS) store.weights[s] = saneWeight((raw.weights as Record<string, unknown>)[s], dflt.weights[s]!);
+  return loadJsonStore(path, defaultStore, (raw, store) => {
+    const r = raw as Partial<VoteStore>;
+    if (r.weights && typeof r.weights === "object") {
+      for (const s of SKILLS) store.weights[s] = saneWeight((r.weights as Record<string, unknown>)[s], dflt.weights[s]!);
     }
-    if (raw.skills && typeof raw.skills === "object") {
+    if (r.skills && typeof r.skills === "object") {
       for (const s of SKILLS) {
-        const t = (raw.skills as Record<string, unknown>)[s] as Partial<SkillTrack> | undefined;
+        const t = (r.skills as Record<string, unknown>)[s] as Partial<SkillTrack> | undefined;
         if (t && typeof t === "object") {
-          const results = Array.isArray(t.results) ? t.results.filter((r): r is boolean => typeof r === "boolean").slice(-HISTORY_WINDOW) : [];
+          const results = Array.isArray(t.results) ? t.results.filter((x): x is boolean => typeof x === "boolean").slice(-HISTORY_WINDOW) : [];
           store.skills[s] = {
             results,
             hits: Number.isInteger(t.hits) && (t.hits as number) >= 0 ? (t.hits as number) : 0,
@@ -255,18 +252,13 @@ export function loadStore(path: string): VoteStore {
         }
       }
     }
-    if (Array.isArray(raw.votes)) store.votes = (raw.votes as VoteRecord[]).filter((v) => v && typeof v.pair === "string").slice(-MAX_VOTES);
-    return store;
-  } catch {
-    return dflt;
-  }
+    if (Array.isArray(r.votes)) store.votes = (r.votes as VoteRecord[]).filter((v) => v && typeof v.pair === "string").slice(-MAX_VOTES);
+  });
 }
 
 /** Persist the store (creates the config dir; best-effort — callers warn, never fail the vote). */
 export function saveStore(path: string, store: VoteStore): void {
-  const dir = path.split("/").slice(0, -1).join("/") || ".";
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  writeFileSync(path, JSON.stringify(store, null, 2), { mode: 0o600 });
+  saveJsonStore(path, store);
 }
 
 /** Rolling hit-rate over the window, or null before the first scored outcome. */

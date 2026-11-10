@@ -5,9 +5,9 @@
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { makeSandbox } from "../test-fixtures.js";
 import {
   cmdPaperCreate,
   cmdPaperExecute,
@@ -24,6 +24,7 @@ import {
 } from "./paper.js";
 import { loadPaperStore } from "../paper-store.js";
 
+let sb: { dir: string; cleanup: () => void };
 let dir = "";
 let storePath = "";
 let logs: string[] = [];
@@ -33,7 +34,8 @@ let realError: typeof console.error;
 let realExitCode: typeof process.exitCode;
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), "jw3-paper-cmd-"));
+  sb = makeSandbox("jw3-paper-cmd-");
+  dir = sb.dir;
   storePath = join(dir, "paper-accounts.json");
   logs = [];
   errors = [];
@@ -49,6 +51,7 @@ afterEach(() => {
   console.log = realLog;
   console.error = realError;
   process.exitCode = realExitCode;
+  sb.cleanup();
 });
 
 const lastJson = (): unknown => JSON.parse(logs[logs.length - 1] as string);

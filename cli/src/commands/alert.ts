@@ -115,8 +115,9 @@
  * fake sender.
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
+import { configDir } from "../config.js";
+import { resolveStorePath, saveJsonStore } from "./json-store.js";
 
 /* ------------------------------------------------------------------ */
 /* types                                                              */
@@ -1356,20 +1357,14 @@ export function diffMachineState(prev: MachineSnapshot | null | undefined, next:
 /* persistence + command                                               */
 /* ------------------------------------------------------------------ */
 
-function configHome(): string {
-  if (process.env["JW3_CONFIG_HOME"]) return process.env["JW3_CONFIG_HOME"] as string;
-  const xdg = process.env["XDG_CONFIG_HOME"];
-  return xdg ? join(xdg, "jw3") : join(homedir(), ".config", "jw3");
-}
-
 /** Where the policy state (dedup keys, rate window, queue) lives. */
 export function defaultAlertStatePath(): string {
-  return join(configHome(), "alert-state.json");
+  return resolveStorePath(undefined, "alert-state.json", configDir());
 }
 
 /** Where the last machine snapshot lives (the diff's left-hand side). */
 export function defaultAlertSnapshotPath(): string {
-  return join(configHome(), "alert-snapshot.json");
+  return resolveStorePath(undefined, "alert-snapshot.json", configDir());
 }
 
 export function emptyAlertState(): AlertState {
@@ -1406,14 +1401,14 @@ export function loadAlertState(path: string): AlertState {
   };
 }
 
-/** Persist the retained policy state. */
+/**
+ * Persist the retained policy state. Saves via the shared json-store
+ * (dir 0700, file 0600); the loader accepts files with or without the
+ * trailing newline the old writer added, so previously written states
+ * load unchanged.
+ */
 export function saveAlertState(path: string, state: AlertState): void {
-  try {
-    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  } catch {
-    // best-effort; the write below still tries
-  }
-  writeFileSync(path, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+  saveJsonStore(path, state);
 }
 
 export type AlertOpts = {
@@ -1504,7 +1499,7 @@ export async function cmdAlert(opts: AlertOpts): Promise<void> {
   const send: AlertSender =
     opts.send ??
     (opts.transport === "file"
-      ? fileTransport(opts.out ?? join(configHome(), "alerts.jsonl"))
+      ? fileTransport(opts.out ?? resolveStorePath(undefined, "alerts.jsonl", configDir()))
       : consoleTransport());
 
   let sent = 0;

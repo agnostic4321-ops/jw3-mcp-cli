@@ -40,6 +40,20 @@ for name in _shared agent-chat; do
   find "$ROOT/edge-functions/$name" -name '*_test.ts' -delete
 done
 
+# Hash-parity: the materialized copies must be byte-identical to the
+# canonical sources (minus the stripped *_test.ts). A silent drift here
+# ships a stale harness surface, so fail closed instead of deploying it.
+for name in _shared agent-chat; do
+  if ! diff -rq -x '*_test.ts' -x '.DS_Store' \
+    "$SRC/supabase/functions/$name" "$ROOT/edge-functions/$name"; then
+    echo "❌ $name drift: materialized edge-functions/$name differs from $SRC/supabase/functions/$name" >&2
+    echo "   (excluding *_test.ts, which sync strips). Re-run the sync; if the" >&2
+    echo "   source moved on purpose, this gate confirms you saw the diff." >&2
+    exit 1
+  fi
+done
+echo "✅ hash-parity clean (edge-functions/{_shared,agent-chat} match the jw3_ai checkout)"
+
 # The committed tools ride these shared modules — fail closed if a source
 # edit renames them instead of deploying a silently-stale surface.
 grep -q "executeOpenOrdersRead" "$ROOT/edge-functions/agent-chat/read-tools.ts" \

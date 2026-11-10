@@ -5,7 +5,7 @@
  * dispatch-pins, json-store; the giant suites follow in the later lane).
  */
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,6 +14,12 @@ import { fileURLToPath } from "node:url";
 export function makeSandbox(prefix = "jw3-test-"): { dir: string; cleanup: () => void } {
   const dir = mkdtempSync(join(tmpdir(), prefix));
   return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
+/** Ensure a directory exists (recursive). For run-state/state-dir fixtures. */
+export function ensureDir(dir: string): string {
+  mkdirSync(dir, { recursive: true });
+  return dir;
 }
 
 /** Write a JSON file inside a sandbox dir; returns the full path. */

@@ -64,8 +64,6 @@ jw3 exits --exchange kucoin --pair BTC/USDT [--sl …] [--tp …] [--market spot
 jw3 cancel --exchange kucoin --order-id … [--pair …] [--market spot|futures] --yes [--json]
 jw3 cancel-all --exchange kucoin --pair BTC/USDT [--market spot|futures] --yes [--json]
 jw3 reconcile --exchange kucoin --pair BTC/USDT [--json]
-jw3 supervise --trail SOL/USDT:long:1 [--loop kucoin:SOL/USDT] [--config manifest.json] [--once] [--json]
-jw3d supervise …                   same supervisor via the jw3d alias (24/7 entrypoint)
 ```
 
 - `markets ending` is unauthenticated (public Gamma read, same
@@ -96,12 +94,14 @@ jw3d supervise …                   same supervisor via the jw3d alias (24/7 en
   (FINETUNE-READY at 100/200 windows). `--yes` fires step-1 + stages
   step-2 + arms TP-only exits; `degen record` closes the loop into
   heat + log. Shorts never arm an SL leg (TP-only + kill watch).
-  `--paper` runs the same loop against a separate paper book
-  (`degen-paper-heat.json` / `degen-paper-learning.jsonl`): simulated
-  fills at plan prices, zero venue contact, Diary mirror via
-  `propose_trade` ([PAPER] setup, propose scope only — never executes).
-  Refuses `--yes`/`--live`/`--trail`. `degen record --paper` closes paper
-  positions; `degen paper-stats` scores the book. Full spec:
+  `--paper` runs the same loop against the paper.ts ledger (the
+  `degen` account in `paper-accounts.json` — positions + fills, same
+  halve/flat/cooldown doctrine): a paper position at plan prices, zero
+  venue contact, Diary mirror via `propose_trade` ([PAPER] setup,
+  propose scope only — never executes). Refuses `--yes`/`--live`/
+  `--trail`. `degen record --paper` closes the paper position (exit
+  from the recorded `--pnl`, entry when none);
+  `degen paper-stats` scores the ledger. Full spec:
   `cli/PAPER_MODE.md`.
 - `trail` guards an open futures position with a ratcheting close-stop
   (public KuCoin futures ticker only — one GET per 3s poll, max 3600
@@ -192,19 +192,27 @@ jw3d supervise …                   same supervisor via the jw3d alias (24/7 en
   exist.
 - `reconcile` audits one pair's local state (scalp/grid/trail files)
   against venue truth and reports strays. Read-only, never trades.
-- `supervise` (`jw3d supervise`) is the 24/7 CLI supervisor: boot-time
-  stale-order reconcile (read-only, offline-safe), one restarted child per
-  `--trail PAIR:SIDE:SIZE` / `--loop EXCHANGE:PAIR` (or `--config`
-  manifest.json), restart-with-backoff to `--max-restarts`, heartbeat file
-  (`~/.config/jw3/supervise-heartbeat.json` every `--heartbeat-sec`,
-  default 15s), size-capped log rotation (`~/.config/jw3/logs/`,
-  5 MiB x 5). Children spawn WITHOUT `--yes` (dry-run) unless `--allow-live`
-  plus manifest `yes: true`; `--once` prints the boot report + heartbeat
-  with no processes spawned (cron-safe). Boot reconcile scans the OS
-  tmpdir state files (`--state-dir` overrides the scan; trail children
-  always write the OS tmpdir). Note: a kill -9 leaves a fresh unfinished
-  trail state that refuses restart for up to 15 min (no-double-fire gate);
-  raise `--max-restarts` to ride out the grace or remove the state by hand.
+- `daemon` (`jw3d daemon`) is the 24/7 trading supervisor and the ONLY
+  owner of the margin pool: boot-time stale-order reconcile (read-only,
+  offline-safe), one restarted child per loop of the 24/7 design
+  (signal / executor / monitor / learning), restart-with-backoff to
+  `--max-restarts`, heartbeat file (`~/.config/jw3/daemon-heartbeat.json`
+  every `--heartbeat-sec`, default 15s), size-capped log rotation
+  (`~/.config/jw3/logs/`, 5 MiB x 5), and a server kill-switch poll that
+  drains (never flattens) the moment the switch flips. The old
+  `supervise` command (ad-hoc trail/loop supervision) was folded into
+  the daemon and deleted: its restart/heartbeat/log-rotation mechanics
+  live in `daemon.ts` verbatim, and `jw3 supervise …` now falls through
+  to the normal unknown-command help. The watchdog watches the daemon's
+  heartbeat (`daemon-heartbeat.json`); a stale `supervise-heartbeat.json`
+  from an old install still parses when passed explicitly.
+- `heat` is the one heat module: margin-heat guard (`evaluateHeat`) plus
+  the degen heat-cap governor (`checkHeat`: $6 cap, max 2 concurrent,
+  halve after one stop, flat after two, 1h cooldown) and the blackout
+  window matcher the committee's event-risk seat consumes. The degen
+  heat-cap store lives in `degen-heat.json` (shared json-store helper);
+  proving (`--paper`) derives the same governor from the paper ledger
+  and never touches the live file.
 
 ## Auth
 
@@ -231,9 +239,9 @@ cd cli && npm test   # tsc build + node --test dist/
 
 ## Versions
 
-Two independent artifacts, versioned separately (C10-13 documents the
-split rather than forcing one number): the CLI client version lives in
-`cli/package.json` (printed by `jw3 --help`); the MCP server/registry
+Two independent artifacts, versioned separately: the CLI client version
+lives in `cli/package.json` and `jw3 --help` prints it from there (read
+at startup, so the help text cannot drift); the MCP server/registry
 version lives in `server.json`. Bump each where it ships — a CLI-only
 change never needs a server version bump and vice versa.
 

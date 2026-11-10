@@ -5,37 +5,47 @@
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   DEGEN_FINETUNE_AT,
+  DEGEN_PAPER_ACCOUNT,
   appendLearning,
   averagedEntry,
   averagedTpPrice,
-  checkHeat,
   cmdDegen,
   cmdDegenRecord,
+  cmdDegenRecordPaper,
   cmdPaperStats,
   degenExecuteArgs,
   degenExitsArgs,
-  degenPaperHeatPath,
-  degenPaperLogPath,
-  degenHeatPath,
   degenLogPath,
   degenRunPath,
-  defaultHeat,
-  effectiveSize,
-  loadHeat,
-  paperFillIds,
+  ensureDegenPaperAccount,
+  migrateDegenPaperOnce,
+  paperHeatOf,
   paperProposeArgs,
   rowSignals,
   screenRow,
-  summarizePaperLog,
+  summarizePaperAccount,
   validateDegenArgs,
   type DegenArgs,
-  type DegenHeat,
+  type PaperStats,
 } from "./degen.js";
+import {
+  degenHeatPath,
+  defaultHeat,
+  effectiveSize,
+  loadHeat,
+  type DegenHeat,
+} from "./heat.js";
+import {
+  getAccount,
+  loadPaperStore,
+  savePaperStore,
+  type PaperAccount,
+} from "../paper-store.js";
+import { ensureDir, makeSandbox } from "../test-fixtures.js";
 import type { FadeRow } from "../kucoin.js";
 import type { TradeCall } from "./trade.js";
 
@@ -88,6 +98,7 @@ let errs: string[];
 let logFn: typeof console.log;
 let errFn: typeof console.error;
 let sandbox: string;
+let cleanupSandbox: () => void;
 
 beforeEach(() => {
   logs = [];
@@ -97,13 +108,16 @@ beforeEach(() => {
   console.log = (...a: unknown[]) => void logs.push(a.join(" "));
   console.error = (...a: unknown[]) => void errs.push(a.join(" "));
   process.exitCode = undefined;
-  sandbox = mkdtempSync(join(tmpdir(), "degen-test-"));
+  const sb = makeSandbox("degen-test-");
+  sandbox = sb.dir;
+  cleanupSandbox = sb.cleanup;
 });
 
 afterEach(() => {
   console.log = logFn;
   console.error = errFn;
   process.exitCode = undefined;
+  cleanupSandbox();
 });
 
 const paths = () => ({
@@ -111,6 +125,7 @@ const paths = () => ({
   logPath: join(sandbox, "degen-learning.jsonl"),
   runDir: join(sandbox, "runs"),
   storePath: join(sandbox, "vote.json"),
+  paperPath: join(sandbox, "paper-accounts.json"),
 });
 
 const longOracle = async () => ({ side: "long" as const, score: 0.7, detail: "laya long" });
@@ -142,25 +157,6 @@ describe("screenRow", () => {
   });
   it("rowSignals reuses the scan classifiers", () => {
     assert.deepEqual(rowSignals(row()), { sSig: "fade-short", lSig: "extended" });
-  });
-});
-
-describe("checkHeat", () => {
-  const heat = (over: Partial<DegenHeat> = {}): DegenHeat => ({ ...defaultHeat("2026-10-14"), ...over });
-  it("clears fresh books", () => {
-    assert.equal(checkHeat(heat(), 1.5, "SOL/USDT", Date.parse("2026-10-14T10:00:00Z")), null);
-  });
-  it("flat after two stops, duplicates, caps, and cooldowns", () => {
-    assert.match(String(checkHeat(heat({ stopsToday: 2 }), 1, "SOL/USDT", Date.now())), /flat for the day/);
-    assert.match(String(checkHeat(heat({ open: [{ pair: "SOL/USDT", riskUsd: 1 }] }), 1, "sol/usdt", Date.now())), /already open/);
-    assert.match(String(checkHeat(heat({ open: [{ pair: "A/USDT", riskUsd: 1 }, { pair: "B/USDT", riskUsd: 1 }] }), 1, "C/USDT", Date.now())), /concurrent/);
-    assert.match(String(checkHeat(heat({ lastStopAt: new Date(Date.now() - 10 * 60000).toISOString() }), 1, "C/USDT", Date.now())), /cooldown/);
-    assert.match(String(checkHeat(heat({ heatUsd: 5.5 }), 1, "C/USDT", Date.now())), /heat cap/);
-    assert.match(String(checkHeat(heat(), NaN, "C/USDT", Date.now())), /unmeasurable/);
-  });
-  it("halves size after one stop", () => {
-    assert.equal(effectiveSize(15, 0), 15);
-    assert.equal(effectiveSize(15, 1), 7.5);
   });
 });
 
@@ -486,8 +482,7 @@ describe("cmdDegen fire (--yes)", () => {
     assert.equal(calls.filter(isFundMoving).length, 0);
     process.exitCode = undefined;
     const calls2: Call[] = [];
-    mkdirSync(p.runDir, { recursive: true });
-    writeFileSync(join(p.runDir, "degen_sol.json"), JSON.stringify({ kind: "degen" }));
+    writeFileSync(join(ensureDir(p.runDir), "degen_sol.json"), JSON.stringify({ kind: "degen" }));
     await cmdDegen(
       args({ pair: "SOL/USDT" }),
       { yes: true, json: false, pat: "test-pat" },
@@ -535,20 +530,20 @@ describe("appendLearning", () => {
 });
 
 describe("paper mode paths", () => {
-  it("paper book never equals the live book", () => {
-    assert.notEqual(degenPaperHeatPath(), degenHeatPath());
-    assert.notEqual(degenPaperLogPath(), degenLogPath());
+  it("paper rides paper-accounts.json, never the live heat/log/run files", () => {
+    const p = paths();
+    assert.match(p.paperPath, /paper-accounts\.json$/);
+    assert.notEqual(p.paperPath, p.heatPath);
+    assert.notEqual(p.paperPath, p.logPath);
     assert.notEqual(degenRunPath("SOL", sandbox, true), degenRunPath("SOL", sandbox, false));
-    assert.match(degenRunPath("SOL", sandbox, true), /degen_paper_sol\.json/);
   });
   it("rejects paper+live and paper+trail", () => {
     assert.match(String(validateDegenArgs(args({ paper: true, live: true }))), /never live/);
     assert.match(String(validateDegenArgs(args({ paper: true, trail: true }))), /never trails/);
     assert.equal(validateDegenArgs(args({ paper: true })), null);
   });
-  it("pure paper builders: fill ids and Diary setup args", () => {
-    assert.deepEqual(paperFillIds("SOL", 123), { step1Id: "paper-sol-123-s1", step2Id: "paper-sol-123-s2" });
-    const fills = paperFillIds("SOL", 123);
+  it("Diary setup args carry the paper thesis with paper-ledger fill ids", () => {
+    const fills = { step1Id: "paper-pos-3", step2Id: "paper-pos-3" };
     const pa = paperProposeArgs(args({ paper: true }), {
       pair: "SOL/USDT", base: "SOL", side: "long", sizeEff: 15,
       plan: { last: 100, atrPct: 0.8, tpPct: 0.32, stepDropPct: 0, steps: [], avgEntry: 100, tpPrice: 100.32, killPrice: 98, killLossUsd: 1.5, maxCapitalUsd: 30 } as never,
@@ -561,13 +556,21 @@ describe("paper mode paths", () => {
     assert.equal(pa.entry, 100);
     assert.equal(pa.timeframe, "paper");
     assert.match(String(pa.thesis), /\[PAPER\]/);
-    assert.match(String(pa.thesis), /paper-sol-123-s1/);
+    assert.match(String(pa.thesis), /paper-pos-3/);
+  });
+  it("derives heat from the paper ledger, never the live file", () => {
+    const p = paths();
+    const store = loadPaperStore(p.paperPath);
+    assert.equal(ensureDegenPaperAccount(store, p.paperPath), true);
+    const now = Date.parse("2026-10-14T10:00:00Z");
+    const heat = paperHeatOf(getAccount(store, DEGEN_PAPER_ACCOUNT) as PaperAccount, now);
+    assert.deepEqual(heat, { day: "2026-10-14", stopsToday: 0, heatUsd: 0, open: [], lastStopAt: null });
   });
 });
 
 describe("cmdDegen --paper", () => {
   const VENUE_CALLS = new Set(["execute_trade", "close_position", "set_exits", "cancel_order", "list_open_orders"]);
-  it("simulates fills with zero venue contact, records Diary setup + paper ledger", async () => {
+  it("opens a paper position with zero venue contact, Diary setup only", async () => {
     const p = paths();
     const calls: Call[] = [];
     const call = spyCall(calls, (c) => {
@@ -585,16 +588,22 @@ describe("cmdDegen --paper", () => {
     assert.match(logs.join("\n"), /PAPER — simulated fills/);
     assert.match(logs.join("\n"), /diary: PAPER setup paper-setup-1/);
     assert.match(logs.join("\n"), /degen record --paper --pair SOL\/USDT/);
-    const lines = readFileSync(p.logPath, "utf8").split("\n").filter((l) => l.trim());
-    assert.equal(lines.length, 1);
-    const e = JSON.parse(lines[0] as string) as Record<string, unknown>;
-    assert.equal(e.mode, "paper");
-    assert.equal(e.outcome, "pending");
-    assert.match(String((e.fills as Record<string, string>).step1Id), /^paper-sol-/);
-    const heat = loadHeat(p.heatPath);
-    assert.deepEqual(heat.open.map((o) => o.pair), ["SOL/USDT"]);
-    const run = JSON.parse(readFileSync(join(p.runDir, "degen_paper_sol.json"), "utf8")) as Record<string, unknown>;
-    assert.equal(run.kind, "degen-paper");
+    // The paper ledger owns the fill: a degen-strategy position with TP/SL armed.
+    const acct = getAccount(loadPaperStore(p.paperPath), DEGEN_PAPER_ACCOUNT);
+    assert.ok(acct);
+    assert.equal(acct.positions.length, 1);
+    const pos = acct.positions[0] as PaperAccount["positions"][number];
+    assert.equal(pos.pair, "SOL/USDT");
+    assert.equal(pos.side, "long");
+    assert.equal(pos.strategy, "degen");
+    assert.ok(pos.entryPrice > 0 && pos.qty > 0);
+    assert.ok(pos.tp !== null && pos.tp > pos.entryPrice);
+    assert.ok(pos.sl !== null && pos.sl < pos.entryPrice);
+    const opens = acct.fills.filter((f) => f.kind === "open" && f.strategy === "degen");
+    assert.equal(opens.length, 1);
+    // The legacy paper paths are never written.
+    assert.equal(existsSync(join(sandbox, "degen-paper-heat.json")), false);
+    assert.equal(existsSync(join(sandbox, "degen-paper-learning.jsonl")), false);
   });
   it("paper without PAT still records locally and says so", async () => {
     const p = paths();
@@ -619,6 +628,8 @@ describe("cmdDegen --paper", () => {
     assert.equal(calls.length, 0);
     assert.match(logs.join("\n"), /no PAT — paper kept locally/);
     assert.match(logs.join("\n"), /"mode": "paper"/);
+    const acct = getAccount(loadPaperStore(p.paperPath), DEGEN_PAPER_ACCOUNT);
+    assert.equal(acct?.positions.length, 1);
   });
   it("diary failure warns but never loses the paper fill", async () => {
     const p = paths();
@@ -637,8 +648,8 @@ describe("cmdDegen --paper", () => {
     );
     assert.equal(process.exitCode, undefined);
     assert.match(logs.join("\n"), /diary write failed/);
-    const lines = readFileSync(p.logPath, "utf8").split("\n").filter((l) => l.trim());
-    assert.equal((JSON.parse(lines[0] as string) as { mode: string }).mode, "paper");
+    const acct = getAccount(loadPaperStore(p.paperPath), DEGEN_PAPER_ACCOUNT);
+    assert.equal(acct?.positions.length, 1);
   });
   it("refuses --paper --yes with exit 2 and writes nothing", async () => {
     const p = paths();
@@ -651,8 +662,9 @@ describe("cmdDegen --paper", () => {
     assert.equal(process.exitCode, 2);
     assert.equal(calls.length, 0);
     assert.match(errs.join("\n"), /never fires/);
+    assert.equal(existsSync(p.paperPath), false);
   });
-  it("refuses a second paper fire on the same pair (governor, then run state)", async () => {
+  it("refuses a second paper fire on the same pair (governor)", async () => {
     const p = paths();
     const calls: Call[] = [];
     const now = () => 1700000000000;
@@ -668,69 +680,193 @@ describe("cmdDegen --paper", () => {
     await run();
     assert.match(logs.join("\n"), /governor STOP.*already open/);
     assert.equal(calls.length, first);
-    // Heat cleared but run state still on disk → the paper run-state gate fires.
-    const day = new Date(now()).toISOString().slice(0, 10);
-    writeFileSync(p.heatPath, JSON.stringify({ day, stopsToday: 0, heatUsd: 0, open: [], lastStopAt: null }));
-    process.exitCode = undefined;
-    errs = [];
-    await run();
+    const acct = getAccount(loadPaperStore(p.paperPath), DEGEN_PAPER_ACCOUNT);
+    assert.equal(acct?.positions.length, 1);
+  });
+  it("insufficient paper cash refuses the fill with exit 1", async () => {
+    const p = paths();
+    const store = loadPaperStore(p.paperPath);
+    assert.equal(ensureDegenPaperAccount(store, p.paperPath), true);
+    // Drain the account: size 15 x2 needs margin + fee, $1 cannot cover it.
+    const acct = getAccount(store, DEGEN_PAPER_ACCOUNT) as PaperAccount;
+    acct.cashUsd = 1;
+    savePaperStore(p.paperPath, store);
+    await cmdDegen(
+      args({ pair: "SOL/USDT", sizeUsd: 15, leverage: 2, paper: true }),
+      { yes: false, json: false, pat: "test-pat" },
+      { fade: async () => row(), oracle: longOracle, spec, call: spyCall([]), ...p, now: () => 1700000000000 },
+    );
     assert.equal(process.exitCode, 1);
-    assert.equal(calls.length, first);
-    assert.match(errs.join("\n"), /paper state exists/);
+    assert.match(errs.join("\n"), /insufficient paper cash/);
   });
 });
 
 describe("paper record + stats", () => {
-  it("record --paper closes the paper book and leaves the live book alone", async () => {
+  const openViaLoop = (p: ReturnType<typeof paths>, pair = "SOL/USDT") =>
+    cmdDegen(
+      args({ pair, paper: true }),
+      { yes: false, json: false, pat: "test-pat" },
+      { fade: async () => row(), oracle: longOracle, spec, call: spyCall([]), ...p, now: () => 1700000000000 },
+    );
+  it("record --paper closes the position; the exit derives from the recorded pnl", async () => {
+    const p = paths();
+    await openViaLoop(p);
+    process.exitCode = undefined;
+    logs = [];
+    // Step-1 fills 15 USD at the plan price: exit = entry + pnl/qty.
+    await cmdDegenRecord({ pair: "SOL/USDT", outcome: "win", pnl: 2.25, paper: true, json: false, paperPath: p.paperPath }, { now: () => 1700000000000 });
+    assert.equal(process.exitCode, undefined);
+    const acct = getAccount(loadPaperStore(p.paperPath), DEGEN_PAPER_ACCOUNT) as PaperAccount;
+    assert.equal(acct.positions.length, 0);
+    const wins = acct.fills.filter((f) => f.kind === "tp" && f.strategy === "degen");
+    assert.equal(wins.length, 1);
+    assert.ok(Math.abs((wins[0]?.pnlUsd ?? NaN) - 2.25) < 1e-9, `pnl round-trips through the derived exit: ${wins[0]?.pnlUsd}`);
+    assert.match(logs.join("\n"), /PAPER RECORDED WIN/);
+    assert.match(logs.join("\n"), /stops today 0/);
+  });
+  it("stops and red losses count; halving then flat follows the ledger", async () => {
+    const p = paths();
+    await openViaLoop(p, "SOL/USDT");
+    await openViaLoop(p, "ETH/USDT");
+    process.exitCode = undefined;
+    logs = [];
+    await cmdDegenRecordPaper("SOL/USDT", "stop", undefined, false, p.paperPath, 1700000000000);
+    assert.match(logs.join("\n"), /stops today 1/);
+    assert.match(logs.join("\n"), /Halve rule live/);
+    logs = [];
+    await cmdDegenRecordPaper("ETH/USDT", "loss", -1.5, false, p.paperPath, 1700000000000);
+    assert.match(logs.join("\n"), /stops today 2/);
+    assert.match(logs.join("\n"), /Flat for the day/);
+    // The second fire is now governor-blocked (flat for the day).
+    process.exitCode = undefined;
+    logs = [];
+    const calls: Call[] = [];
+    await cmdDegen(
+      args({ pair: "BTC/USDT", paper: true }),
+      { yes: false, json: false, pat: "test-pat" },
+      { fade: async () => row(), oracle: longOracle, spec, call: spyCall(calls), ...p, now: () => 1700000000000 },
+    );
+    assert.match(logs.join("\n"), /governor STOP.*flat for the day/);
+  });
+  it("record --paper with no open position errors and writes nothing", async () => {
+    const p = paths();
+    await cmdDegenRecord({ pair: "SOL/USDT", outcome: "win", paper: true, json: false, paperPath: p.paperPath }, { now: () => 1700000000000 });
+    assert.equal(process.exitCode, 1);
+    assert.match(errs.join("\n"), /No open degen paper position/);
+  });
+  it("record --paper leaves the live book alone", async () => {
     const p = paths();
     const liveHeat = join(sandbox, "live-heat.json");
     const liveLog = join(sandbox, "live-log.jsonl");
-    const now = Date.now();
-    const day = new Date(now).toISOString().slice(0, 10);
-    writeFileSync(p.heatPath, JSON.stringify({ day, stopsToday: 0, heatUsd: 1.5, open: [{ pair: "SOL/USDT", riskUsd: 1.5 }], lastStopAt: null }));
-    await cmdDegenRecord({ pair: "SOL/USDT", outcome: "win", pnl: 2.25, paper: true, json: false, ...p }, { now: () => now });
-    let heat = loadHeat(p.heatPath, now);
-    assert.deepEqual(heat.open, []);
-    assert.match(logs.join("\n"), /PAPER RECORDED WIN/);
-    const rec = JSON.parse(readFileSync(p.logPath, "utf8").split("\n").filter((l) => l.trim()).pop() as string) as Record<string, unknown>;
-    assert.equal(rec.paper, true);
-    assert.equal(rec.pnlUsd, 2.25);
-    // Live book paths untouched: nothing written where the live book lives.
+    await openViaLoop(p);
+    process.exitCode = undefined;
+    await cmdDegenRecord(
+      { pair: "SOL/USDT", outcome: "win", paper: true, json: false, paperPath: p.paperPath, heatPath: liveHeat, logPath: liveLog },
+      { now: () => 1700000000000 },
+    );
+    assert.equal(process.exitCode, undefined);
     assert.equal(existsSync(liveHeat), false);
     assert.equal(existsSync(liveLog), false);
-    heat = loadHeat(p.heatPath, now);
-    assert.equal(heat.stopsToday, 0);
   });
-  it("summarizePaperLog scores fills vs paper records only", () => {
-    const text = [
-      JSON.stringify({ mode: "paper", outcome: "pending", pair: "SOL/USDT" }),
-      JSON.stringify({ mode: "paper", outcome: "pending", pair: "ETH/USDT" }),
-      JSON.stringify({ mode: "record", paper: true, outcome: "win", pnlUsd: 2.5 }),
-      JSON.stringify({ mode: "record", paper: true, outcome: "stop", pnlUsd: -1.5 }),
-      JSON.stringify({ mode: "record", outcome: "win", pnlUsd: 999 }),
-      JSON.stringify({ mode: "preview", outcome: "pending" }),
-      "not json",
-    ].join("\n");
-    const s = summarizePaperLog(text, ["ETH/USDT"]);
-    assert.deepEqual(s, { fills: 2, wins: 1, losses: 0, stops: 1, scratches: 0, pending: 0, netUsd: 1, open: ["ETH/USDT"] });
+  it("summarizePaperAccount scores fills vs closes, strategy-scoped", () => {
+    const acct = {
+      positions: [
+        { pair: "SOL/USDT", strategy: "degen" },
+        { pair: "OTHER/USDT", strategy: "manual" },
+      ],
+      fills: [
+        { kind: "open", strategy: "degen", pair: "SOL/USDT" },
+        { kind: "tp", strategy: "degen", pair: "SOL/USDT", pnlUsd: 2.5 },
+        { kind: "sl", strategy: "degen", pair: "SOL/USDT", pnlUsd: -1.5 },
+        { kind: "close", strategy: "degen", pair: "SOL/USDT", pnlUsd: -0.5 },
+        { kind: "close", strategy: "degen", pair: "SOL/USDT", pnlUsd: 0 },
+        { kind: "tp", strategy: "manual", pair: "OTHER/USDT", pnlUsd: 999 },
+      ],
+    } as unknown as PaperAccount;
+    const s = summarizePaperAccount(acct);
+    assert.deepEqual(s, { fills: 1, wins: 1, losses: 1, stops: 1, scratches: 1, pending: 0, netUsd: 0.5, open: ["SOL/USDT"] } as PaperStats);
   });
   it("paper-stats reports the book and the empty book", async () => {
     const p = paths();
-    await cmdPaperStats({ json: false, logPath: p.logPath, heatPath: p.heatPath });
+    await cmdPaperStats({ json: false, paperPath: p.paperPath });
     assert.match(logs.join("\n"), /no paper fills yet/);
     logs = [];
-    const now = Date.now();
-    const day = new Date(now).toISOString().slice(0, 10);
-    writeFileSync(p.logPath, [
-      JSON.stringify({ mode: "paper", outcome: "pending", pair: "SOL/USDT" }),
-      JSON.stringify({ mode: "record", paper: true, outcome: "win", pnlUsd: 2.5, pair: "SOL/USDT" }),
-    ].join("\n") + "\n");
-    writeFileSync(p.heatPath, JSON.stringify({ day, stopsToday: 0, heatUsd: 0, open: [], lastStopAt: null }));
-    await cmdPaperStats({ json: true, logPath: p.logPath, heatPath: p.heatPath });
+    await openViaLoop(p);
+    process.exitCode = undefined;
+    logs = [];
+    await cmdDegenRecordPaper("SOL/USDT", "win", 2.5, true, p.paperPath, 1700000000000);
     const out = JSON.parse(logs[logs.length - 1] as string) as Record<string, unknown>;
-    assert.equal(out.book, "paper");
-    assert.equal(out.fills, 1);
-    assert.equal(out.wins, 1);
-    assert.equal(out.netUsd, 2.5);
+    assert.equal(out.pair, "SOL/USDT");
+    logs = [];
+    await cmdPaperStats({ json: true, paperPath: p.paperPath });
+    const stats = JSON.parse(logs[logs.length - 1] as string) as Record<string, unknown>;
+    assert.equal(stats.book, "paper");
+    assert.equal(stats.fills, 1);
+    assert.equal(stats.wins, 1);
+    assert.ok(Math.abs((stats.netUsd as number) - 2.5) < 1e-9, `net round-trips through the derived exit: ${stats.netUsd}`);
+    assert.deepEqual(stats.open, []);
+  });
+});
+
+describe("legacy paper migration", () => {
+  it("imports run states + matched outcomes once, then renames the legacy files", () => {
+    const dir = sandbox;
+    const paperPath = join(dir, "paper-accounts.json");
+    const heatPath = join(dir, "degen-paper-heat.json");
+    const logPath = join(dir, "degen-paper-learning.jsonl");
+    const runDir = join(dir, "runs");
+    // OLD-format fixtures: exactly what the pre-OQ-13 code wrote.
+    writeFileSync(heatPath, JSON.stringify({ day: "2026-10-14", stopsToday: 0, heatUsd: 1.5, open: [{ pair: "SOL/USDT", riskUsd: 1.5 }], lastStopAt: null }, null, 2));
+    writeFileSync(
+      join(ensureDir(runDir), "degen_paper_sol.json"),
+      JSON.stringify({ kind: "degen-paper", exchange: "kucoin", pair: "SOL/USDT", base: "SOL", side: "long", leverage: 2, step1: { contracts: 1, price: 100, sizeUsd: 15 }, step2: { contracts: 1, price: 99, sizeUsd: 15 }, tp1Price: 100.32, killPrice: 98 }),
+    );
+    writeFileSync(
+      logPath,
+      [
+        JSON.stringify({ at: "2026-10-14T09:00:00.000Z", pair: "SOL/USDT", side: "long", mode: "paper", outcome: "pending", reason: "paper fill (no venue)" }),
+        JSON.stringify({ at: "2026-10-14T10:00:00.000Z", pair: "SOL/USDT", mode: "record", paper: true, outcome: "win", pnlUsd: 2.5 }),
+      ].join("\n") + "\n",
+    );
+    const mig = migrateDegenPaperOnce({ paperPath, heatPath, logPath, runDir, nowMs: Date.parse("2026-10-14T11:00:00Z") });
+    assert.equal(mig.migrated, true);
+    assert.equal(mig.positions, 1);
+    assert.equal(mig.closed, 1);
+    assert.equal(mig.skipped, 0);
+    assert.deepEqual(mig.warnings, []);
+    const acct = getAccount(loadPaperStore(paperPath), DEGEN_PAPER_ACCOUNT) as PaperAccount;
+    assert.equal(acct.positions.length, 0);
+    const wins = acct.fills.filter((f) => f.kind === "tp" && f.strategy === "degen");
+    assert.equal(wins.length, 1);
+    assert.ok(Math.abs((wins[0]?.pnlUsd ?? NaN) - 2.5) < 1e-9, `migrated pnl round-trips through the derived exit: ${wins[0]?.pnlUsd}`);
+    // Legacy paths renamed, never written again.
+    assert.equal(existsSync(heatPath), false);
+    assert.equal(existsSync(logPath), false);
+    assert.equal(existsSync(join(runDir, "degen_paper_sol.json")), false);
+    assert.equal(existsSync(`${heatPath}.migrated`), true);
+    assert.equal(existsSync(`${logPath}.migrated`), true);
+    // Second run is a no-op.
+    const again = migrateDegenPaperOnce({ paperPath, heatPath, logPath, runDir });
+    assert.equal(again.migrated, false);
+  });
+  it("skips heat-only opens and orphan outcomes loudly, without losing them silently", () => {
+    const dir = sandbox;
+    const paperPath = join(dir, "paper-accounts.json");
+    const heatPath = join(dir, "degen-paper-heat.json");
+    const logPath = join(dir, "degen-paper-learning.jsonl");
+    writeFileSync(heatPath, JSON.stringify({ day: "2026-10-14", stopsToday: 1, heatUsd: 0.5, open: [{ pair: "GHOST/USDT", riskUsd: 0.5 }], lastStopAt: null }, null, 2));
+    writeFileSync(logPath, JSON.stringify({ at: "2026-10-14T10:00:00.000Z", pair: "GHOST/USDT", mode: "record", paper: true, outcome: "stop", pnlUsd: -1 }) + "\n");
+    const mig = migrateDegenPaperOnce({ paperPath, heatPath, logPath, runDir: join(dir, "empty-runs"), nowMs: Date.parse("2026-10-14T11:00:00Z") });
+    assert.equal(mig.migrated, true);
+    assert.equal(mig.positions, 0);
+    assert.equal(mig.closed, 0);
+    assert.equal(mig.skipped, 2);
+    assert.equal(mig.warnings.length, 2);
+    const acct = getAccount(loadPaperStore(paperPath), DEGEN_PAPER_ACCOUNT) as PaperAccount;
+    assert.equal(acct.positions.length, 0);
+  });
+  it("does nothing when no legacy files exist", () => {
+    const mig = migrateDegenPaperOnce({ paperPath: join(sandbox, "paper-accounts.json"), heatPath: join(sandbox, "no-heat.json"), logPath: join(sandbox, "no-log.jsonl"), runDir: join(sandbox, "no-runs") });
+    assert.equal(mig.migrated, false);
   });
 });

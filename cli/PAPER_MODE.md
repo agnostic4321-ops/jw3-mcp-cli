@@ -23,36 +23,46 @@ jw3 degen paper-stats [--json]
    never a smaller trade), heat governor (`checkHeat`), ATR-derived plan
    (`planScalp`), step-2 averaging math — through the same pure functions.
    A paper pass means the live loop would have passed with the same tape.
-2. **Separate book.** Paper state lives apart from the live book so proving
-   never consumes live heat or blocks live fire:
-   - heat: `~/.config/jw3/degen-paper-heat.json` (`JW3_CONFIG_HOME` override)
-   - learning/diary log: `~/.config/jw3/degen-paper-learning.jsonl`
-   - run state: `$TMPDIR/degen_paper_<base>.json`
+2. **One ledger.** Paper state lives in the paper.ts ledger, not in
+   degen-owned files: the `degen` account inside
+   `~/.config/jw3/paper-accounts.json` (`JW3_CONFIG_HOME` override),
+   positions + fills with strategy `degen`. Proving never consumes live
+   heat or blocks live fire — the paper heat governor derives from the
+   paper account (open paper stops, the day's sl fills) instead of a
+   paper heat file. Legacy `degen-paper-heat.json` /
+   `degen-paper-learning.jsonl` / `degen_paper_*.json` files are migrated
+   once (run states → positions, matched `record` lines → closes) and
+   renamed to `.migrated`; nothing writes them after that.
    Same caps, same halve-after-stop / flat-after-two / cooldown rules.
-3. **Simulated fills, zero venue contact.** On a pass, fills are simulated at
-   plan prices (`paper-<base>-<ms>-s1/s2/tp` ids). The ONLY network write is
+3. **Simulated fills, zero venue contact.** On a pass, a paper position
+   opens in the `degen` paper account at plan prices (step-1 size at the
+   touch price, taker fee, TP at the step-1 target, paper stop at the kill
+   line). The ONLY network write is
    `propose_trade` (Diary setup, `trade:propose` scope — never
    `trade:execute`), with a `[PAPER]` thesis carrying entry/stop/size/TP/kill
-   and the simulated fill ids. No PAT → paper still records locally and says
+   and the paper position/fill ids. No PAT → paper still records locally and says
    so; the local paper ledger is the source of truth, the Diary row is
    visibility. A `propose_trade` failure warns but never loses the local fill.
 4. **Refused combinations (exit 2).** `--paper --yes`, `--paper --live`,
    `--paper --trail` are rejected: paper never fires, never arms a live
    trail, never needs `--yes` (nothing moves). Because `--yes` is refused,
    paper can never be one flag-flip away from real money.
-5. **Close the loop.** `degen record --paper --outcome … [--pnl …]` frees the
-   pair's paper heat, applies stop counting/halve/cooldown to the paper book,
-   and appends a `record` line (`paper: true`) with the realized pnl.
-6. **Score the book.** `degen paper-stats` scores the paper learning log:
-   fills, outcomes, net USD from recorded pnls, open paper risk. GO/NO-GO is a
-   human call — paper-stats reports, never fires.
+5. **Close the loop.** `degen record --paper --outcome … [--pnl …]` closes
+   the paper position in the `degen` account (exit derived from the
+   recorded pnl at zero fee, entry when none) and applies stop counting
+   (sl fills, plus red closes) / halve / cooldown to the paper book.
+6. **Score the book.** `degen paper-stats` scores the `degen` account's
+   fills: opens vs tp/sl/close outcomes, net USD, open risk. GO/NO-GO is
+   a human call — paper-stats reports, never fires.
 
-## Learning-log schema (additive)
+## Paper ledger schema (positions, not log lines)
 
-- open: `{…, mode: "paper", fills: {step1Id, step2Id, …}, diary: {setupId} | {skipped}, outcome: "pending", reason: "paper fill (no venue)"}`
-- record: `{…, mode: "record", paper: true, outcome, pnlUsd?}`
-- no-trade lines are unchanged (paper screens log the same `no-trade` shape
-  into the paper log).
+- open: `openPaperPosition` with strategy `degen`, qty = step-1 sizeUsd /
+  step-1 price, taker fee, tp = step-1 target, sl = kill line
+- close: `closePaperPosition` by outcome — win → `tp`, stop/loss → `sl`,
+  scratch → `close` (fee-free; pnl from the derived exit)
+- heat: `paperHeatOf` derives opens / stops-today / heatUsd /
+  lastStopAt from the account each run — no heat file
 
 ## Invariants (tested)
 
@@ -60,7 +70,7 @@ jw3 degen paper-stats [--json]
   (`list_open_orders` included) — the only allowed tool call is
   `propose_trade`.
 - `--paper --yes|--live|--trail` → exit 2, nothing written.
-- Paper heat/log/run paths never equal the live paths.
+- Paper ledger path never equals the live heat/log paths.
 - Live `degen record` never touches the paper book and vice versa.
 
 ## Non-goals / follow-ups

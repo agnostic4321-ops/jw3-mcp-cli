@@ -12,7 +12,9 @@
  */
 import { callTool } from "../mcp.js";
 import { isOpenPosition, readLocalStates, rowMatchesPair, rowPairOf, type LocalState } from "../reconcile.js";
+import { configDir } from "../config.js";
 import { collectRows, listConnections, needPat, pickConnection } from "./market.js";
+import { loadJsonStore, resolveStorePath, saveJsonStore } from "./json-store.js";
 
 export type HeatFlag = { level: "error" | "warn"; code: string; detail: string };
 
@@ -257,6 +259,173 @@ export function evaluateHeat(args: {
     flags,
     clean: errors.length === 0,
   };
+}
+
+/* ------------------------------------------------------------------ */
+/* Heat-cap governor — the ONE heat-cap store (OQ-14).                 */
+/*                                                                     */
+/* Moved verbatim from commands/degen.ts: same type, same file         */
+/* (degen-heat.json), same sanitizer including the day roll; only the  */
+/* mechanics (path/load/save) ride the shared json-store helper. The   */
+/* degen command imports this module — there is one implementation.    */
+/* ------------------------------------------------------------------ */
+
+export type DegenHeatOpen = { pair: string; riskUsd: number };
+
+export type DegenHeat = {
+  day: string;
+  stopsToday: number;
+  heatUsd: number;
+  open: DegenHeatOpen[];
+  lastStopAt: string | null;
+};
+
+/** Owner-ordered risk doctrine (see skill lessons: 30%-risk math). */
+export const DEGEN_HEAT_CAP_USD = 6;
+export const DEGEN_MAX_CONCURRENT = 2;
+export const DEGEN_MAX_STOPS_PER_DAY = 2;
+export const DEGEN_COOLDOWN_MS = 3600 * 1000;
+
+export type HeatCaps = {
+  maxHeatUsd: number;
+  maxConcurrent: number;
+  cooldownMs: number;
+  maxStops: number;
+};
+
+export const DEFAULT_HEAT_CAPS: HeatCaps = {
+  maxHeatUsd: DEGEN_HEAT_CAP_USD,
+  maxConcurrent: DEGEN_MAX_CONCURRENT,
+  cooldownMs: DEGEN_COOLDOWN_MS,
+  maxStops: DEGEN_MAX_STOPS_PER_DAY,
+};
+
+export function degenHeatPath(dir?: string): string {
+  return resolveStorePath(dir, "degen-heat.json", configDir());
+}
+
+export function degenToday(nowMs: number): string {
+  return new Date(nowMs).toISOString().slice(0, 10);
+}
+
+export function defaultHeat(day: string): DegenHeat {
+  return { day, stopsToday: 0, heatUsd: 0, open: [], lastStopAt: null };
+}
+
+/** Load heat; missing/corrupt → defaults. Day roll resets the counters. */
+export function loadHeat(path: string, nowMs: number = Date.now()): DegenHeat {
+  const day = degenToday(nowMs);
+  return loadJsonStore(path, () => defaultHeat(day), (raw, into) => {
+    const r = raw as Partial<DegenHeat>;
+    const open = Array.isArray(r.open)
+      ? r.open.filter(
+          (o): o is DegenHeatOpen =>
+            !!o && typeof o === "object" && typeof o.pair === "string" && Number.isFinite(o.riskUsd),
+        )
+      : [];
+    if (typeof r.day === "string") into.day = r.day;
+    if (Number.isInteger(r.stopsToday) && (r.stopsToday as number) >= 0) {
+      into.stopsToday = r.stopsToday as number;
+    }
+    if (Number.isFinite(r.heatUsd) && (r.heatUsd as number) >= 0) {
+      into.heatUsd = r.heatUsd as number;
+    }
+    into.open = open;
+    if (typeof r.lastStopAt === "string") into.lastStopAt = r.lastStopAt;
+    if (into.day !== day) {
+      into.day = day;
+      into.stopsToday = 0;
+      into.heatUsd = 0;
+    }
+  });
+}
+
+export function saveHeat(path: string, heat: DegenHeat): void {
+  saveJsonStore(path, heat);
+}
+
+/**
+ * Pure heat-cap governor. Null = clear to open this risk.
+ * Priority: day-flat → duplicate pair → concurrent cap → cooldown → heat cap.
+ */
+export function checkHeat(
+  heat: DegenHeat,
+  killLossUsd: number,
+  pair: string,
+  nowMs: number,
+  caps: HeatCaps = DEFAULT_HEAT_CAPS,
+): string | null {
+  if (heat.stopsToday >= caps.maxStops) {
+    return `flat for the day after ${heat.stopsToday} full stops — no new risk`;
+  }
+  if (heat.open.some((o) => o.pair.toUpperCase() === pair.toUpperCase())) {
+    return `${pair} already open in the degen book — no double-fire`;
+  }
+  if (heat.open.length >= caps.maxConcurrent) {
+    return `max ${caps.maxConcurrent} concurrent positions (${heat.open.map((o) => o.pair).join(", ")})`;
+  }
+  if (heat.lastStopAt) {
+    const since = nowMs - Date.parse(heat.lastStopAt);
+    if (Number.isFinite(since) && since >= 0 && since < caps.cooldownMs) {
+      const mins = Math.ceil((caps.cooldownMs - since) / 60000);
+      return `cooldown after full stop — ${mins}m left`;
+    }
+  }
+  if (!(killLossUsd > 0) || !Number.isFinite(killLossUsd)) {
+    return "unmeasurable kill-line cost — refusing unsized risk";
+  }
+  if (heat.heatUsd + killLossUsd > caps.maxHeatUsd) {
+    return `heat cap $${caps.maxHeatUsd} would break ($${heat.heatUsd.toFixed(2)} open + $${killLossUsd.toFixed(2)} new)`;
+  }
+  return null;
+}
+
+/** Halve size after one full stop (the overbet brake); 2 stops = flat. */
+export function effectiveSize(sizeUsd: number, stopsToday: number): number {
+  return stopsToday >= 1 ? sizeUsd / 2 : sizeUsd;
+}
+
+/* ------------------------------------------------------------------ */
+/* Blackout windows — the ONE window-matching implementation (OQ-14).  */
+/*                                                                     */
+/* Moved verbatim from commands/committee.ts: the committee's event-   */
+/* risk seat consumes these instead of its own copy. One type, one     */
+/* matcher, one set of veto strings.                                   */
+/* ------------------------------------------------------------------ */
+
+/** Calendar-verified blackout window (UTC minutes-of-day). */
+export type HeatBlackoutWindow = {
+  name: string;
+  /** Minutes since UTC midnight, inclusive. */
+  startMin: number;
+  /** Minutes since UTC midnight, exclusive. */
+  endMin: number;
+};
+
+/** Pure: true when `minutes` (UTC minutes-of-day) falls inside the window. */
+export function inUtcWindow(minutes: number, startMin: number, endMin: number): boolean {
+  if (!Number.isFinite(minutes) || !Number.isFinite(startMin) || !Number.isFinite(endMin)) return false;
+  if (startMin === endMin) return false;
+  if (startMin < endMin) return minutes >= startMin && minutes < endMin;
+  // window wraps past midnight
+  return minutes >= startMin || minutes < endMin;
+}
+
+/** Pure: blackout-window vetoes for one minute-of-day (rule + detail). */
+export function blackoutWindowVetoes(
+  windows: readonly HeatBlackoutWindow[] | undefined,
+  minutes: number,
+): { rule: string; detail: string }[] {
+  const vetoes: { rule: string; detail: string }[] = [];
+  for (const bw of windows ?? []) {
+    if (inUtcWindow(minutes, bw.startMin, bw.endMin)) {
+      vetoes.push({
+        rule: `blackout:${bw.name}`,
+        detail: `${bw.name} blackout ${String(bw.startMin).padStart(4, "0")}-${String(bw.endMin).padStart(4, "0")}Z — no directional entries`,
+      });
+    }
+  }
+  return vetoes;
 }
 
 export type HeatDeps = {

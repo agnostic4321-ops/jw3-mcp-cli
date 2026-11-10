@@ -1,8 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { makeSandbox } from "../test-fixtures.js";
 import {
   CONFIDENCE_Z,
   GATE_HIT_FLOOR,
@@ -704,30 +704,74 @@ describe("the vote-store bridge", () => {
   });
   it("the vote store survives the round trip — vote.ts loadStore keeps the patch", async () => {
     const { loadStore, saveStore, voteStorePath } = await import("./vote.js");
-    const dir = mkdtempSync(join(tmpdir(), "jw3-score-"));
-    const path = voteStorePath(dir);
-    const voteStore = defaultStore();
-    const scoreStore = storeWith("kronos", 20, 30);
-    applyVotePatches(voteStore, projectVotePatches(scoreStore));
-    saveStore(path, voteStore);
-    const back = loadStore(path);
-    assert.equal(back.weights["kronos"], voteStore.weights["kronos"]!);
-    assert.deepEqual(back.skills["kronos"]!.results, voteStore.skills["kronos"]!.results);
-    assert.equal(back.skills["kronos"]!.total, voteStore.skills["kronos"]!.total);
+    const sb = makeSandbox("jw3-score-");
+    try {
+      const path = voteStorePath(sb.dir);
+      const voteStore = defaultStore();
+      const scoreStore = storeWith("kronos", 20, 30);
+      applyVotePatches(voteStore, projectVotePatches(scoreStore));
+      saveStore(path, voteStore);
+      const back = loadStore(path);
+      assert.equal(back.weights["kronos"], voteStore.weights["kronos"]!);
+      assert.deepEqual(back.skills["kronos"]!.results, voteStore.skills["kronos"]!.results);
+      assert.equal(back.skills["kronos"]!.total, voteStore.skills["kronos"]!.total);
+    } finally {
+      sb.cleanup();
+    }
   });
 });
 
 describe("score store persistence", () => {
   it("round-trips through disk; missing/corrupt falls back to defaults", () => {
-    const dir = mkdtempSync(join(tmpdir(), "jw3-score-"));
-    const path = scoreStorePath(dir);
-    const store = scoreMany(defaultScoreStore(), [trade({ signals: [sig("jev", "long")] })]);
-    saveScoreStore(path, store);
-    const back = loadScoreStore(path);
-    assert.equal(back.models["jev"]!.total, 1);
-    assert.equal(back.models["jev"]!.hits, 1);
-    assert.deepEqual(back.models["jev"]!.results, [true]);
-    assert.equal(loadScoreStore(join(dir, "nope.json")).models["jev"]!.total, 0);
+    const sb = makeSandbox("jw3-score-");
+    try {
+      const path = scoreStorePath(sb.dir);
+      const store = scoreMany(defaultScoreStore(), [trade({ signals: [sig("jev", "long")] })]);
+      saveScoreStore(path, store);
+      const back = loadScoreStore(path);
+      assert.equal(back.models["jev"]!.total, 1);
+      assert.equal(back.models["jev"]!.hits, 1);
+      assert.deepEqual(back.models["jev"]!.results, [true]);
+      assert.equal(loadScoreStore(join(sb.dir, "nope.json")).models["jev"]!.total, 0);
+    } finally {
+      sb.cleanup();
+    }
+  });
+  it("loads a file written in the OLD format unchanged", () => {
+    const sb = makeSandbox("jw3-score-");
+    try {
+      // Byte shape of the old saveScoreStore: JSON.stringify(store, null, 2)
+      // plus unknown fields the sanitizer must ignore.
+      const old = {
+        version: 1,
+        models: {
+          jev: {
+            total: 2, hits: 1, results: [true, false, "x"],
+            history: [{ pair: "SOL/USDT", side: "long" }, { pair: 42 }],
+            sides: { long: { total: 2, hits: 1, results: [true, "x"], pnlUsd: 1.5, pnlWhenHitUsd: 1.5, pnlWhenMissUsd: 0 } },
+            pnl: { netUsd: 1.5, whenHitUsd: 1.5, whenMissUsd: 0 },
+          },
+        },
+        tracks: { jev: { results: [true], hits: 1, total: 1 } },
+        weights: { jev: 1.1, kronos: "bad" },
+        updatedAt: "2026-10-14T10:00:00.000Z",
+        extra: true,
+      };
+      const path = join(sb.dir, "score.json");
+      writeFileSync(path, JSON.stringify(old, null, 2));
+      const back = loadScoreStore(path);
+      assert.equal(back.models["jev"]!.total, 2);
+      assert.deepEqual(back.models["jev"]!.results, [true, false]);
+      assert.equal(back.models["jev"]!.history.length, 1);
+      assert.deepEqual(back.models["jev"]!.sides.long.results, [true]);
+      assert.equal(back.models["jev"]!.sides.long.pnlUsd, 1.5);
+      assert.equal(back.tracks["jev"]!.total, 1);
+      assert.equal(back.weights["jev"], 1.1);
+      assert.equal(back.updatedAt, "2026-10-14T10:00:00.000Z");
+      assert.equal("extra" in back, false);
+    } finally {
+      sb.cleanup();
+    }
   });
   it("cloneStore produces an independent copy", () => {
     const store = scoreMany(defaultScoreStore(), [trade({ signals: [sig("jev", "long")] })]);

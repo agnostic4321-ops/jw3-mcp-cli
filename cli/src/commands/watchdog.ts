@@ -905,9 +905,14 @@ export function watchdogHeartbeatPath(dir?: string): string {
   return join(dir ?? configDir(), "watchdog-heartbeat.json");
 }
 
-/** Default executor heartbeat source — the supervisor's heartbeat file. */
+/**
+ * Default executor heartbeat source — the daemon's heartbeat file (OQ-08:
+ * `supervise-heartbeat.json` is gone; the daemon is the supervised
+ * process now). Old supervisor heartbeat files still parse if passed
+ * explicitly (same payload shape, different `event`).
+ */
 export function executorHeartbeatPath(dir?: string): string {
-  return join(dir ?? configDir(), "supervise-heartbeat.json");
+  return join(dir ?? configDir(), "daemon-heartbeat.json");
 }
 
 export function defaultWatchdogState(): WatchdogState {

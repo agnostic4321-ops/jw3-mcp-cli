@@ -64,9 +64,8 @@
  * recordOutcome() rule — the test suite pins the two together so the
  * weights cannot drift apart.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { configDir } from "../config.js";
+import { loadJsonStore, resolveStorePath, saveJsonStore } from "./json-store.js";
 import {
   DEFAULT_WEIGHTS,
   DEMOTE_AT,
@@ -853,15 +852,9 @@ function trimWindow(arr: boolean[]): void {
   if (arr.length > SCORE_WINDOW) arr.splice(0, arr.length - SCORE_WINDOW);
 }
 
-function scoreConfigDir(): string {
-  if (process.env["JW3_CONFIG_HOME"]) return process.env["JW3_CONFIG_HOME"];
-  const xdg = process.env["XDG_CONFIG_HOME"];
-  return xdg ? join(xdg, "jw3") : join(homedir(), ".config", "jw3");
-}
-
 /** Store file path (score.json beside vote.json). */
 export function scoreStorePath(dir?: string): string {
-  return join(dir ?? scoreConfigDir(), "score.json");
+  return resolveStorePath(dir, "score.json", configDir());
 }
 
 function saneInt(v: unknown): number {
@@ -875,12 +868,9 @@ function saneResults(v: unknown): boolean[] {
 
 /** Load the score store; missing/corrupt files fall back to defaults (never throws). */
 export function loadScoreStore(path: string): ScoreStore {
-  const dflt = defaultScoreStore();
-  try {
-    if (!existsSync(path)) return dflt;
-    const raw = JSON.parse(readFileSync(path, "utf8")) as Partial<ScoreStore>;
-    const store = defaultScoreStore();
-    const rawModels = raw.models as Record<string, Partial<ModelScorecard>> | undefined;
+  return loadJsonStore(path, defaultScoreStore, (raw, store) => {
+    const r = raw as Partial<ScoreStore>;
+    const rawModels = r.models as Record<string, Partial<ModelScorecard>> | undefined;
     if (rawModels && typeof rawModels === "object") {
       for (const m of MODELS) {
         const c = rawModels[m];
@@ -910,7 +900,7 @@ export function loadScoreStore(path: string): ScoreStore {
         }
       }
     }
-    const rawTracks = raw.tracks as Record<string, Partial<TrackState>> | undefined;
+    const rawTracks = r.tracks as Record<string, Partial<TrackState>> | undefined;
     if (rawTracks && typeof rawTracks === "object") {
       for (const t of TRACKS) {
         const s = rawTracks[t];
@@ -918,7 +908,7 @@ export function loadScoreStore(path: string): ScoreStore {
         store.tracks[t] = { results: saneResults(s.results), hits: saneInt(s.hits), total: saneInt(s.total) };
       }
     }
-    const rawWeights = raw.weights as Record<string, unknown> | undefined;
+    const rawWeights = r.weights as Record<string, unknown> | undefined;
     if (rawWeights && typeof rawWeights === "object") {
       for (const t of TRACKS) {
         const w = rawWeights[t];
@@ -927,18 +917,13 @@ export function loadScoreStore(path: string): ScoreStore {
           : store.weights[t]!;
       }
     }
-    store.updatedAt = typeof raw.updatedAt === "string" ? raw.updatedAt : "";
-    return store;
-  } catch {
-    return dflt;
-  }
+    store.updatedAt = typeof r.updatedAt === "string" ? r.updatedAt : "";
+  });
 }
 
 /** Persist the score store (creates the config dir; best-effort). */
 export function saveScoreStore(path: string, store: ScoreStore): void {
-  const dir = path.split("/").slice(0, -1).join("/") || ".";
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  writeFileSync(path, JSON.stringify(store, null, 2), { mode: 0o600 });
+  saveJsonStore(path, store);
 }
 
 /* ------------------------------------------------------------------ */

@@ -4,6 +4,7 @@
  * surface. Read-only by default; proposals go to the Diary for in-app
  * approve-and-sign. Never executes, never touches keys.
  */
+import { readFileSync } from "node:fs";
 import { cmdAuth } from "./commands/auth.js";
 import { cmdMarketsEnding } from "./commands/markets.js";
 import { cmdAnalyze, cmdAnalyzeTrend } from "./commands/analyze.js";
@@ -72,16 +73,6 @@ import { cmdReserveSweep } from "./commands/reserve.js";
 import { cmdReconcile } from "./commands/reconcile.js";
 import { cmdHeat } from "./commands/heat.js";
 import {
-  SUPERVISE_DEFAULT_HEARTBEAT_SEC,
-  SUPERVISE_DEFAULT_MAX_LOG_BYTES,
-  SUPERVISE_DEFAULT_MAX_LOG_FILES,
-  SUPERVISE_DEFAULT_MAX_RESTARTS,
-  cmdSupervise,
-  loadManifest,
-  parseLoopSpec,
-  parseTrailSpec,
-} from "./commands/supervise.js";
-import {
   DEFI_USAGE,
   cmdDefiBuild,
   cmdDefiMarkets,
@@ -90,7 +81,24 @@ import {
 } from "./commands/defi.js";
 import { clampInt, flagAny, flagOf, needNum, needNumAny, numAny, numOf, posAny, posOf, refusePaperFlag } from "./args.js";
 
-const HELP = `jw3 — JW3.ai command line (v0.1.0)
+/**
+ * CLI version, single-sourced from cli/package.json (never hardcoded, so
+ * HELP cannot drift). The built CLI reads the file beside its own dist
+ * dir; anything unreadable falls back to the last released version.
+ */
+function cliVersion(): string {
+  try {
+    const doc = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version?: unknown };
+    return typeof doc.version === "string" && doc.version ? doc.version : "0.1.0";
+  } catch {
+    return "0.1.0";
+  }
+}
+
+/** Current CLI version (exported for the dispatch pins). */
+export const CLI_VERSION = cliVersion();
+
+const HELP = `jw3 — JW3.ai command line (v${CLI_VERSION})
 
 Usage:
   jw3 auth login|logout|status [--pat …] [--url …] [--browser] [--scope "mcp:read trade:propose"] [--timeout 300]
@@ -177,8 +185,6 @@ Usage:
   jw3 score report [--store <path>] [--holdout 64] [--json]
   jw3 score record --pair SOL/USDT [--side long] [--pnl …] [--store <path>] [--json]
   jw3 daemon --config <manifest.json> [--once] [--allow-live] [--flatten-on-shutdown] [--json]
-  jw3 supervise --trail SOL/USDT:long:1 [--trail …] [--loop kucoin:SOL/USDT] [--config manifest.json] [--once] [--heartbeat-sec 15] [--max-restarts 10] [--allow-live] [--json]
-  jw3d supervise …                   same supervisor via the jw3d alias (24/7 entrypoint)
 
 Aliases: diary note, daily prep, pnl reconcile, propose <idea|bracket|predict|close-all|close all>, cancel all — spaced forms of the hyphenated commands.
 Flag aliases (same meaning everywhere the option exists): --lev|--leverage, --tf|--timeframe, --bounceback-pct|--backoff-pct.
@@ -1833,61 +1839,6 @@ const ROUTES: CliRoute[] = [
         },
         { yes: g.rest.includes("--yes"), json: g.json, url: g.url, pat: g.pat },
       );
-      return;
-    },
-  },
-  {
-    match: (cmd, sub) => cmd === "supervise",
-    run: async (cmd, sub, tail) => {
-      const g = globals(tail);
-      if (refusePaperFlag(g.rest, "jw3 supervise")) return;
-      // Repeatable flags: --trail SPEC (×N), --loop SPEC (×N).
-      const trailRaws: string[] = [];
-      const loopRaws: string[] = [];
-      for (let i = 0; i < g.rest.length; i++) {
-        if (g.rest[i] === "--trail" && g.rest[i + 1] !== undefined) trailRaws.push(g.rest[++i] as string);
-        else if (g.rest[i] === "--loop" && g.rest[i + 1] !== undefined) loopRaws.push(g.rest[++i] as string);
-      }
-      const configPath = flagOf(g.rest, "--config");
-      let manifestTrails: { pair: string; side: "long" | "short"; size: number; exchange?: string; activationPct?: number; bouncebackPct?: number; polls?: number; live?: boolean; yes?: boolean }[] = [];
-      let manifestLoops: { exchange: string; pair: string; direction?: "long" | "short"; sizeUsd?: number }[] = [];
-      let heartbeatSec = numOf(g.rest, "--heartbeat-sec", SUPERVISE_DEFAULT_HEARTBEAT_SEC);
-      let maxRestarts = numOf(g.rest, "--max-restarts", SUPERVISE_DEFAULT_MAX_RESTARTS);
-      let maxLogBytes = SUPERVISE_DEFAULT_MAX_LOG_BYTES;
-      let maxLogFiles = SUPERVISE_DEFAULT_MAX_LOG_FILES;
-      if (configPath) {
-        const m = loadManifest(configPath);
-        manifestTrails = (m.trails ?? []) as typeof manifestTrails;
-        manifestLoops = (m.loops ?? []) as typeof manifestLoops;
-        if (typeof m.heartbeatSec === "number") heartbeatSec = m.heartbeatSec;
-        if (typeof m.maxRestarts === "number") maxRestarts = m.maxRestarts;
-        if (typeof m.maxLogBytes === "number") maxLogBytes = m.maxLogBytes;
-        if (typeof m.maxLogFiles === "number") maxLogFiles = m.maxLogFiles;
-      }
-      if (!needNum(heartbeatSec, "--heartbeat-sec", g.rest) || !needNum(maxRestarts, "--max-restarts", g.rest)) return;
-      try {
-        const flagTrails = trailRaws.map((s) => parseTrailSpec(s));
-        const flagLoops = loopRaws.map((s) => parseLoopSpec(s));
-        await cmdSupervise(
-          {
-            trails: [...manifestTrails, ...flagTrails],
-            loops: [...manifestLoops, ...flagLoops],
-            heartbeatSec,
-            maxRestarts,
-            maxLogBytes,
-            maxLogFiles,
-            logDir: flagOf(g.rest, "--log-dir"),
-            stateDir: flagOf(g.rest, "--state-dir"),
-            heartbeatPath: flagOf(g.rest, "--heartbeat"),
-            once: g.rest.includes("--once"),
-            allowLive: g.rest.includes("--allow-live"),
-            json: g.json,
-          },
-        );
-      } catch (e) {
-        console.error(`Bad supervise spec: ${e instanceof Error ? e.message : String(e)} — nothing was started.`);
-        process.exitCode = 2;
-      }
       return;
     },
   },

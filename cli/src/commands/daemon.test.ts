@@ -1,16 +1,20 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ChildProcess } from "node:child_process";
+import { makeSandbox } from "../test-fixtures.js";
 import {
   isTransientReadFailure,
   DAEMON_DEFAULT_HEALTH,
   DAEMON_MANIFEST_VERSION,
   DAEMON_ROLES,
+  SUPERVISE_BACKOFF_BASE_MS,
+  SUPERVISE_BACKOFF_CAP_MS,
+  appendLog,
   argvCanFire,
+  backoffMs,
   buildChildArgv,
   classifyBootVenue,
   classifyLocalStates,
@@ -22,6 +26,8 @@ import {
   defaultDaemonHeartbeatPath,
   defaultDaemonOwnerLockPath,
   defaultDaemonStatePath,
+  defaultHeartbeatPath,
+  defaultLogDir,
   harvestOwnedOrderIds,
   healthAllowsFire,
   healthShouldDrain,
@@ -36,6 +42,8 @@ import {
   readDaemonOwnerLock,
   readDaemonState,
   readServerKillSwitch,
+  rotateLogsIfNeeded,
+  shouldRotate,
   validateDaemonManifest,
   writeDaemonOwnerLock,
   writeDaemonState,
@@ -230,12 +238,14 @@ describe("validateDaemonManifest", () => {
 });
 
 describe("loadDaemonManifest", () => {
-  let dir = "";
+  let sb: { dir: string; cleanup: () => void };
+  let dir: string;
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "daemon-manifest-"));
+    sb = makeSandbox("daemon-manifest-");
+    dir = sb.dir;
   });
   afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
+    sb.cleanup();
   });
 
   it("loads and validates a manifest file", () => {
@@ -464,12 +474,14 @@ describe("classifyBootVenue", () => {
 });
 
 describe("harvestOwnedOrderIds + localStatesForPairs", () => {
-  let dir = "";
+  let sb: { dir: string; cleanup: () => void };
+  let dir: string;
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "daemon-local-"));
+    sb = makeSandbox("daemon-local-");
+    dir = sb.dir;
   });
   afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
+    sb.cleanup();
   });
 
   it("merges known ids with the local state ids", () => {
@@ -699,12 +711,14 @@ describe("daemonHeartbeatPayload", () => {
 /* ------------------------------------------------------------------ */
 
 describe("daemon state file", () => {
-  let dir = "";
+  let sb: { dir: string; cleanup: () => void };
+  let dir: string;
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "daemon-state-"));
+    sb = makeSandbox("daemon-state-");
+    dir = sb.dir;
   });
   afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
+    sb.cleanup();
   });
 
   it("round-trips the owned order ids", () => {
@@ -740,12 +754,14 @@ describe("daemon state file", () => {
 });
 
 describe("owner lock (I1: one writer per margin pool)", () => {
-  let dir = "";
+  let sb: { dir: string; cleanup: () => void };
+  let dir: string;
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "daemon-lock-"));
+    sb = makeSandbox("daemon-lock-");
+    dir = sb.dir;
   });
   afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
+    sb.cleanup();
   });
 
   it("round-trips the pid and session", () => {
@@ -902,13 +918,15 @@ const e2eManifest = (): DaemonManifest => ({
 });
 
 describe("cmdDaemon end-to-end (mocked venue, no network, no real children)", () => {
-  let dir = "";
+  let sb: { dir: string; cleanup: () => void };
+  let dir: string;
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "daemon-e2e-"));
+    sb = makeSandbox("daemon-e2e-");
+    dir = sb.dir;
     process.exitCode = 0;
   });
   afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
+    sb.cleanup();
     process.exitCode = 0;
   });
 
@@ -1188,4 +1206,66 @@ it("a healthy boot line contains NO 'error' substring at all", () => {
   );
   // And the status is positively matchable.
   assert.match(line, /"status":"ok"/);
+});
+
+/* ------------------------------------------------------------------ */
+/* folded-in supervision mechanics (moved from supervise.ts, OQ-08)    */
+/* ------------------------------------------------------------------ */
+
+describe("folded-in supervision mechanics (OQ-08)", () => {
+  it("backoffMs doubles from the base and caps at 30s", () => {
+    assert.equal(backoffMs(0), SUPERVISE_BACKOFF_BASE_MS);
+    assert.equal(backoffMs(1), SUPERVISE_BACKOFF_BASE_MS * 2);
+    assert.equal(backoffMs(4), SUPERVISE_BACKOFF_BASE_MS * 16);
+    assert.equal(backoffMs(99), SUPERVISE_BACKOFF_CAP_MS);
+  });
+  it("backoffMs treats garbage attempts as zero", () => {
+    assert.equal(backoffMs(-3), SUPERVISE_BACKOFF_BASE_MS);
+  });
+  it("shouldRotate rotates at the limit, not below", () => {
+    assert.equal(shouldRotate(5 * 1024 * 1024, 5 * 1024 * 1024), true);
+    assert.equal(shouldRotate(1024, 5 * 1024 * 1024), false);
+    assert.equal(shouldRotate(1024, 0), false);
+  });
+  it("keeps the supervisor log/heartbeat layout (legacy paths intact)", () => {
+    const sb = makeSandbox("daemon-supervise-");
+    try {
+      assert.match(defaultLogDir(), /jw3/);
+      assert.match(defaultHeartbeatPath(), /supervise-heartbeat\.json$/);
+      assert.match(defaultDaemonHeartbeatPath(), /daemon-heartbeat\.json$/);
+      const log = join(sb.dir, "daemon.log");
+      appendLog(log, "hello", 5 * 1024 * 1024, 5);
+      assert.equal(rotateLogsIfNeeded(log, 5 * 1024 * 1024, 5), null);
+    } finally {
+      sb.cleanup();
+    }
+  });
+  it("loads daemon state/owner lock files written in the OLD format unchanged", () => {
+    const sb = makeSandbox("daemon-supervise-");
+    try {
+      const statePath = defaultDaemonStatePath(sb.dir);
+      assert.match(statePath, /daemon-state\.json$/);
+      // Byte shape of the old writeDaemonState: tmp JSON + rename, plus
+      // unknown fields the sanitizer must ignore.
+      writeFileSync(
+        statePath,
+        JSON.stringify({ version: 1, sessionId: "s1", pairs: ["SOL/USDT"], ownedOrderIds: ["o1"], ownedPairs: ["SOL/USDT"], updatedAt: "x", extra: true }, null, 2),
+      );
+      const s = readDaemonState(statePath);
+      assert.ok(s);
+      assert.deepEqual(s!.ownedOrderIds, ["o1"]);
+      assert.equal("extra" in s!, false);
+      const lockPath = defaultDaemonOwnerLockPath(sb.dir);
+      assert.match(lockPath, /daemon-owner\.json$/);
+      writeFileSync(lockPath, JSON.stringify({ pid: process.pid, sessionId: "s1", startedAt: "x" }, null, 2));
+      const l = readDaemonOwnerLock(lockPath);
+      assert.ok(l);
+      assert.equal(l!.pid, process.pid);
+      // Atomic save leaves the state readable on the next write.
+      writeDaemonState(statePath, { ...s!, ownedOrderIds: ["o1", "o2"] });
+      assert.equal(readDaemonState(statePath)!.ownedOrderIds.length, 2);
+    } finally {
+      sb.cleanup();
+    }
+  });
 });

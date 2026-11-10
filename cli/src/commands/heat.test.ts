@@ -1,15 +1,27 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   accountFromBalances,
+  blackoutWindowVetoes,
+  checkHeat,
   cmdHeat,
+  defaultHeat,
+  degenHeatPath,
+  effectiveSize,
   evaluateHeat,
+  inUtcWindow,
   isKnownPosition,
+  loadHeat,
   positionMargin,
   positionNotional,
+  saveHeat,
+  type DegenHeat,
   type HeatAccount,
 } from "./heat.js";
 import type { LocalState } from "../reconcile.js";
+import { makeSandbox, readJson, writeJson } from "../test-fixtures.js";
 
 describe("positionNotional", () => {
   it("prefers explicit venue notionals", () => {
@@ -206,5 +218,121 @@ describe("cmdHeat", () => {
     );
     assert.equal(process.exitCode, 2);
     assert.equal(called, false);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* heat-cap governor — the ONE implementation (moved from degen.ts)    */
+/* ------------------------------------------------------------------ */
+
+describe("checkHeat", () => {
+  const heat = (over: Partial<DegenHeat> = {}): DegenHeat => ({ ...defaultHeat("2026-10-14"), ...over });
+  it("clears fresh books", () => {
+    assert.equal(checkHeat(heat(), 1.5, "SOL/USDT", Date.parse("2026-10-14T10:00:00Z")), null);
+  });
+  it("flat after two stops, duplicates, caps, and cooldowns", () => {
+    assert.match(String(checkHeat(heat({ stopsToday: 2 }), 1, "SOL/USDT", Date.now())), /flat for the day/);
+    assert.match(String(checkHeat(heat({ open: [{ pair: "SOL/USDT", riskUsd: 1 }] }), 1, "sol/usdt", Date.now())), /already open/);
+    assert.match(String(checkHeat(heat({ open: [{ pair: "A/USDT", riskUsd: 1 }, { pair: "B/USDT", riskUsd: 1 }] }), 1, "C/USDT", Date.now())), /concurrent/);
+    assert.match(String(checkHeat(heat({ lastStopAt: new Date(Date.now() - 10 * 60000).toISOString() }), 1, "C/USDT", Date.now())), /cooldown/);
+    assert.match(String(checkHeat(heat({ heatUsd: 5.5 }), 1, "C/USDT", Date.now())), /heat cap/);
+    assert.match(String(checkHeat(heat(), NaN, "C/USDT", Date.now())), /unmeasurable/);
+  });
+  it("halves size after one stop", () => {
+    assert.equal(effectiveSize(15, 0), 15);
+    assert.equal(effectiveSize(15, 1), 7.5);
+  });
+});
+
+describe("heat-cap store (degen-heat.json on json-store)", () => {
+  it("loads a file written in the OLD format unchanged", () => {
+    const sb = makeSandbox("jw3-heat-");
+    try {
+      // Byte shape of the old degen.ts saveHeat: JSON.stringify(store, null, 2)
+      // plus an unknown future field the sanitizer must ignore.
+      const old = {
+        day: "2026-10-14",
+        stopsToday: 1,
+        heatUsd: 1.25,
+        open: [{ pair: "SOL/USDT", riskUsd: 1.25 }, { pair: 42, riskUsd: "x" }],
+        lastStopAt: "2026-10-14T09:00:00.000Z",
+        futureField: true,
+      };
+      const path = writeJson(sb.dir, "degen-heat.json", old);
+      const loaded = loadHeat(path, Date.parse("2026-10-14T10:00:00Z"));
+      assert.equal(loaded.day, "2026-10-14");
+      assert.equal(loaded.stopsToday, 1);
+      assert.equal(loaded.heatUsd, 1.25);
+      assert.deepEqual(loaded.open, [{ pair: "SOL/USDT", riskUsd: 1.25 }]);
+      assert.equal(loaded.lastStopAt, "2026-10-14T09:00:00.000Z");
+      assert.equal("futureField" in loaded, false);
+    } finally {
+      sb.cleanup();
+    }
+  });
+  it("rolls the day (counters reset, open kept) and falls back on corrupt files", () => {
+    const sb = makeSandbox("jw3-heat-");
+    try {
+      const path = writeJson(sb.dir, "degen-heat.json", {
+        day: "2026-10-13",
+        stopsToday: 2,
+        heatUsd: 5,
+        open: [{ pair: "SOL/USDT", riskUsd: 1 }],
+        lastStopAt: null,
+      });
+      const rolled = loadHeat(path, Date.parse("2026-10-14T10:00:00Z"));
+      assert.equal(rolled.day, "2026-10-14");
+      assert.equal(rolled.stopsToday, 0);
+      assert.equal(rolled.heatUsd, 0);
+      assert.deepEqual(rolled.open, [{ pair: "SOL/USDT", riskUsd: 1 }]);
+      const corruptPath = join(sb.dir, "corrupt.json");
+      writeFileSync(corruptPath, "{ not json");
+      assert.deepEqual(loadHeat(corruptPath, Date.parse("2026-10-14T10:00:00Z")), defaultHeat("2026-10-14"));
+      const dflt = loadHeat(`${sb.dir}/missing.json`, Date.parse("2026-10-14T10:00:00Z"));
+      assert.deepEqual(dflt, defaultHeat("2026-10-14"));
+    } finally {
+      sb.cleanup();
+    }
+  });
+  it("round-trips through saveHeat on the default path", () => {
+    const sb = makeSandbox("jw3-heat-");
+    try {
+      const path = degenHeatPath(sb.dir);
+      assert.match(path, /degen-heat\.json$/);
+      const heat = { ...defaultHeat("2026-10-14"), stopsToday: 1, heatUsd: 2 };
+      saveHeat(path, heat);
+      assert.deepEqual(readJson<typeof heat>(path), heat);
+      assert.deepEqual(loadHeat(path, Date.parse("2026-10-14T10:00:00Z")), heat);
+    } finally {
+      sb.cleanup();
+    }
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* blackout windows — the ONE matcher (moved from committee.ts)        */
+/* ------------------------------------------------------------------ */
+
+describe("blackout windows", () => {
+  it("inUtcWindow handles a normal and a midnight-wrapping window", () => {
+    assert.equal(inUtcWindow(12 * 60, 11 * 60 + 30, 13 * 60 + 30), true);
+    assert.equal(inUtcWindow(14 * 60, 11 * 60 + 30, 13 * 60 + 30), false);
+    assert.equal(inUtcWindow(23 * 60, 22 * 60, 60), true); // wraps past midnight
+    assert.equal(inUtcWindow(30, 22 * 60, 60), true);
+    assert.equal(inUtcWindow(120, 22 * 60, 60), false);
+  });
+  it("emits one veto per hit window with the committee's rule strings", () => {
+    const vetoes = blackoutWindowVetoes(
+      [
+        { name: "FOMC", startMin: 9 * 60, endMin: 11 * 60 },
+        { name: "CPI", startMin: 11 * 60 + 30, endMin: 13 * 60 + 30 },
+      ],
+      10 * 60,
+    );
+    assert.deepEqual(vetoes, [
+      { rule: "blackout:FOMC", detail: "FOMC blackout 0540-0660Z — no directional entries" },
+    ]);
+    assert.deepEqual(blackoutWindowVetoes([], 10 * 60), []);
+    assert.deepEqual(blackoutWindowVetoes(undefined, 10 * 60), []);
   });
 });

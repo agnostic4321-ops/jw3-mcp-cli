@@ -1,8 +1,8 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { makeSandbox } from "../test-fixtures.js";
 import {
   cmdAlert,
   consoleTransport,
@@ -617,9 +617,9 @@ describe("transports", () => {
   });
 
   it("the file transport appends JSONL", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "jw3-alert-"));
+    const sb = makeSandbox("jw3-alert-");
     try {
-      const path = join(dir, "alerts.jsonl");
+      const path = join(sb.dir, "alerts.jsonl");
       const d = evaluateAlerts([], [{ kind: "kill-switch", engaged: true }], T0);
       await dispatchAlerts(d.alerts, fileTransport(path));
       await dispatchAlerts(d.alerts, fileTransport(path));
@@ -628,7 +628,7 @@ describe("transports", () => {
       const row = JSON.parse(raw[0] as string) as Alert;
       assert.equal(row.severity, "critical");
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      sb.cleanup();
     }
   });
 
@@ -646,9 +646,9 @@ describe("transports", () => {
 
 describe("alert state persistence", () => {
   it("round-trips the retained state", () => {
-    const dir = mkdtempSync(join(tmpdir(), "jw3-alert-state-"));
+    const sb = makeSandbox("jw3-alert-state-");
     try {
-      const path = join(dir, "state.json");
+      const path = join(sb.dir, "state.json");
       const state: AlertState = {
         keys: [{ key: "margin:free-below-floor", fingerprint: "margin:b25", occurrences: 2, lastSentAt: T0, lastSeenAt: T0, active: true, escalated: false }],
         sends: [T0],
@@ -660,30 +660,45 @@ describe("alert state persistence", () => {
       assert.equal(back.keys[0]?.occurrences, 2);
       assert.deepEqual(back.sends, [T0]);
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      sb.cleanup();
+    }
+  });
+
+  it("loads a file written in the OLD format unchanged", () => {
+    const sb = makeSandbox("jw3-alert-state-");
+    try {
+      // Byte shape of the old saveAlertState: JSON + trailing newline.
+      const path = join(sb.dir, "state.json");
+      writeFileSync(path, `${JSON.stringify({ keys: [{ key: "k" }], sends: [T0], pending: [], extra: true }, null, 2)}\n`);
+      const back = loadAlertState(path);
+      assert.equal(back.keys.length, 1);
+      assert.deepEqual(back.sends, [T0]);
+      assert.equal("extra" in back, false);
+    } finally {
+      sb.cleanup();
     }
   });
 
   it("an empty state when the file does not exist", () => {
-    const dir = mkdtempSync(join(tmpdir(), "jw3-alert-state-"));
+    const sb = makeSandbox("jw3-alert-state-");
     try {
-      const state = loadAlertState(join(dir, "nope.json"));
+      const state = loadAlertState(join(sb.dir, "nope.json"));
       assert.deepEqual(state.keys, []);
       assert.deepEqual(state.sends, []);
       assert.deepEqual(state.pending, []);
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      sb.cleanup();
     }
   });
 
   it("refuses to reset an unreadable state (that would re-alert everything)", () => {
-    const dir = mkdtempSync(join(tmpdir(), "jw3-alert-state-"));
+    const sb = makeSandbox("jw3-alert-state-");
     try {
-      const path = join(dir, "state.json");
+      const path = join(sb.dir, "state.json");
       writeFileSync(path, "{ not json");
       assert.throws(() => loadAlertState(path), /not valid JSON/);
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      sb.cleanup();
     }
   });
 });
@@ -693,13 +708,15 @@ describe("alert state persistence", () => {
 /* ------------------------------------------------------------------ */
 
 describe("cmdAlert", () => {
+  let sb: { dir: string; cleanup: () => void };
   let dir: string;
   let logged: string[];
   let origLog: typeof console.log;
   let origErr: typeof console.error;
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "jw3-alert-cmd-"));
+    sb = makeSandbox("jw3-alert-cmd-");
+    dir = sb.dir;
     logged = [];
     origLog = console.log;
     origErr = console.error;
@@ -711,7 +728,7 @@ describe("cmdAlert", () => {
     console.log = origLog;
     console.error = origErr;
     process.exitCode = undefined;
-    rmSync(dir, { recursive: true, force: true });
+    sb.cleanup();
   });
 
   const snapshot = (over: Partial<MachineSnapshot> = {}): MachineSnapshot => ({

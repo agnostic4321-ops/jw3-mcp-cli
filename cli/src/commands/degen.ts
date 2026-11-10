@@ -38,16 +38,30 @@
  * supervisor inline as the guard. A TP-only arm never counts as success.
  *
  * Paper mode (`--paper`, see PAPER_MODE.md): the same screen → oracle →
- * heat → plan pipeline against a SEPARATE paper book, then simulated fills
- * at plan prices with zero venue contact. The only network write is
- * `propose_trade` ([PAPER] Diary setup, propose scope — never execute).
- * `--paper` refuses `--yes`/`--live`/`--trail`: paper never fires.
+ * heat → plan pipeline against the paper.ts ledger (the "degen" account
+ * in paper-accounts.json — positions/fills, same heat doctrine), then a
+ * paper position at plan prices with zero venue contact. The only network
+ * write is `propose_trade` ([PAPER] Diary setup, propose scope — never
+ * execute). `--paper` refuses `--yes`/`--live`/`--trail`: paper never fires.
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { callTool } from "../mcp.js";
 import { configDir, resolvePat } from "../config.js";
+import {
+  closePaperPosition,
+  createPaperAccount,
+  getAccount,
+  loadPaperStore,
+  openPaperPosition,
+  paperStorePath,
+  savePaperStore,
+  type PaperAccount,
+  type PaperFillKind,
+  type PaperStore,
+} from "../paper-store.js";
+import { grossPnlUsd, paperFeeUsd } from "../paper-marks.js";
 import {
   SPIKE_DEFAULT_SYMS,
   dipSignal,
@@ -78,6 +92,18 @@ import {
 } from "../blocking-rules.js";
 import { extractOpenOrders, makeIntentKey, ACTOR_MACHINE, type TradeCall } from "./trade.js";
 import {
+  checkHeat,
+  degenHeatPath,
+  degenToday,
+  effectiveSize,
+  loadHeat,
+  saveHeat,
+  DEGEN_COOLDOWN_MS,
+  DEGEN_MAX_STOPS_PER_DAY,
+  type DegenHeat,
+  type HeatCaps,
+} from "./heat.js";
+import {
   loadStore,
   normalizeVotePair,
   validateVotePair,
@@ -94,16 +120,6 @@ export type DegenOracle = {
   detail: string;
 };
 
-export type DegenHeatOpen = { pair: string; riskUsd: number };
-
-export type DegenHeat = {
-  day: string;
-  stopsToday: number;
-  heatUsd: number;
-  open: DegenHeatOpen[];
-  lastStopAt: string | null;
-};
-
 export type DegenOutcome = "win" | "loss" | "stop" | "scratch";
 
 /** Watchlist for auto-screen (the spike monitor's curated defaults). */
@@ -111,38 +127,20 @@ export const DEGEN_AUTO_BASES: string[] = SPIKE_DEFAULT_SYMS.map((s) =>
   s.replace(/USDTM$/, ""),
 );
 /** Owner-ordered risk doctrine (see skill lessons: 30%-risk math). */
-export const DEGEN_HEAT_CAP_USD = 6;
-export const DEGEN_MAX_CONCURRENT = 2;
-export const DEGEN_MAX_STOPS_PER_DAY = 2;
-export const DEGEN_COOLDOWN_MS = 3600 * 1000;
 export const DEGEN_FINETUNE_AT = [100, 200];
 /** Trail follow-up defaults (same grid as `trail`). */
 export const DEGEN_DEFAULT_POLLS = 600;
 export const DEGEN_DEFAULT_LEVERAGE = 2;
 
-export type HeatCaps = {
-  maxHeatUsd: number;
-  maxConcurrent: number;
-  cooldownMs: number;
-  maxStops: number;
-};
-
-export const DEFAULT_HEAT_CAPS: HeatCaps = {
-  maxHeatUsd: DEGEN_HEAT_CAP_USD,
-  maxConcurrent: DEGEN_MAX_CONCURRENT,
-  cooldownMs: DEGEN_COOLDOWN_MS,
-  maxStops: DEGEN_MAX_STOPS_PER_DAY,
-};
-
-export function degenHeatPath(dir?: string): string {
-  return join(dir ?? configDir(), "degen-heat.json");
-}
-
 export function degenLogPath(dir?: string): string {
   return join(dir ?? configDir(), "degen-learning.jsonl");
 }
 
-/** Separate paper book: proving never consumes live heat or the live log. */
+/**
+ * Legacy paper paths (deprecated): read-only defaults for the one-time
+ * migration shim. Nothing writes these paths after OQ-13 — the paper
+ * ledger (paper-accounts.json) is the book.
+ */
 export function degenPaperHeatPath(dir?: string): string {
   return join(dir ?? configDir(), "degen-paper-heat.json");
 }
@@ -155,52 +153,6 @@ export function degenPaperLogPath(dir?: string): string {
 export function degenRunPath(base: string, dir?: string, paper = false): string {
   const stem = paper ? `degen_paper_${base.toLowerCase()}` : `degen_${base.toLowerCase()}`;
   return join(dir ?? tmpdir(), `${stem}.json`);
-}
-
-export function degenToday(nowMs: number): string {
-  return new Date(nowMs).toISOString().slice(0, 10);
-}
-
-export function defaultHeat(day: string): DegenHeat {
-  return { day, stopsToday: 0, heatUsd: 0, open: [], lastStopAt: null };
-}
-
-/** Load heat; missing/corrupt → defaults. Day roll resets the counters. */
-export function loadHeat(path: string, nowMs: number = Date.now()): DegenHeat {
-  const day = degenToday(nowMs);
-  try {
-    if (!existsSync(path)) return defaultHeat(day);
-    const raw = JSON.parse(readFileSync(path, "utf8")) as Partial<DegenHeat>;
-    const open = Array.isArray(raw.open)
-      ? raw.open.filter(
-          (o): o is DegenHeatOpen =>
-            !!o && typeof o === "object" && typeof o.pair === "string" && Number.isFinite(o.riskUsd),
-        )
-      : [];
-    const heat = defaultHeat(day);
-    if (typeof raw.day === "string") heat.day = raw.day;
-    if (Number.isInteger(raw.stopsToday) && (raw.stopsToday as number) >= 0) {
-      heat.stopsToday = raw.stopsToday as number;
-    }
-    if (Number.isFinite(raw.heatUsd) && (raw.heatUsd as number) >= 0) {
-      heat.heatUsd = raw.heatUsd as number;
-    }
-    heat.open = open;
-    if (typeof raw.lastStopAt === "string") heat.lastStopAt = raw.lastStopAt;
-    if (heat.day !== day) {
-      heat.day = day;
-      heat.stopsToday = 0;
-      heat.heatUsd = 0;
-    }
-    return heat;
-  } catch {
-    return defaultHeat(day);
-  }
-}
-
-export function saveHeat(path: string, heat: DegenHeat): void {
-  mkdirSync(path.split("/").slice(0, -1).join("/") || ".", { recursive: true, mode: 0o700 });
-  writeFileSync(path, JSON.stringify(heat, null, 2), { mode: 0o600 });
 }
 
 /**
@@ -225,47 +177,6 @@ export function screenRow(row: FadeRow | null): string | null {
     return `no exhaustion (${sSig}/${lSig}) — standing by`;
   }
   return null;
-}
-
-/**
- * Pure heat-cap governor. Null = clear to open this risk.
- * Priority: day-flat → duplicate pair → concurrent cap → cooldown → heat cap.
- */
-export function checkHeat(
-  heat: DegenHeat,
-  killLossUsd: number,
-  pair: string,
-  nowMs: number,
-  caps: HeatCaps = DEFAULT_HEAT_CAPS,
-): string | null {
-  if (heat.stopsToday >= caps.maxStops) {
-    return `flat for the day after ${heat.stopsToday} full stops — no new risk`;
-  }
-  if (heat.open.some((o) => o.pair.toUpperCase() === pair.toUpperCase())) {
-    return `${pair} already open in the degen book — no double-fire`;
-  }
-  if (heat.open.length >= caps.maxConcurrent) {
-    return `max ${caps.maxConcurrent} concurrent positions (${heat.open.map((o) => o.pair).join(", ")})`;
-  }
-  if (heat.lastStopAt) {
-    const since = nowMs - Date.parse(heat.lastStopAt);
-    if (Number.isFinite(since) && since >= 0 && since < caps.cooldownMs) {
-      const mins = Math.ceil((caps.cooldownMs - since) / 60000);
-      return `cooldown after full stop — ${mins}m left`;
-    }
-  }
-  if (!(killLossUsd > 0) || !Number.isFinite(killLossUsd)) {
-    return "unmeasurable kill-line cost — refusing unsized risk";
-  }
-  if (heat.heatUsd + killLossUsd > caps.maxHeatUsd) {
-    return `heat cap $${caps.maxHeatUsd} would break ($${heat.heatUsd.toFixed(2)} open + $${killLossUsd.toFixed(2)} new)`;
-  }
-  return null;
-}
-
-/** Halve size after one full stop (the overbet brake); 2 stops = flat. */
-export function effectiveSize(sizeUsd: number, stopsToday: number): number {
-  return stopsToday >= 1 ? sizeUsd / 2 : sizeUsd;
 }
 
 /** Pure: size-weighted averaged entry over filled steps. Null when unusable. */
@@ -410,6 +321,8 @@ export type DegenDeps = {
   logPath?: string;
   runDir?: string;
   storePath?: string;
+  /** Paper ledger path (`paper-accounts.json`); the degen paper loop owns the "degen" account inside it. */
+  paperPath?: string;
   now?: () => number;
   /** Session context for the short bounce gate (price + 60min session low). */
   sessionCtx?: (pair: string) => Promise<PrefilterCtx>;
@@ -504,9 +417,36 @@ export async function cmdDegen(
     return;
   }
   const nowMs = deps?.now ? deps.now() : Date.now();
+  // Paper mode rides the paper.ts ledger (OQ-13): legacy degen-paper files
+  // are migrated once (then never written again) and the heat governor
+  // derives from the degen paper account — proving never consumes live
+  // heat or blocks live fire.
+  let paper: { store: PaperStore; path: string } | null = null;
+  if (a.paper) {
+    const paperPath = deps?.paperPath ?? paperStorePath();
+    const mig = migrateDegenPaperOnce({
+      paperPath,
+      heatPath: deps?.heatPath,
+      logPath: deps?.logPath,
+      runDir: deps?.runDir,
+      nowMs,
+    });
+    if (mig.migrated && !opts.json) {
+      console.log(
+        `MIGRATED legacy paper book → ${paperPath}: ${mig.positions} open, ${mig.closed} closed, ${mig.skipped} skipped${mig.warnings.length > 0 ? ` (${mig.warnings.join("; ")})` : ""}.`,
+      );
+    }
+    const store = loadPaperStore(paperPath);
+    if (!ensureDegenPaperAccount(store, paperPath)) return;
+    paper = { store, path: paperPath };
+  }
+  if (a.paper && !paper) return; // setup above either sets paper or returns
   const heatPath = deps?.heatPath ?? (a.paper ? degenPaperHeatPath() : degenHeatPath());
-  const logPath = deps?.logPath ?? (a.paper ? degenPaperLogPath() : degenLogPath());
-  const heat = loadHeat(heatPath, nowMs);
+  // Paper mode no longer writes the learning log — the paper ledger is the book.
+  const logPath: string | null = a.paper ? null : (deps?.logPath ?? degenLogPath());
+  const heat = paper
+    ? paperHeatOf(getAccount(paper.store, DEGEN_PAPER_ACCOUNT) as PaperAccount, nowMs)
+    : loadHeat(heatPath, nowMs);
   const sizeEff = effectiveSize(a.sizeUsd, heat.stopsToday);
   const fade = deps?.fade ?? futuresFade;
   const oracleFetch = deps?.oracle ?? ((pair: string) => prodOracle(pair, a.exchange, a.horizon, opts.url, opts.pat, deps?.storePath));
@@ -618,9 +558,9 @@ export async function cmdDegen(
     trail: { size: step1.contracts, activationPct: a.activationPct, bouncebackPct: a.bouncebackPct, polls: a.polls, live: a.live },
   };
 
-  // ── paper: simulated fills to the Diary, zero venue contact ──
-  if (a.paper) {
-    await runPaper(a, opts, deps ?? {}, { ticket, row: row!, oracle, heat, heatPath, logPath, nowMs });
+  // ── paper: simulated fills to the paper ledger, zero venue contact ──
+  if (paper) {
+    await runPaper(a, opts, deps ?? {}, { ticket, row: row!, oracle, heat, paper });
     return;
   }
 
@@ -760,10 +700,290 @@ export async function cmdDegen(
   if (failed > 0 || !tpArmed || (!stopArmed && !a.trail)) process.exitCode = 1;
 }
 
-/** Pure: simulated fill ids for a paper ticket (never venue order ids). */
-export function paperFillIds(base: string, nowMs: number): { step1Id: string; step2Id: string } {
-  const stem = `paper-${base.toLowerCase()}-${nowMs}`;
-  return { step1Id: `${stem}-s1`, step2Id: `${stem}-s2` };
+/**
+ * Paper ledger ownership (OQ-13): the degen paper loop owns the "degen"
+ * account inside paper-accounts.json (paper.ts accounts/positions/fills).
+ * Fills carry strategy "degen" so `paper-stats` scores only this loop's
+ * book even if the operator reuses the account by hand.
+ */
+export const DEGEN_PAPER_ACCOUNT = "degen";
+export const DEGEN_PAPER_STRATEGY = "degen";
+/** Equity of a freshly auto-created degen paper account (fake money). */
+export const DEGEN_PAPER_DEFAULT_EQUITY_USD = 1000;
+
+/** Ensure the degen paper account exists (creates + persists it). False = usage error, already reported. */
+export function ensureDegenPaperAccount(store: PaperStore, paperPath: string): boolean {
+  if (getAccount(store, DEGEN_PAPER_ACCOUNT)) return true;
+  const bad = createPaperAccount(store, DEGEN_PAPER_ACCOUNT, DEGEN_PAPER_DEFAULT_EQUITY_USD);
+  if (bad) {
+    console.error(`Bad paper ledger: ${bad} — nothing was written.`);
+    process.exitCode = 1;
+    return false;
+  }
+  try {
+    savePaperStore(paperPath, store);
+  } catch (e) {
+    console.error(`Could not persist the paper ledger: ${e instanceof Error ? e.message : String(e)} — nothing was written.`);
+    process.exitCode = 1;
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Pure: kill-line risk of one open paper position (entry → paper stop).
+ * A position without a paper stop risks nothing on paper — the stop is
+ * always armed by the degen loop, so a missing sl reads as zero risk,
+ * never as unbounded.
+ */
+export function paperPositionRiskUsd(p: {
+  side: "long" | "short";
+  entryPrice: number;
+  qty: number;
+  sl: number | null;
+}): number {
+  if (!(p.entryPrice > 0) || !(p.qty > 0)) return 0;
+  const stop = typeof p.sl === "number" && Number.isFinite(p.sl) && p.sl > 0 ? p.sl : p.entryPrice;
+  const perUnit = p.side === "long" ? p.entryPrice - stop : stop - p.entryPrice;
+  return Math.max(0, perUnit * p.qty);
+}
+
+/**
+ * Pure: derive the degen heat-cap state from the degen paper account
+ * (OQ-13 + OQ-14). Proving never consumes live heat: stops count the
+ * day's sl fills (a loss recorded with negative pnl counts too — same
+ * halve-then-flat doctrine as the file book), open risk sums the paper
+ * stops, and the cooldown keys off the latest stop fill.
+ */
+export function paperHeatOf(acct: PaperAccount, nowMs: number): DegenHeat {
+  const day = degenToday(nowMs);
+  const mine = (strategy: string | null): boolean => (strategy ?? "") === DEGEN_PAPER_STRATEGY;
+  const open = acct.positions
+    .filter((p) => mine(p.strategy))
+    .map((p) => ({ pair: p.pair, riskUsd: paperPositionRiskUsd(p) }));
+  const heatUsd = open.reduce((a, o) => a + o.riskUsd, 0);
+  const dayStart = `${day}T00:00:00.000Z`;
+  const stops = acct.fills.filter(
+    (f) =>
+      mine(f.strategy) &&
+      (f.kind === "sl" || (f.kind === "close" && (f.pnlUsd ?? 0) < 0)) &&
+      typeof f.ts === "string" &&
+      f.ts >= dayStart,
+  );
+  const lastStopAt = stops.map((f) => f.ts).sort().pop() ?? null;
+  return { day, stopsToday: stops.length, heatUsd, open, lastStopAt };
+}
+
+export type PaperMigration = {
+  migrated: boolean;
+  positions: number;
+  closed: number;
+  skipped: number;
+  renamed: string[];
+  warnings: string[];
+};
+
+/**
+ * One-time read-and-migrate shim (OQ-13): imports the legacy degen-paper
+ * book (degen-paper-heat.json + degen_paper_*.json run states + the paper
+ * learning log) into the degen paper account, then renames the legacy
+ * files with a `.migrated` suffix so the shim never runs twice. Nothing
+ * writes the legacy paths after this — the paper ledger is the book.
+ *
+ * Fidelity: run states carry full tickets (pair/side/prices/leverage) and
+ * become paper positions; `record` log lines matched to an open position
+ * close it (exit derived from the recorded pnl, or the entry when no pnl
+ * was recorded). Anything without a reconstructable position (heat-only
+ * opens, orphan outcomes) is counted in `skipped` and reported — never
+ * silently dropped.
+ */
+export function migrateDegenPaperOnce(opts: {
+  paperPath: string;
+  heatPath?: string;
+  logPath?: string;
+  runDir?: string;
+  nowMs?: number;
+}): PaperMigration {
+  const empty: PaperMigration = { migrated: false, positions: 0, closed: 0, skipped: 0, renamed: [], warnings: [] };
+  const heatPath = opts.heatPath ?? degenPaperHeatPath();
+  const logPath = opts.logPath ?? degenPaperLogPath();
+  const runDir = opts.runDir ?? tmpdir();
+  const haveHeat = existsSync(heatPath);
+  const haveLog = existsSync(logPath);
+  let runFiles: string[] = [];
+  try {
+    runFiles = readdirSync(runDir)
+      .filter((f) => f.startsWith("degen_paper_") && f.endsWith(".json"))
+      .map((f) => join(runDir, f));
+  } catch {
+    runFiles = [];
+  }
+  if (!haveHeat && !haveLog && runFiles.length === 0) return empty;
+  const nowMs = opts.nowMs ?? Date.now();
+
+  // Legacy heat: tolerant read (same sanitizer as the live book had).
+  let legacyHeat: DegenHeat | null = null;
+  if (haveHeat) {
+    try {
+      legacyHeat = loadHeat(heatPath, nowMs);
+    } catch {
+      legacyHeat = null;
+    }
+  }
+
+  // Legacy run states: one open position per reconstructable ticket.
+  type LegacyRun = {
+    pair: string;
+    side: "long" | "short";
+    leverage: number;
+    step1: { price: number; sizeUsd: number };
+    tp1Price?: number;
+    killPrice?: number;
+  };
+  const runs: { file: string; run: LegacyRun }[] = [];
+  for (const file of runFiles) {
+    let doc: Record<string, unknown>;
+    try {
+      doc = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (!doc || typeof doc !== "object" || doc.kind !== "degen-paper") continue;
+    const s1 = doc.step1 as Record<string, unknown> | undefined;
+    const pair = typeof doc.pair === "string" ? doc.pair : "";
+    const side = doc.side === "long" || doc.side === "short" ? doc.side : null;
+    const price = typeof s1?.price === "number" ? s1.price : NaN;
+    const sizeUsd = typeof s1?.sizeUsd === "number" ? s1.sizeUsd : NaN;
+    const leverage = typeof doc.leverage === "number" ? doc.leverage : NaN;
+    if (!pair.includes("/") || !side || !(price > 0) || !(sizeUsd > 0) || !(leverage >= 1)) continue;
+    const tp = typeof doc.tp1Price === "number" && Number.isFinite(doc.tp1Price) ? (doc.tp1Price as number) : undefined;
+    const kill = typeof doc.killPrice === "number" && Number.isFinite(doc.killPrice) ? (doc.killPrice as number) : undefined;
+    runs.push({ file, run: { pair, side, leverage, step1: { price, sizeUsd }, ...(tp !== undefined ? { tp1Price: tp } : {}), ...(kill !== undefined ? { killPrice: kill } : {}) } });
+  }
+
+  // Legacy `record` lines (paper:true) with an optional recorded pnl.
+  type LegacyOutcome = { pair: string; outcome: DegenOutcome; pnlUsd?: number; at: string };
+  const outcomes: LegacyOutcome[] = [];
+  if (haveLog) {
+    let text = "";
+    try {
+      text = readFileSync(logPath, "utf8");
+    } catch {
+      text = "";
+    }
+    for (const line of text.split("\n")) {
+      const t = line.trim();
+      if (!t) continue;
+      let e: Record<string, unknown>;
+      try {
+        e = JSON.parse(t) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+      if (e.mode !== "record" || e.paper !== true) continue;
+      const outcome = typeof e.outcome === "string" ? e.outcome.toLowerCase() : "";
+      if (outcome !== "win" && outcome !== "loss" && outcome !== "stop" && outcome !== "scratch") continue;
+      if (typeof e.pair !== "string" || !e.pair.includes("/")) continue;
+      const pnl = typeof e.pnlUsd === "number" && Number.isFinite(e.pnlUsd) ? (e.pnlUsd as number) : undefined;
+      outcomes.push({
+        pair: e.pair as string,
+        outcome: outcome as DegenOutcome,
+        ...(pnl !== undefined ? { pnlUsd: pnl } : {}),
+        at: typeof e.at === "string" ? (e.at as string) : new Date(nowMs).toISOString(),
+      });
+    }
+  }
+
+  if (!legacyHeat && runs.length === 0 && outcomes.length === 0) return empty;
+
+  const out: PaperMigration = { migrated: true, positions: 0, closed: 0, skipped: 0, renamed: [], warnings: [] };
+  const store = loadPaperStore(opts.paperPath);
+  if (!ensureDegenPaperAccount(store, opts.paperPath)) {
+    out.warnings.push("paper account unavailable — migration aborted");
+    return out;
+  }
+  const openFor = (pair: string) =>
+    (getAccount(store, DEGEN_PAPER_ACCOUNT)?.positions ?? []).find(
+      (p) => (p.strategy ?? "") === DEGEN_PAPER_STRATEGY && p.pair.toUpperCase() === pair.toUpperCase(),
+    );
+
+  for (const { run } of runs) {
+    if (openFor(run.pair)) {
+      out.skipped += 1;
+      out.warnings.push(`${run.pair} already tracked in the paper ledger — legacy run state ignored`);
+      continue;
+    }
+    const qty = run.step1.sizeUsd / run.step1.price;
+    const res = openPaperPosition(store, DEGEN_PAPER_ACCOUNT, {
+      pair: run.pair,
+      side: run.side,
+      qty,
+      price: run.step1.price,
+      leverage: run.leverage,
+      feeUsd: 0,
+      feeTier: "taker",
+      ...(run.tp1Price !== undefined ? { tp: run.tp1Price } : {}),
+      ...(run.killPrice !== undefined ? { sl: run.killPrice } : {}),
+      strategy: DEGEN_PAPER_STRATEGY,
+    });
+    if (res.error || !res.position) {
+      out.skipped += 1;
+      out.warnings.push(`${run.pair} not imported: ${res.error ?? "unknown"}`);
+      continue;
+    }
+    out.positions += 1;
+  }
+
+  for (const o of outcomes) {
+    const pos = openFor(o.pair);
+    if (!pos) {
+      out.skipped += 1;
+      out.warnings.push(`${o.outcome} on ${o.pair} has no open paper position — already recorded, not re-imported`);
+      continue;
+    }
+    // Exit derived from the recorded net pnl (fee-free closes); without a
+    // recorded pnl the position closes at its entry (scratch economics).
+    const res = closePaperPosition(store, DEGEN_PAPER_ACCOUNT, pos.id, {
+      price: paperExitForRecord(pos, o.pnlUsd),
+      feeUsd: 0,
+      feeTier: "taker",
+      kind: paperKindForRecord(o.outcome),
+      note: `migrated ${o.outcome}${o.pnlUsd !== undefined ? ` pnl ${o.pnlUsd}` : ""}`,
+    }, grossPnlUsd);
+    if (res.error || !res.fill) {
+      out.skipped += 1;
+      out.warnings.push(`${o.outcome} on ${o.pair} not closed: ${res.error ?? "unknown"}`);
+      continue;
+    }
+    out.closed += 1;
+  }
+
+  // Heat-only opens (no run state behind them) have no fills to import.
+  if (legacyHeat) {
+    for (const o of legacyHeat.open) {
+      if (!openFor(o.pair) && !runs.some((r) => r.run.pair.toUpperCase() === o.pair.toUpperCase())) {
+        out.skipped += 1;
+        out.warnings.push(`${o.pair} was open in the legacy paper heat with no ticket behind it — not imported`);
+      }
+    }
+  }
+
+  savePaperStore(opts.paperPath, store);
+
+  // The legacy paths leave the write path: rename (never delete) so the
+  // shim stays one-time without destroying anything the import skipped.
+  const renameOne = (path: string): void => {
+    try {
+      renameSync(path, `${path}.migrated`);
+      out.renamed.push(path);
+    } catch {
+      out.warnings.push(`could not rename ${path} — remove it by hand or the next paper run migrates it again`);
+    }
+  };
+  if (haveHeat) renameOne(heatPath);
+  if (haveLog) renameOne(logPath);
+  for (const { file } of runs) renameOne(file);
+  return out;
 }
 
 /**
@@ -795,11 +1015,12 @@ export function paperProposeArgs(
 }
 
 /**
- * Paper fill: same ticket the live loop would fire, simulated at plan
- * prices. Zero venue contact — no list_open_orders, no execute_trade, no
- * set_exits. The only network write is `propose_trade` (Diary visibility,
- * propose scope); the local paper ledger is the backtest source of truth
- * and a diary failure warns without losing the fill.
+ * Paper fill: same ticket the live loop would fire, recorded as a paper
+ * position (paper.ts accounts/positions/fills) at plan prices. Zero venue
+ * contact — no list_open_orders, no execute_trade, no set_exits. The only
+ * network write is `propose_trade` (Diary visibility, propose scope); the
+ * paper ledger is the backtest source of truth and a diary failure warns
+ * without losing the fill.
  */
 async function runPaper(
   a: DegenArgs,
@@ -810,19 +1031,45 @@ async function runPaper(
     row: FadeRow;
     oracle: DegenOracle;
     heat: DegenHeat;
-    heatPath: string;
-    logPath: string;
-    nowMs: number;
+    paper: { store: PaperStore; path: string };
   },
 ): Promise<void> {
-  const { ticket, row, oracle, heat, heatPath, logPath, nowMs } = ctx;
-  const runPath = degenRunPath(ticket.base, deps.runDir, true);
-  if (existsSync(runPath)) {
-    console.error(`paper state exists at ${runPath} — record its outcome (\`degen record --paper --pair ${ticket.pair} --outcome …\`) or remove it by hand; refusing to double-fire.`);
+  const { ticket, row, oracle, heat, paper } = ctx;
+  const acct = getAccount(paper.store, DEGEN_PAPER_ACCOUNT);
+  if (!acct) {
+    console.error(`No ${JSON.stringify(DEGEN_PAPER_ACCOUNT)} paper account — refusing to invent one mid-run. Nothing was written.`);
     process.exitCode = 1;
     return;
   }
-  const fills = paperFillIds(ticket.base, nowMs);
+  if (acct.positions.some((p) => (p.strategy ?? "") === DEGEN_PAPER_STRATEGY && p.pair.toUpperCase() === ticket.pair.toUpperCase())) {
+    console.error(`degen paper position already open for ${ticket.pair} — record its outcome (\`degen record --paper --pair ${ticket.pair} --outcome …\`) or close it by hand; refusing to double-fire.`);
+    process.exitCode = 1;
+    return;
+  }
+  const qty = ticket.step1.sizeUsd / ticket.step1.price;
+  const feeUsd = paperFeeUsd(ticket.step1.sizeUsd, "taker");
+  const opened = openPaperPosition(paper.store, DEGEN_PAPER_ACCOUNT, {
+    pair: ticket.pair,
+    side: ticket.side,
+    qty,
+    price: ticket.step1.price,
+    leverage: a.leverage,
+    feeUsd,
+    feeTier: "taker",
+    tp: ticket.tp1Price,
+    sl: ticket.plan.killPrice,
+    strategy: DEGEN_PAPER_STRATEGY,
+  });
+  if (opened.error || !opened.position) {
+    console.error(`Paper fill refused: ${opened.error ?? "unknown"} — nothing was written.`);
+    process.exitCode = 1;
+    return;
+  }
+  const position = opened.position;
+  const openFill = paper.store.accounts[DEGEN_PAPER_ACCOUNT]?.fills.filter(
+    (f) => f.positionId === position.id && f.kind === "open",
+  ).pop();
+  const fills = { step1Id: openFill?.id ?? position.id, step2Id: position.id };
   const call = deps.call ?? callTool;
   let setupId: string | null = null;
   let diarySkipped: string | null = null;
@@ -839,50 +1086,24 @@ async function runPaper(
       diarySkipped = `diary write failed (${e instanceof Error ? e.message : String(e)}) — paper kept locally`;
     }
   }
-  const runState = {
-    kind: "degen-paper",
-    exchange: a.exchange,
-    pair: ticket.pair,
-    base: ticket.base,
-    side: ticket.side,
-    leverage: a.leverage,
-    step1: { ...ticket.step1, fillId: fills.step1Id },
-    step2: { ...ticket.step2, fillId: fills.step2Id },
-    avg2: ticket.avg2,
-    tp1Price: ticket.tp1Price,
-    tp2Price: ticket.tp2Price,
-    tpArmed: "virtual",
-    killPrice: ticket.plan.killPrice,
-    killLossUsd: ticket.plan.killLossUsd,
-    diary: { setupId, skipped: diarySkipped },
-    createdAt: new Date(nowMs).toISOString(),
-  };
   try {
-    mkdirSync(runPath.split("/").slice(0, -1).join("/") || ".", { recursive: true });
-    writeFileSync(runPath, JSON.stringify(runState, null, 2));
-  } catch {
-    // State is a convenience trail — the paper ledger below already recorded.
+    savePaperStore(paper.path, paper.store);
+  } catch (e) {
+    console.error(`Could not persist the paper ledger: ${e instanceof Error ? e.message : String(e)} — the fill above is in memory only.`);
+    process.exitCode = 1;
+    return;
   }
-  heat.open.push({ pair: ticket.pair, riskUsd: ticket.plan.killLossUsd });
-  heat.heatUsd += ticket.plan.killLossUsd;
-  saveHeat(heatPath, heat);
-  const finetune = appendLearning(logPath, {
-    ...learningEntry(a, ticket, row, oracle, heat, "paper", "paper fill (no venue)"),
-    fills,
-    diary: { setupId, skipped: diarySkipped },
-  });
   if (opts.json) {
-    console.log(JSON.stringify({ mode: "paper", ticket, screen: row, oracle, heat, fills, diary: { setupId, skipped: diarySkipped }, ...(finetune ? { finetune } : {}) }, null, 2));
+    console.log(JSON.stringify({ mode: "paper", ticket, screen: row, oracle, heat, fills, account: DEGEN_PAPER_ACCOUNT, position, diary: { setupId, skipped: diarySkipped } }, null, 2));
   } else {
   printTicket(a, ticket, row, oracle, heat, false);
-  console.log(`  paper fills: step-1 [${fills.step1Id}] step-2 [${fills.step2Id}] TP ${px(ticket.tp1Price)} (virtual, TP-only doctrine)`);
+  console.log(`  paper fills: step-1 [${fills.step1Id}] position [${position.id}] TP ${px(ticket.tp1Price)} (virtual, TP-only doctrine)`);
   if (setupId) console.log(`  diary: PAPER setup ${setupId} (propose scope — approve nothing, it never executes)`);
   else console.log(`  diary: ${diarySkipped}`);
     console.log("PAPER — simulated fills, zero venue contact. Nothing can execute from this ticket.");
   }
   if (!opts.json) {
   console.log(`Kill line ${px(ticket.plan.killPrice)} (≈ -$${ticket.plan.killLossUsd.toFixed(2)}) — close the loop with \`degen record --paper --pair ${ticket.pair} --outcome win|loss|stop|scratch [--pnl …]\`.`);
-  if (finetune) console.log(`FINETUNE-READY: ${finetune} learning windows banked — re-score the oracle holdout.`);
   }
 }
 
@@ -892,7 +1113,7 @@ function learningEntry(
   row: FadeRow,
   oracle: DegenOracle,
   heat: DegenHeat,
-  mode: "preview" | "live" | "paper",
+  mode: "preview" | "live",
   reason: string,
 ): Record<string, unknown> {
   const { sSig, lSig } = rowSignals(row);
@@ -927,8 +1148,9 @@ function learningEntry(
   };
 }
 
-/** Append one learning line; returns the banked total when a threshold hits. */
-export function appendLearning(logPath: string, entry: Record<string, unknown>): number | null {
+/** Append one learning line; returns the banked total when a threshold hits. Null path = no book (paper mode rides the paper ledger). */
+export function appendLearning(logPath: string | null, entry: Record<string, unknown>): number | null {
+  if (!logPath) return null;
   try {
     mkdirSync(logPath.split("/").slice(0, -1).join("/") || ".", { recursive: true, mode: 0o700 });
     appendFileSync(logPath, `${JSON.stringify(entry)}\n`, { mode: 0o600 });
@@ -941,7 +1163,7 @@ export function appendLearning(logPath: string, entry: Record<string, unknown>):
 
 async function noTrade(
   opts: DegenRunOpts,
-  logPath: string,
+  logPath: string | null,
   heat: DegenHeat,
   pair: string | null,
   row: FadeRow | null,
@@ -987,13 +1209,15 @@ function printTicket(
 }
 
 /**
- * `jw3 degen record` — close the loop: score the outcome into heat +
- * learning-log. `stop`/`loss` increments the day's stop count (halve
- * rule, then flat) and starts the cooldown; every outcome frees the
- * pair's heat.
+ * `jw3 degen record` — close the loop. Live mode scores the outcome into
+ * heat + learning-log (`stop`/`loss` increments the day's stop count, halve
+ * rule then flat, cooldown; every outcome frees the pair's heat). Paper
+ * mode closes the paper position in the degen paper account (exit derived
+ * from the recorded pnl, entry when none); stops derive from the ledger,
+ * same halve-then-flat doctrine.
  */
 export async function cmdDegenRecord(
-  opts: { pair: string; outcome: string; pnl?: number; json: boolean; paper?: boolean; heatPath?: string; logPath?: string },
+  opts: { pair: string; outcome: string; pnl?: number; json: boolean; paper?: boolean; heatPath?: string; logPath?: string; paperPath?: string },
   deps?: { now?: () => number },
 ): Promise<void> {
   const pairErr = validateVotePair(opts.pair);
@@ -1005,8 +1229,12 @@ export async function cmdDegenRecord(
   }
   const pair = normalizeVotePair(opts.pair);
   const nowMs = deps?.now ? deps.now() : Date.now();
-  const heatPath = opts.heatPath ?? (opts.paper ? degenPaperHeatPath() : degenHeatPath());
-  const logPath = opts.logPath ?? (opts.paper ? degenPaperLogPath() : degenLogPath());
+  if (opts.paper) {
+    await cmdDegenRecordPaper(pair, outcome, opts.pnl, opts.json, opts.paperPath, nowMs);
+    return;
+  }
+  const heatPath = opts.heatPath ?? degenHeatPath();
+  const logPath = opts.logPath ?? degenLogPath();
   const heat = loadHeat(heatPath, nowMs);
   const idx = heat.open.findIndex((o) => o.pair.toUpperCase() === pair.toUpperCase());
   if (idx >= 0) {
@@ -1020,17 +1248,93 @@ export async function cmdDegenRecord(
   saveHeat(heatPath, heat);
   const finetune = appendLearning(logPath, {
     at: new Date(nowMs).toISOString(), pair, mode: "record", outcome,
-    ...(opts.paper ? { paper: true } : {}),
     ...(opts.pnl !== undefined ? { pnlUsd: opts.pnl } : {}),
     heat: { stopsToday: heat.stopsToday, heatUsd: heat.heatUsd, open: heat.open.map((o) => o.pair) },
   });
   if (opts.json) {
-    console.log(JSON.stringify({ pair, outcome, ...(opts.paper ? { paper: true } : {}), heat, ...(finetune ? { finetune } : {}) }, null, 2));
+    console.log(JSON.stringify({ pair, outcome, heat, ...(finetune ? { finetune } : {}) }, null, 2));
   } else {
-    console.log(`${opts.paper ? "PAPER " : ""}RECORDED ${outcome.toUpperCase()} ${pair} — stops today ${heat.stopsToday}, heat $${heat.heatUsd.toFixed(2)}, open [${heat.open.map((o) => o.pair).join(", ") || "—"}]`);
+    console.log(`RECORDED ${outcome.toUpperCase()} ${pair} — stops today ${heat.stopsToday}, heat $${heat.heatUsd.toFixed(2)}, open [${heat.open.map((o) => o.pair).join(", ") || "—"}]`);
     if (heat.stopsToday === 1) console.log("Halve rule live: next size is HALF until the day rolls.");
     if (heat.stopsToday >= DEGEN_MAX_STOPS_PER_DAY) console.log("Flat for the day — the book reopens tomorrow.");
     if (finetune) console.log(`FINETUNE-READY: ${finetune} learning windows banked — re-score the oracle holdout.`);
+  }
+}
+
+/** Exit price for a paper close from the recorded net pnl (fee-free closes). */
+function paperExitForRecord(
+  pos: { side: "long" | "short"; entryPrice: number; qty: number },
+  pnlUsd: number | undefined,
+): number {
+  if (pnlUsd === undefined || !(pos.qty > 0)) return pos.entryPrice;
+  const dir = pos.side === "long" ? 1 : -1;
+  const exit = pos.entryPrice + (dir * pnlUsd) / pos.qty;
+  return exit > 0 && Number.isFinite(exit) ? exit : pos.entryPrice;
+}
+
+/** Close-kind for a recorded outcome (losses close out red, stops arm the ledger's stop count). */
+function paperKindForRecord(outcome: DegenOutcome): PaperFillKind {
+  return outcome === "win" ? "tp" : outcome === "scratch" ? "close" : "sl";
+}
+
+/**
+ * `jw3 degen record --paper` — close the paper position in the degen paper
+ * account. The exit derives from the recorded `--pnl` (fee-free, same math
+ * as the migration shim); without a pnl the position closes at its entry.
+ * Stops derive from the ledger afterward, same halve-then-flat doctrine as
+ * live (loss closes recorded red count as stops).
+ */
+export async function cmdDegenRecordPaper(
+  pair: string,
+  outcome: DegenOutcome,
+  pnlUsd: number | undefined,
+  json: boolean,
+  paperPathOpt: string | undefined,
+  nowMs: number,
+): Promise<void> {
+  const paperPath = paperPathOpt ?? paperStorePath();
+  const mig = migrateDegenPaperOnce({ paperPath, nowMs });
+  if (mig.migrated && !json) {
+    console.log(
+      `MIGRATED legacy paper book → ${paperPath}: ${mig.positions} open, ${mig.closed} closed, ${mig.skipped} skipped${mig.warnings.length > 0 ? ` (${mig.warnings.join("; ")})` : ""}.`,
+    );
+  }
+  const store = loadPaperStore(paperPath);
+  if (!ensureDegenPaperAccount(store, paperPath)) return;
+  const acct = getAccount(store, DEGEN_PAPER_ACCOUNT) as PaperAccount;
+  const pos = acct.positions.find(
+    (p) => (p.strategy ?? "") === DEGEN_PAPER_STRATEGY && p.pair.toUpperCase() === pair.toUpperCase(),
+  );
+  if (!pos) {
+    console.error(`No open degen paper position for ${pair} — nothing to record. Fire one first (\`jw3 degen --paper --pair ${pair}\`).`);
+    process.exitCode = 1;
+    return;
+  }
+  const res = closePaperPosition(store, DEGEN_PAPER_ACCOUNT, pos.id, {
+    price: paperExitForRecord(pos, pnlUsd),
+    feeUsd: 0,
+    feeTier: "taker",
+    kind: paperKindForRecord(outcome),
+  }, grossPnlUsd);
+  if (res.error || !res.fill) {
+    console.error(`Could not close the paper position: ${res.error ?? "unknown"} — nothing was written.`);
+    process.exitCode = 1;
+    return;
+  }
+  try {
+    savePaperStore(paperPath, store);
+  } catch (e) {
+    console.error(`Could not persist the paper ledger: ${e instanceof Error ? e.message : String(e)} — the close above is in memory only.`);
+    process.exitCode = 1;
+    return;
+  }
+  const heat = paperHeatOf(getAccount(store, DEGEN_PAPER_ACCOUNT) as PaperAccount, nowMs);
+  if (json) {
+    console.log(JSON.stringify({ pair, outcome, paper: true, heat, fill: res.fill }, null, 2));
+  } else {
+    console.log(`PAPER RECORDED ${outcome.toUpperCase()} ${pair} — stops today ${heat.stopsToday}, heat $${heat.heatUsd.toFixed(2)}, open [${heat.open.map((o) => o.pair).join(", ") || "—"}]`);
+    if (heat.stopsToday === 1) console.log("Halve rule live: next size is HALF until the day rolls.");
+    if (heat.stopsToday >= DEGEN_MAX_STOPS_PER_DAY) console.log("Flat for the day — the book reopens tomorrow.");
   }
 }
 
@@ -1046,54 +1350,43 @@ export type PaperStats = {
   open: string[];
 };
 
-/** Pure scorer over paper-learning.jsonl content (unknown lines ignored). */
-export function summarizePaperLog(text: string, open: string[] = []): PaperStats {
-  const s: PaperStats = { fills: 0, wins: 0, losses: 0, stops: 0, scratches: 0, pending: 0, netUsd: 0, open: [...open] };
-  for (const line of text.split("\n")) {
-    const t = line.trim();
-    if (!t) continue;
-    let e: Record<string, unknown>;
-    try {
-      e = JSON.parse(t) as Record<string, unknown>;
-    } catch {
+/** Pure scorer over the degen paper account (fills with strategy "degen"). */
+export function summarizePaperAccount(acct: PaperAccount): PaperStats {
+  const s: PaperStats = { fills: 0, wins: 0, losses: 0, stops: 0, scratches: 0, pending: 0, netUsd: 0, open: [] };
+  for (const f of acct.fills) {
+    if ((f.strategy ?? "") !== DEGEN_PAPER_STRATEGY) continue;
+    if (f.kind === "open") {
+      s.fills += 1;
       continue;
     }
-    if (e.mode === "paper" && e.outcome === "pending") s.fills += 1;
-    if (e.mode === "record" && e.paper === true && typeof e.outcome === "string") {
-      if (e.outcome === "win") s.wins += 1;
-      else if (e.outcome === "loss") s.losses += 1;
-      else if (e.outcome === "stop") s.stops += 1;
-      else if (e.outcome === "scratch") s.scratches += 1;
-      if (typeof e.pnlUsd === "number" && Number.isFinite(e.pnlUsd)) s.netUsd += e.pnlUsd;
-    }
+    if (typeof f.pnlUsd === "number" && Number.isFinite(f.pnlUsd)) s.netUsd += f.pnlUsd;
+    if (f.kind === "tp") s.wins += 1;
+    else if (f.kind === "sl") s.stops += 1;
+    else if (f.kind === "close" && (f.pnlUsd ?? 0) < 0) s.losses += 1;
+    else s.scratches += 1;
   }
   s.pending = Math.max(0, s.fills - (s.wins + s.losses + s.stops + s.scratches));
+  s.open = acct.positions.filter((p) => (p.strategy ?? "") === DEGEN_PAPER_STRATEGY).map((p) => p.pair);
   return s;
 }
 
 /** `jw3 degen paper-stats` — score the paper book. Reports, never fires. */
-export async function cmdPaperStats(opts: { json: boolean; logPath?: string; heatPath?: string }): Promise<void> {
-  const logPath = opts.logPath ?? degenPaperLogPath();
-  const heatPath = opts.heatPath ?? degenPaperHeatPath();
-  let text = "";
-  try {
-    text = readFileSync(logPath, "utf8");
-  } catch {
-    // No paper fills yet — empty book is a real answer.
+export async function cmdPaperStats(opts: { json: boolean; paperPath?: string }): Promise<void> {
+  const paperPath = opts.paperPath ?? paperStorePath();
+  const mig = migrateDegenPaperOnce({ paperPath });
+  if (mig.migrated && !opts.json) {
+    console.log(
+      `MIGRATED legacy paper book → ${paperPath}: ${mig.positions} open, ${mig.closed} closed, ${mig.skipped} skipped${mig.warnings.length > 0 ? ` (${mig.warnings.join("; ")})` : ""}.`,
+    );
   }
-  let open: string[] = [];
-  try {
-    const heat = loadHeat(heatPath);
-    open = heat.open.map((o) => o.pair);
-  } catch {
-    // Heat unreadable — stats still report the ledger.
-  }
-  const s = summarizePaperLog(text, open);
+  const store = loadPaperStore(paperPath);
+  const acct = getAccount(store, DEGEN_PAPER_ACCOUNT);
+  const s = acct ? summarizePaperAccount(acct) : null;
   if (opts.json) {
-    console.log(JSON.stringify({ book: "paper", ...s }, null, 2));
+    console.log(JSON.stringify({ book: "paper", ...(s ?? { fills: 0, wins: 0, losses: 0, stops: 0, scratches: 0, pending: 0, netUsd: 0, open: [] }) }, null, 2));
     return;
   }
-  if (s.fills === 0) {
+  if (!s || s.fills === 0) {
     console.log("PAPER BOOK — no paper fills yet. Prove one: `jw3 degen --paper --pair SOL/USDT`.");
     return;
   }

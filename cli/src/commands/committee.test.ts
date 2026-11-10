@@ -11,7 +11,6 @@ import {
   executionSeat,
   eventRiskSeat,
   flowSeat,
-  inUtcWindow,
   meanReversionSeat,
   mergeCommitteeParams,
   mirrorPosition,
@@ -150,14 +149,6 @@ describe("committee pure helpers", () => {
     assert.ok(z !== null && z > 1);
     assert.equal(zScore([5, 5, 5, 5], 4), null);
     assert.equal(zScore([1, 2], 20), null);
-  });
-
-  it("inUtcWindow handles a normal and a midnight-wrapping window", () => {
-    assert.equal(inUtcWindow(12 * 60, 11 * 60 + 30, 13 * 60 + 30), true);
-    assert.equal(inUtcWindow(14 * 60, 11 * 60 + 30, 13 * 60 + 30), false);
-    assert.equal(inUtcWindow(23 * 60, 22 * 60, 60), true); // wraps past midnight
-    assert.equal(inUtcWindow(30, 22 * 60, 60), true);
-    assert.equal(inUtcWindow(120, 22 * 60, 60), false);
   });
 
   it("mirrorPosition flips the side and mirrors the levels around the entry", () => {

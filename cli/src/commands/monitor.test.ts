@@ -7,9 +7,9 @@
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { makeSandbox } from "../test-fixtures.js";
 import {
   buildSnapshot,
   canonicalPair,
@@ -902,12 +902,14 @@ describe("formatMonitorReport", () => {
 /* ------------------------------------------------------------------ */
 
 describe("readOwnership against real state files", () => {
+  let sb: { dir: string; cleanup: () => void };
   let dir: string;
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "monitor-test-"));
+    sb = makeSandbox("monitor-test-");
+    dir = sb.dir;
   });
   afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
+    sb.cleanup();
   });
 
   it("claims a position from a scalp state file", () => {

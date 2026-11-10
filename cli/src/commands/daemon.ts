@@ -2,19 +2,21 @@
  * `jw3 daemon` (`jw3d daemon`) — the 24/7 trading supervisor, and the ONLY
  * owner of the margin pool.
  *
- * `jw3 supervise` (commands/supervise.ts) already restarts children, writes
- * a heartbeat file and rotates logs — but it is deliberately NOT an order
- * owner: its children spawn WITHOUT `--yes` unless the operator opts in and
- * the supervisor never fires anything itself. The daemon is the process that
- * actually owns the pool. It supervises the four loops of the 24/7 design
- * (signal / executor / monitor / learning), gates every fire through ONE
- * health + kill-switch decision, reconciles the venue on boot so it never
- * inherits somebody else's order, and on the way down it DRAINS instead of
- * leaving orphan working orders behind.
+ * The deleted `jw3 supervise` command used to restart children, write a
+ * heartbeat file and rotate logs — but it was deliberately NOT an order
+ * owner: its children spawned WITHOUT `--yes` unless the operator opted
+ * in and the supervisor never fired anything itself. OQ-08 folded those
+ * mechanics (restart-with-backoff, heartbeat file, log rotation) into
+ * this file verbatim and deleted the command. The daemon is the process
+ * that actually owns the pool. It supervises the four loops of the 24/7
+ * design (signal / executor / monitor / learning), gates every fire
+ * through ONE health + kill-switch decision, reconciles the venue on
+ * boot so it never inherits somebody else's order, and on the way down
+ * it DRAINS instead of leaving orphan working orders behind.
  *
  * Everything here is built on the existing CLI primitives (no second venue
  * signing path, no second gate):
- *   commands/supervise.ts → backoffMs, appendLog, rotateLogsIfNeeded, log/heartbeat paths
+ *   this file             → backoffMs, appendLog, rotateLogsIfNeeded, log/heartbeat paths (folded in from supervise.ts, OQ-08)
  *   commands/trade.ts     → cancelToolArgs, closeToolArgs, cancelOrderIdOf, extractOpenOrders, normalizeRiskLimits
  *   commands/market.ts    → listConnections, pickConnection, collectRows
  *   commands/heat.ts      → accountFromBalances
@@ -59,10 +61,10 @@
  * process control and is unit-tested with zero processes (daemon.test.ts).
  */
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { resolvePat } from "../config.js";
+import { configDir, resolvePat } from "../config.js";
 import { callTool } from "../mcp.js";
 import {
   classifyStrays,
@@ -84,17 +86,93 @@ import {
   type TradeCall,
 } from "./trade.js";
 import {
-  appendLog,
-  backoffMs,
-  defaultHeartbeatPath,
-  defaultLogDir,
-  rotateLogsIfNeeded,
-  SUPERVISE_BACKOFF_BASE_MS,
-  SUPERVISE_BACKOFF_CAP_MS,
-  SUPERVISE_DEFAULT_MAX_LOG_BYTES,
-  SUPERVISE_DEFAULT_MAX_LOG_FILES,
-  SUPERVISE_DEFAULT_MAX_RESTARTS,
-} from "./supervise.js";
+  loadJsonStoreNullable,
+  resolveStorePath,
+  saveJsonStoreAtomic,
+} from "./json-store.js";
+
+/* ------------------------------------------------------------------ */
+/* child-supervision mechanics (folded in from supervise.ts, OQ-08)    */
+/*                                                                     */
+/* The deleted `jw3 supervise` command supervised ad-hoc trail/loop    */
+/* children; its restart-with-backoff, heartbeat-file and log-rotation */
+/* mechanics move here verbatim — same names, same values, same file   */
+/* layouts — so the daemon supervises the four 24/7 loops with the     */
+/* identical discipline. `defaultHeartbeatPath` below is the legacy    */
+/* supervisor path (kept for existing watchdog configs); the daemon    */
+/* writes `defaultDaemonHeartbeatPath` and the watchdog watches that.  */
+/* ------------------------------------------------------------------ */
+
+/** Heartbeat cadence default (s). */
+export const SUPERVISE_DEFAULT_HEARTBEAT_SEC = 15;
+/** Per-child restart budget before the child is marked dead. */
+export const SUPERVISE_DEFAULT_MAX_RESTARTS = 10;
+/** Log rotation defaults: 5 MiB per file, 5 files kept. */
+export const SUPERVISE_DEFAULT_MAX_LOG_BYTES = 5 * 1024 * 1024;
+export const SUPERVISE_DEFAULT_MAX_LOG_FILES = 5;
+/** Restart backoff: 1s × 2^attempt, capped at 30s. */
+export const SUPERVISE_BACKOFF_BASE_MS = 1000;
+export const SUPERVISE_BACKOFF_CAP_MS = 30_000;
+
+/** Pure: restart delay for the Nth restart (0-based): 1s×2^N capped 30s. */
+export function backoffMs(attempt: number, baseMs: number = SUPERVISE_BACKOFF_BASE_MS, capMs: number = SUPERVISE_BACKOFF_CAP_MS): number {
+  const n = Number.isInteger(attempt) && attempt >= 0 ? attempt : 0;
+  const base = Number.isFinite(baseMs) && baseMs > 0 ? baseMs : SUPERVISE_BACKOFF_BASE_MS;
+  const cap = Number.isFinite(capMs) && capMs > 0 ? capMs : SUPERVISE_BACKOFF_CAP_MS;
+  return Math.min(cap, base * 2 ** Math.min(n, 20));
+}
+
+/** Pure: true when the active log file has reached the rotation limit. */
+export function shouldRotate(sizeBytes: number, maxBytes: number): boolean {
+  if (!Number.isFinite(sizeBytes) || !Number.isFinite(maxBytes) || maxBytes <= 0) return false;
+  return sizeBytes >= maxBytes;
+}
+
+export function defaultLogDir(): string {
+  return join(configDir(), "logs");
+}
+
+export function defaultHeartbeatPath(): string {
+  return join(configDir(), "supervise-heartbeat.json");
+}
+
+/** Rotate `logFile` when it reaches `maxBytes` (keeps `maxFiles`). */
+export function rotateLogsIfNeeded(logFile: string, maxBytes: number, maxFiles: number): string | null {
+  let size = 0;
+  try {
+    size = statSync(logFile).size;
+  } catch {
+    return null; // no file yet — nothing to rotate
+  }
+  if (!shouldRotate(size, maxBytes)) return null;
+  const keep = Number.isInteger(maxFiles) && maxFiles >= 1 ? maxFiles : SUPERVISE_DEFAULT_MAX_LOG_FILES;
+  // Drop the oldest, shift the rest up, active file becomes .1.
+  try {
+    rmSync(`${logFile}.${keep}`, { force: true });
+    for (let i = keep - 1; i >= 1; i--) {
+      const src = `${logFile}.${i}`;
+      if (existsSync(src)) renameSync(src, `${logFile}.${i + 1}`);
+    }
+    renameSync(logFile, `${logFile}.1`);
+    return `${logFile}.1`;
+  } catch {
+    return null;
+  }
+}
+
+export function appendLog(logFile: string, line: string, maxBytes: number, maxFiles: number): void {
+  try {
+    mkdirSync(dirname(logFile), { recursive: true, mode: 0o700 });
+  } catch {
+    // best-effort; the write below still tries
+  }
+  rotateLogsIfNeeded(logFile, maxBytes, maxFiles);
+  try {
+    appendFileSync(logFile, `${line}\n`, { mode: 0o600 });
+  } catch {
+    // Logging never stops supervision.
+  }
+}
 
 /* ------------------------------------------------------------------ */
 /* constants                                                          */
@@ -961,11 +1039,11 @@ export type DaemonState = {
 };
 
 export function defaultDaemonStatePath(dir?: string): string {
-  return join(dir ?? defaultDaemonStateDir(), "daemon-state.json");
+  return resolveStorePath(dir, "daemon-state.json", defaultDaemonStateDir());
 }
 
 export function defaultDaemonOwnerLockPath(dir?: string): string {
-  return join(dir ?? defaultDaemonStateDir(), "daemon-owner.json");
+  return resolveStorePath(dir, "daemon-owner.json", defaultDaemonStateDir());
 }
 
 /**
@@ -980,29 +1058,26 @@ export type DaemonOwnerLock = {
   startedAt: string;
 };
 
+/** Sanitize a raw owner lock; null = reject (missing/corrupt reads as no lock). */
+export function sanitizeDaemonOwnerLock(raw: unknown): DaemonOwnerLock | null {
+  const doc = raw as Partial<DaemonOwnerLock>;
+  if (!doc || typeof doc !== "object") return null;
+  const pid = typeof doc.pid === "number" ? doc.pid : Number(doc.pid);
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  return {
+    pid,
+    sessionId: typeof doc.sessionId === "string" ? doc.sessionId : "",
+    startedAt: typeof doc.startedAt === "string" ? doc.startedAt : "",
+  };
+}
+
 export function readDaemonOwnerLock(path: string): DaemonOwnerLock | null {
-  try {
-    const raw = readFileSync(path, "utf8");
-    const doc = JSON.parse(raw) as Partial<DaemonOwnerLock>;
-    if (!doc || typeof doc !== "object") return null;
-    const pid = typeof doc.pid === "number" ? doc.pid : Number(doc.pid);
-    if (!Number.isInteger(pid) || pid <= 0) return null;
-    return {
-      pid,
-      sessionId: typeof doc.sessionId === "string" ? doc.sessionId : "",
-      startedAt: typeof doc.startedAt === "string" ? doc.startedAt : "",
-    };
-  } catch {
-    return null;
-  }
+  return loadJsonStoreNullable(path, sanitizeDaemonOwnerLock);
 }
 
 /** Write the owner lock (atomically). */
 export function writeDaemonOwnerLock(path: string, lock: DaemonOwnerLock): void {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const tmp = `${path}.tmp`;
-  writeFileSync(tmp, JSON.stringify(lock, null, 2), { mode: 0o600 });
-  renameSync(tmp, path);
+  saveJsonStoreAtomic(path, lock);
 }
 
 /** Remove the owner lock (only if it is still ours). */
@@ -1016,31 +1091,28 @@ export function clearDaemonOwnerLock(path: string, sessionId: string): void {
   }
 }
 
+/** Sanitize a raw daemon state; null = reject (missing/corrupt reads as unattributed). */
+export function sanitizeDaemonState(raw: unknown): DaemonState | null {
+  const doc = raw as Partial<DaemonState>;
+  if (!doc || typeof doc !== "object") return null;
+  return {
+    version: typeof doc.version === "number" ? doc.version : DAEMON_MANIFEST_VERSION,
+    sessionId: typeof doc.sessionId === "string" ? doc.sessionId : "",
+    pairs: Array.isArray(doc.pairs) ? doc.pairs.map(String) : [],
+    ownedOrderIds: Array.isArray(doc.ownedOrderIds) ? doc.ownedOrderIds.map(String) : [],
+    ownedPairs: Array.isArray(doc.ownedPairs) ? doc.ownedPairs.map(String) : [],
+    updatedAt: typeof doc.updatedAt === "string" ? doc.updatedAt : "",
+  };
+}
+
 /** Read the daemon state file. Unreadable/absent → null (never throws). */
 export function readDaemonState(path: string): DaemonState | null {
-  try {
-    const raw = readFileSync(path, "utf8");
-    const doc = JSON.parse(raw) as Partial<DaemonState>;
-    if (!doc || typeof doc !== "object") return null;
-    return {
-      version: typeof doc.version === "number" ? doc.version : DAEMON_MANIFEST_VERSION,
-      sessionId: typeof doc.sessionId === "string" ? doc.sessionId : "",
-      pairs: Array.isArray(doc.pairs) ? doc.pairs.map(String) : [],
-      ownedOrderIds: Array.isArray(doc.ownedOrderIds) ? doc.ownedOrderIds.map(String) : [],
-      ownedPairs: Array.isArray(doc.ownedPairs) ? doc.ownedPairs.map(String) : [],
-      updatedAt: typeof doc.updatedAt === "string" ? doc.updatedAt : "",
-    };
-  } catch {
-    return null;
-  }
+  return loadJsonStoreNullable(path, sanitizeDaemonState);
 }
 
 /** Write the daemon state file atomically (tmp + rename). */
 export function writeDaemonState(path: string, state: DaemonState): void {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const tmp = `${path}.tmp`;
-  writeFileSync(tmp, JSON.stringify(state, null, 2), { mode: 0o600 });
-  renameSync(tmp, path);
+  saveJsonStoreAtomic(path, state);
 }
 
 /** True when a pid is still alive (EPERM counts as alive). */
@@ -1800,9 +1872,3 @@ export async function cmdDaemon(opts: DaemonOpts, deps: DaemonDeps = {}): Promis
   writeHeartbeat(healthNow());
   persistState();
 }
-
-/* ------------------------------------------------------------------ */
-/* re-exported helpers (single import surface for the parent)         */
-/* ------------------------------------------------------------------ */
-
-export { rotateLogsIfNeeded, backoffMs };

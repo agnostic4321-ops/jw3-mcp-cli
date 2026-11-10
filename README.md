@@ -15,7 +15,8 @@ The deployed function URLs are unchanged — same Supabase project, same slugs.
 ## Layout
 
 - `cli/` — `@jw3/cli` (`jw3` / `jw3d` bins). Pure HTTP client of the
-  mcp-server surface; no app imports. `pnpm --filter @jw3/cli build/test`.
+  mcp-server surface; no app imports. `cd cli && npm run build`
+  (typecheck + emit) / `cd cli && npm test` (build + node --test).
 - `edge-functions/` — Supabase edge functions, deployed to the same project:
   - `mcp-server` (gateway JWT off — harness PATs are the gate)
   - `mcp-auth`, `mcp-token`, `mcp-oauth` (token issuance / OAuth)

@@ -1,8 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { makeSandbox } from "../test-fixtures.js";
 import {
   CONSENSUS_THRESHOLD,
   DEFAULT_WEIGHTS,
@@ -212,14 +212,47 @@ describe("resolveVote", () => {
 
 describe("store persistence", () => {
   it("round-trips through disk; missing/corrupt falls back to defaults", () => {
-    const dir = mkdtempSync(join(tmpdir(), "jw3-vote-"));
-    const path = voteStorePath(dir);
-    const store = defaultStore();
-    recordOutcome(store, "jev", true);
-    saveStore(path, store);
-    const back = loadStore(path);
-    assert.equal(back.weights["jev"], 1.0);
-    assert.equal(back.skills["jev"]!.total, 1);
-    assert.equal(loadStore(join(dir, "nope.json")).weights["jev"], 1.0);
+    const sb = makeSandbox("jw3-vote-");
+    try {
+      const path = voteStorePath(sb.dir);
+      const store = defaultStore();
+      recordOutcome(store, "jev", true);
+      saveStore(path, store);
+      const back = loadStore(path);
+      assert.equal(back.weights["jev"], 1.0);
+      assert.equal(back.skills["jev"]!.total, 1);
+      assert.equal(loadStore(join(sb.dir, "nope.json")).weights["jev"], 1.0);
+    } finally {
+      sb.cleanup();
+    }
+  });
+  it("loads a file written in the OLD format unchanged", () => {
+    const sb = makeSandbox("jw3-vote-");
+    try {
+      // Byte shape of the old saveStore: JSON.stringify(store, null, 2)
+      // plus unknown fields the sanitizer must ignore.
+      const old = {
+        version: 1,
+        weights: { jev: 1.2, kronos: "bad", rfdetr: 0 },
+        skills: {
+          jev: { results: [true, false, "x", 1], hits: 1, total: 2 },
+          kronos: { results: [], hits: 0, total: 0 },
+        },
+        votes: [{ pair: "SOL/USDT", side: "long", score: 0.5, signals: [], weights: {} }, { pair: 42 }],
+        extra: true,
+      };
+      const path = join(sb.dir, "vote.json");
+      writeFileSync(path, JSON.stringify(old, null, 2));
+      const back = loadStore(path);
+      assert.equal(back.weights["jev"], 1.2);
+      assert.equal(back.weights["kronos"], 0.5);
+      assert.deepEqual(back.skills["jev"]!.results, [true, false]);
+      assert.equal(back.skills["jev"]!.total, 2);
+      assert.equal(back.votes.length, 1);
+      assert.equal(back.votes[0]!.pair, "SOL/USDT");
+      assert.equal("extra" in back, false);
+    } finally {
+      sb.cleanup();
+    }
   });
 });

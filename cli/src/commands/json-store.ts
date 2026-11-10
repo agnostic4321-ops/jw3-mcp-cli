@@ -6,7 +6,7 @@
  * path resolution, tolerant loads (missing/corrupt → caller defaults,
  * never throws) and best-effort saves (mkdir -p 0700, write 0600).
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 /** Store file path: explicit dir wins, otherwise the config dir. */
@@ -38,4 +38,35 @@ export function saveJsonStore(path: string, store: unknown): void {
   const dir = path.split("/").slice(0, -1).join("/") || ".";
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   writeFileSync(path, JSON.stringify(store, null, 2), { mode: 0o600 });
+}
+
+/**
+ * Load a JSON store, returning null when the file is missing, unreadable
+ * or corrupt (never throws). The sanitizer validates the raw payload and
+ * returns the store, or null to reject it. For stores whose callers
+ * distinguish "no state" (null) from "empty state" — the daemon state and
+ * owner lock: a missing/corrupt state file means "unattributed, verify
+ * against the venue", which the tolerant default-fallback would erase.
+ */
+export function loadJsonStoreNullable<T>(path: string, sanitize: (raw: unknown) => T | null): T | null {
+  try {
+    if (!existsSync(path)) return null;
+    return sanitize(JSON.parse(readFileSync(path, "utf8")) as unknown);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Persist a store atomically (tmp file + rename; dir 0700, file 0600).
+ * For the daemon state and owner lock: a crash between write and rename
+ * leaves the previous state intact instead of a half-written file the
+ * boot reconcile would read as "no attribution".
+ */
+export function saveJsonStoreAtomic(path: string, store: unknown): void {
+  const dir = path.split("/").slice(0, -1).join("/") || ".";
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const tmp = `${path}.tmp`;
+  writeFileSync(tmp, JSON.stringify(store, null, 2), { mode: 0o600 });
+  renameSync(tmp, path);
 }

@@ -7,10 +7,10 @@
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { makeSandbox } from "../test-fixtures.js";
 import {
   accountSnapshotFromVenue,
   appendWatchdogDiary,
@@ -717,12 +717,14 @@ describe("parseHeartbeat", () => {
 /* ------------------------------------------------------------------ */
 
 describe("watchdog state file", () => {
+  let sb: { dir: string; cleanup: () => void };
   let dir: string;
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "watchdog-state-"));
+    sb = makeSandbox("watchdog-state-");
+    dir = sb.dir;
   });
   afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
+    sb.cleanup();
   });
 
   it("defaults to an untripped breaker", () => {
@@ -823,12 +825,14 @@ describe("accountSnapshotFromVenue", () => {
 /* ------------------------------------------------------------------ */
 
 describe("runWatchdogCycle", () => {
+  let sb: { dir: string; cleanup: () => void };
   let dir: string;
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "watchdog-cycle-"));
+    sb = makeSandbox("watchdog-cycle-");
+    dir = sb.dir;
   });
   afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
+    sb.cleanup();
   });
 
   const conns = [{ id: "c1", exchange: "kucoin" }];
@@ -1085,12 +1089,14 @@ describe("runWatchdogCycle", () => {
 /* ------------------------------------------------------------------ */
 
 describe("cmdWatchdogResume", () => {
+  let sb: { dir: string; cleanup: () => void };
   let dir: string;
   let logged: string[];
   let origLog: typeof console.log;
   let origErr: typeof console.error;
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "watchdog-resume-"));
+    sb = makeSandbox("watchdog-resume-");
+    dir = sb.dir;
     logged = [];
     origLog = console.log;
     origErr = console.error;
@@ -1102,7 +1108,7 @@ describe("cmdWatchdogResume", () => {
     console.log = origLog;
     console.error = origErr;
     process.exitCode = undefined;
-    rmSync(dir, { recursive: true, force: true });
+    sb.cleanup();
   });
 
   const conns = [{ id: "c1", exchange: "kucoin" }];
@@ -1206,7 +1212,8 @@ describe("cmdWatchdogCheck", () => {
   });
 
   it("check is read-only — no cancel, no close", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "watchdog-check-"));
+    const sb = makeSandbox("watchdog-check-");
+    const dir = sb.dir;
     const calls: string[] = [];
     await cmdWatchdogCheck(
       { pat: "p" },
@@ -1227,7 +1234,7 @@ describe("cmdWatchdogCheck", () => {
     assert.equal(calls.includes("cancel_order"), false);
     assert.equal(calls.includes("close_position"), false);
     assert.equal(process.exitCode, 1);
-    rmSync(dir, { recursive: true, force: true });
+    sb.cleanup();
   });
 });
 
@@ -1237,7 +1244,8 @@ describe("cmdWatchdogCheck", () => {
 
 describe("evaluateWatchdog", () => {
   it("reads the server risk state and the live account without writing", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "watchdog-eval-"));
+    const sb = makeSandbox("watchdog-eval-");
+    const dir = sb.dir;
     const calls: string[] = [];
     const result = await evaluateWatchdog(
       { exchange: "kucoin", pat: "p" },
@@ -1261,7 +1269,7 @@ describe("evaluateWatchdog", () => {
     assert.equal(result.decision.shouldAct, false);
     assert.equal(calls.includes("cancel_order"), false);
     assert.equal(calls.includes("close_position"), false);
-    rmSync(dir, { recursive: true, force: true });
+    sb.cleanup();
   });
 });
 
@@ -1272,7 +1280,8 @@ describe("a TRANSIENT venue failure must not latch the breaker", () => {
   // watchdog latched on three consecutive `rate_limited` errors caused
   // by a scanner sharing the same per-minute budget.
   const evalWith = async (call: unknown, state: Record<string, unknown> = {}) => {
-    const dir = mkdtempSync(join(tmpdir(), "watchdog-transient-"));
+    const sb = makeSandbox("watchdog-transient-");
+    const dir = sb.dir;
     const result = await evaluateWatchdog(
       { exchange: "kucoin", pat: "p" },
       {
@@ -1284,7 +1293,7 @@ describe("a TRANSIENT venue failure must not latch the breaker", () => {
         ...(state as object),
       },
     );
-    rmSync(dir, { recursive: true, force: true });
+    sb.cleanup();
     return result;
   };
 
@@ -1299,7 +1308,8 @@ describe("a TRANSIENT venue failure must not latch the breaker", () => {
   });
 
   it("a GENUINE venue read failure DOES advance the streak and trips at the limit", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "watchdog-genuine-"));
+    const sb = makeSandbox("watchdog-genuine-");
+    const dir = sb.dir;
     // Seed a state file with a streak already at the limit.
     writeFileSync(
       join(dir, "watchdog-state.json"),
@@ -1320,7 +1330,7 @@ describe("a TRANSIENT venue failure must not latch the breaker", () => {
         now: () => NOW,
       },
     );
-    rmSync(dir, { recursive: true, force: true });
+    sb.cleanup();
     assert.equal(result.decision.shouldAct, false, "a healthy venue read should not act");
   });
 });
@@ -1377,7 +1387,8 @@ describe("watchdog diary: every auto-cancel/auto-close is logged", () => {
   });
 
   it("a cycle appends one line per auto-cancel with trip code and proof", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "watchdog-diary-"));
+    const sb = makeSandbox("watchdog-diary-");
+    const dir = sb.dir;
     try {
       const call = (async (name: string, args: Record<string, unknown>) => {
         if (name === "read_risk_limits") return { risk_limits: { kill_switch_enabled: true } };
@@ -1428,12 +1439,13 @@ describe("watchdog diary: every auto-cancel/auto-close is logged", () => {
       );
       assert.equal(readFileSync(diary, "utf8").split("\n").filter((l) => l.trim()).length, 2);
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      sb.cleanup();
     }
   });
 
   it("a failed auto-cancel is logged as failed with the venue error", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "watchdog-diary-fail-"));
+    const sb = makeSandbox("watchdog-diary-fail-");
+    const dir = sb.dir;
     try {
       const call = (async (name: string, args: Record<string, unknown>) => {
         if (name === "read_risk_limits") return { risk_limits: { kill_switch_enabled: true } };
@@ -1464,12 +1476,13 @@ describe("watchdog diary: every auto-cancel/auto-close is logged", () => {
       assert.equal(e.result, "failed");
       assert.match(String(e.error), /Kill switch/);
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      sb.cleanup();
     }
   });
 
   it("an auto-close is logged with the position proof", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "watchdog-diary-close-"));
+    const sb = makeSandbox("watchdog-diary-close-");
+    const dir = sb.dir;
     try {
       const call = (async (name: string, args: Record<string, unknown>) => {
         if (name === "read_risk_limits") return { risk_limits: { kill_switch_enabled: true } };
@@ -1511,21 +1524,26 @@ describe("watchdog diary: every auto-cancel/auto-close is logged", () => {
       assert.match(String((e.ownershipProof as { reason: string }).reason), /local state file/);
       assert.equal(e.result, "ok");
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      sb.cleanup();
     }
   });
 
   it("the diary path defaults under the config dir", () => {
     assert.ok(watchdogDiaryPath("/tmp/x").endsWith("watchdog-diary.jsonl"));
-    assert.equal(appendWatchdogDiary(join(mkdtempSync(join(tmpdir(), "watchdog-diary-unit-")), "d.jsonl"), makeWatchdogDiaryEntry({
-      at: "2026-10-27T00:00:00.000Z",
-      action: "auto-cancel",
-      exchange: "kucoin",
-      pair: "SOL/USDT",
-      orderId: "o1",
-      tripCodes: ["kill_switch"],
-      ownershipReason: "claimed by a local state file",
-      result: "ok",
-    })), null);
+    const sb = makeSandbox("watchdog-diary-unit-");
+    try {
+      assert.equal(appendWatchdogDiary(join(sb.dir, "d.jsonl"), makeWatchdogDiaryEntry({
+        at: "2026-10-27T00:00:00.000Z",
+        action: "auto-cancel",
+        exchange: "kucoin",
+        pair: "SOL/USDT",
+        orderId: "o1",
+        tripCodes: ["kill_switch"],
+        ownershipReason: "claimed by a local state file",
+        result: "ok",
+      })), null);
+    } finally {
+      sb.cleanup();
+    }
   });
 });
