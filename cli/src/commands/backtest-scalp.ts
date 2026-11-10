@@ -33,6 +33,12 @@ export function scalpFeeForFlag(flag: string | undefined): number | null {
   return null;
 }
 
+/** Injection seams (fixtures + golden tests; defaults are the venue + the wall clock). */
+export type ReplayFetchDeps = {
+  fetch?: (symbol: string, granularityMin: number, fromMs: number, toMs: number) => Promise<number[][]>;
+  now?: () => number;
+};
+
 export async function cmdBacktestScalp(opts: {
   pair: string;
   days: number;
@@ -40,7 +46,7 @@ export async function cmdBacktestScalp(opts: {
   fee: string;
   sizeUsd: number;
   json: boolean;
-}): Promise<void> {
+}, deps?: ReplayFetchDeps): Promise<void> {
   const symbol = scalpSymbolForPair(opts.pair);
   const feePerSide = scalpFeeForFlag(opts.fee);
   if (!symbol || !(opts.days > 0) || feePerSide == null || !(opts.sizeUsd > 0)) {
@@ -56,10 +62,10 @@ export async function cmdBacktestScalp(opts: {
     return;
   }
   const days = Math.min(Math.round(opts.days), 90);
-  const now = Date.now();
+  const now = deps?.now?.() ?? Date.now();
   let rows: number[][];
   try {
-    rows = await futuresKlines(symbol, 60, now - days * 86400 * 1000, now);
+    rows = await (deps?.fetch ?? futuresKlines)(symbol, 60, now - days * 86400 * 1000, now);
   } catch (e) {
     fail(e);
     return;

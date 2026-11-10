@@ -31,7 +31,7 @@ import {
   type ScalpBacktestTrade,
   type ScalpKline,
 } from "../kucoin.js";
-import { scalpFeeForFlag, scalpSymbolForPair } from "./backtest-scalp.js";
+import { scalpFeeForFlag, scalpSymbolForPair, type ReplayFetchDeps } from "./backtest-scalp.js";
 import { fail } from "./market.js";
 
 export const FARM_STRATEGIES = ["fade", "momentum", "breakout", "funding"] as const;
@@ -296,7 +296,7 @@ export async function cmdFarmRun(opts: {
   fee: string;
   sizeUsd: number;
   json: boolean;
-}): Promise<void> {
+}, deps?: ReplayFetchDeps): Promise<void> {
   const pairs = parsePairs(opts.pairsRaw);
   const feePerSide = scalpFeeForFlag(opts.fee);
   if (!pairs || !(opts.days > 0) || feePerSide == null || !(opts.sizeUsd > 0)) {
@@ -307,13 +307,13 @@ export async function cmdFarmRun(opts: {
     return;
   }
   const days = Math.min(Math.round(opts.days), 90);
-  const now = Date.now();
+  const now = deps?.now?.() ?? Date.now();
   const rows: FarmRow[] = [];
   for (const pair of pairs) {
     const symbol = scalpSymbolForPair(pair)!;
     let raw: number[][];
     try {
-      raw = await futuresKlines(symbol, 60, now - days * 86400 * 1000, now);
+      raw = await (deps?.fetch ?? futuresKlines)(symbol, 60, now - days * 86400 * 1000, now);
     } catch (e) {
       fail(e);
       return;
@@ -337,7 +337,7 @@ export async function cmdFarmRun(opts: {
   }
   const board = sortFarmLeaderboard(rows);
   const winner = pickFarmWinner(board);
-  const backtestedAt = new Date().toISOString();
+  const backtestedAt = (deps?.now ? new Date(deps.now()) : new Date()).toISOString();
   const payload = {
     backtestedAt, days, feePerSidePct: feePerSide, sizeUsd: opts.sizeUsd,
     gate: { expectancyPctGt: 0, minTrades: FARM_MIN_TRADES },
