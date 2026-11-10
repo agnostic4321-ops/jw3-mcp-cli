@@ -217,18 +217,20 @@ function globals(argv: string[]): Global {
 }
 
 // Flag/number parsing lives in ./args.js (single copy, unit-tested).
-async function main(): Promise<void> {
-  const [, , cmd, subRaw, ...tailRaw] = process.argv;
-  // Flags in the sub slot (e.g. `execute --exchange …`) belong to the
-  // arg list — only a non-flag token is a real subcommand.
-  const sub = subRaw && !subRaw.startsWith("--") ? subRaw : undefined;
-  const tail = subRaw && subRaw.startsWith("--") ? [subRaw, ...tailRaw] : tailRaw;
-  if (!cmd || cmd === "-h" || cmd === "--help" || cmd === "help") {
-    console.log(HELP);
-    return;
-  }
-  try {
-    if (cmd === "auth") {
+
+/** One dispatch row: match on (cmd, sub), then run with the raw tail. */
+type CliRoute = {
+  match: (cmd: string, sub: string | undefined) => boolean;
+  run: (cmd: string, sub: string | undefined, tail: string[]) => Promise<void>;
+};
+
+// Table-driven dispatch. Order matters exactly as before: guarded
+// bare commands (diary, propose, cancel, pnl) sit above their space
+// forms (diary note, propose idea, cancel all, pnl reconcile).
+const ROUTES: CliRoute[] = [
+  {
+    match: (cmd, sub) => cmd === "auth",
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       await cmdAuth(sub ?? "", {
         pat: g.pat,
@@ -238,8 +240,11 @@ async function main(): Promise<void> {
         timeoutSec: flagOf(g.rest, "--timeout") ? Number(flagOf(g.rest, "--timeout")) : undefined,
       });
       return;
-    }
-    if (cmd === "markets" && (sub === "ending" || sub === undefined)) {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "markets" && (sub === "ending" || sub === undefined),
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       const days = posOf(g.rest, "--days", 14);
       const minLiq = posOf(g.rest, "--min-liq", 10000);
@@ -253,8 +258,11 @@ async function main(): Promise<void> {
       }
       await cmdMarketsEnding({ days, minLiq, limit: Math.min(limit, 100), json: g.json });
       return;
-    }
-    if (cmd === "analyze" && sub === "prediction") {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "analyze" && sub === "prediction",
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       const id = g.rest[0];
       if (!id) {
@@ -264,8 +272,11 @@ async function main(): Promise<void> {
       }
       await cmdAnalyze({ id, json: g.json, url: g.url, pat: g.pat });
       return;
-    }
-    if (cmd === "analyze" && sub === "trend") {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "analyze" && sub === "trend",
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       await cmdAnalyzeTrend({
         exchange: flagOf(g.rest, "--exchange") ?? "",
@@ -275,8 +286,11 @@ async function main(): Promise<void> {
         pat: g.pat,
       });
       return;
-    }
-    if (cmd === "scalp" && (sub === "plan" || sub === "start" || sub === "watch" || sub === "kill" || sub === undefined)) {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "scalp" && (sub === "plan" || sub === "start" || sub === "watch" || sub === "kill" || sub === undefined),
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       const rest = g.rest.join(" ");
       const size = posOf(g.rest, "--size", 15);
@@ -328,8 +342,11 @@ async function main(): Promise<void> {
         json: g.json,
       });
       return;
-    }
-    if (cmd === "trail") {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "trail",
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       if (refusePaperFlag(g.rest, "jw3 trail")) return;
       const rest = g.rest.join(" ");
@@ -384,8 +401,11 @@ async function main(): Promise<void> {
         { yes: tail.includes("--yes"), json: g.json, url: g.url, pat: g.pat },
       );
       return;
-    }
-    if (cmd === "bounce") {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "bounce",
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       if (refusePaperFlag(g.rest, "jw3 bounce")) return;
       const rest = g.rest.join(" ");
@@ -423,8 +443,11 @@ async function main(): Promise<void> {
         { yes: tail.includes("--yes"), json: g.json, url: g.url, pat: g.pat },
       );
       return;
-    }
-    if (cmd === "tick") {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "tick",
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       const pair = flagOf(g.rest, "--pair") ?? "";
       const secondsRaw = flagOf(g.rest, "--seconds");
@@ -441,8 +464,11 @@ async function main(): Promise<void> {
       }
       await cmdTick({ pair, seconds, json: g.json });
       return;
-    }
-    if (cmd === "klines") {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "klines",
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       const pair = flagOf(g.rest, "--pair") ?? "";
       const tf = (flagOf(g.rest, "--tf") ?? flagOf(g.rest, "--timeframe") ?? KLINES_DEFAULT_TF).toLowerCase();
@@ -467,8 +493,11 @@ async function main(): Promise<void> {
         json: g.json,
       });
       return;
-    }
-    if (cmd === "vote" && (sub === undefined || sub === "stats" || sub === "record")) {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "vote" && (sub === undefined || sub === "stats" || sub === "record"),
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       if (sub === "stats") {
         await cmdVoteStats({ json: g.json });
@@ -493,8 +522,11 @@ async function main(): Promise<void> {
         pat: g.pat,
       });
       return;
-    }
-    if (cmd === "loop") {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "loop",
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       const rest = g.rest.join(" ");
       const size = posOf(g.rest, "--size", 15);
@@ -509,8 +541,11 @@ async function main(): Promise<void> {
         pat: g.pat,
       });
       return;
-    }
-    if (cmd === "grid" && (sub === "plan" || sub === "start" || sub === "backtest" || sub === undefined)) {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "grid" && (sub === "plan" || sub === "start" || sub === "backtest" || sub === undefined),
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       const biasRaw = (flagOf(g.rest, "--bias") ?? "neutral").toLowerCase();
       const stepPct = numOf(g.rest, "--step-pct", 0.25);
@@ -563,8 +598,11 @@ async function main(): Promise<void> {
         { yes: tail.includes("--yes"), json: g.json, url: g.url, pat: g.pat },
       );
       return;
-    }
-    if (cmd === "daemon" && sub === undefined) {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "daemon" && sub === undefined,
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       if (refusePaperFlag(g.rest, "jw3 daemon")) return;
       const configPath = flagOf(g.rest, "--config");
@@ -595,8 +633,11 @@ async function main(): Promise<void> {
         pat: g.pat,
       });
       return;
-    }
-    if (cmd === "watchdog" && (sub === "check" || sub === "run" || sub === "resume" || sub === undefined)) {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "watchdog" && (sub === "check" || sub === "run" || sub === "resume" || sub === undefined),
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       const mode = sub ?? "check";
       const opts = {
@@ -622,8 +663,11 @@ async function main(): Promise<void> {
       else if (mode === "run") await cmdWatchdogRun(opts);
       else await cmdWatchdogResume(opts);
       return;
-    }
-    if (cmd === "monitor" && sub === undefined) {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "monitor" && sub === undefined,
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       await cmdMonitor({
         exchange: flagOf(g.rest, "--exchange") ?? "kucoin",
@@ -633,8 +677,11 @@ async function main(): Promise<void> {
         pat: g.pat,
       });
       return;
-    }
-    if (cmd === "alert" && sub === undefined) {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "alert" && sub === undefined,
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       const snapshot = flagOf(g.rest, "--snapshot");
       if (!snapshot) {
@@ -652,8 +699,11 @@ async function main(): Promise<void> {
         json: g.json,
       });
       return;
-    }
-    if (cmd === "learning" && (sub === "record" || sub === "stats" || sub === undefined)) {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "learning" && (sub === "record" || sub === "stats" || sub === undefined),
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       if (sub === "stats" || sub === undefined) {
         await cmdLearningStats({ json: g.json, logPath: flagOf(g.rest, "--log") });
@@ -684,13 +734,19 @@ async function main(): Promise<void> {
         logPath: flagOf(g.rest, "--log"),
       });
       return;
-    }
-    if (cmd === "harness" && sub === undefined) {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "harness" && sub === undefined,
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       await cmdHarness({ json: g.json });
       return;
-    }
-    if (cmd === "score" && (sub === "stats" || sub === "report" || sub === "record" || sub === undefined)) {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "score" && (sub === "stats" || sub === "report" || sub === "record" || sub === undefined),
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       if (sub === "report") {
         await cmdScoreReport({ json: g.json, storePath: flagOf(g.rest, "--store"), holdoutSize: numOf(g.rest, "--holdout", 64) });
@@ -708,8 +764,11 @@ async function main(): Promise<void> {
       }
       await cmdScoreStats({ json: g.json, storePath: flagOf(g.rest, "--store") });
       return;
-    }
-    if (cmd === "committee" && sub === undefined) {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "committee" && sub === undefined,
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       const pair = flagOf(g.rest, "--pair") ?? "";
       if (!pair) {
@@ -725,8 +784,11 @@ async function main(): Promise<void> {
         pat: g.pat,
       });
       return;
-    }
-    if (cmd === "backtest" && sub === "live") {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "backtest" && sub === "live",
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       const pair = flagOf(g.rest, "--pair") ?? "";
       if (!pair) {
@@ -744,8 +806,11 @@ async function main(): Promise<void> {
         json: g.json,
       });
       return;
-    }
-    if (cmd === "live" && sub === undefined) {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "live" && sub === undefined,
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       if (refusePaperFlag(g.rest, "jw3 live")) return;
       const pair = flagOf(g.rest, "--pair") ?? "";
@@ -785,8 +850,11 @@ async function main(): Promise<void> {
         liveModelDeps(exchange, pat, g.url),
       );
       return;
-    }
-    if (cmd === "backtest" && sub === "scalp") {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "backtest" && sub === "scalp",
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       const days = clampInt(numOf(g.rest, "--days", 30), 1, 90);
       const tpRaw = flagOf(g.rest, "--tp");
@@ -815,8 +883,11 @@ async function main(): Promise<void> {
         json: g.json,
       });
       return;
-    }
-    if (cmd === "farm" && (sub === "run" || sub === "leaderboard" || sub === undefined)) {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "farm" && (sub === "run" || sub === "leaderboard" || sub === undefined),
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       if (g.rest.includes("--live") || g.rest.includes("--yes")) {
         console.error("farm is paper-only: --live/--yes are refused. Nothing was called.");
@@ -846,8 +917,11 @@ async function main(): Promise<void> {
         json: g.json,
       });
       return;
-    }
-    if (cmd === "paper") {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "paper",
+    run: async (cmd, sub, tail) => {
       // Local paper-trading accounts — zero venue contact. Validation lives
       // in the paper commands (exit 2, nothing written on bad input); the
       // router only parses flags through.
@@ -941,13 +1015,19 @@ async function main(): Promise<void> {
         json: g.json,
       });
       return;
-    }
-    if (cmd === "poly" && (sub === "scan" || sub === undefined)) {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "poly" && (sub === "scan" || sub === undefined),
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       await cmdPolyScan({ json: g.json });
       return;
-    }
-    if (cmd === "scan" && (sub === "fade" || sub === undefined)) {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "scan" && (sub === "fade" || sub === undefined),
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       const minChg = numOf(g.rest, "--min-chg", 3);
       const limit = clampInt(numOf(g.rest, "--limit", 12), 1, 25);
@@ -961,15 +1041,21 @@ async function main(): Promise<void> {
         pat: g.pat,
       });
       return;
-    }
-    if (cmd === "forecast") {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "forecast",
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       const horizon = clampInt(numOf(g.rest, "--horizon", 12), 1, 120);
       if (!needNum(horizon, "--horizon", g.rest)) return;
       await cmdForecast({ pair: flagOf(g.rest, "--pair") ?? "", horizon, json: g.json });
       return;
-    }
-    if (cmd === "intel") {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "intel",
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       const limit = clampInt(numOf(g.rest, "--limit", 10), 1, 25);
       if (!needNum(limit, "--limit", g.rest)) return;
@@ -995,8 +1081,11 @@ async function main(): Promise<void> {
         json: g.json,
       });
       return;
-    }
-    if (cmd === "decide") {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "decide",
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       await cmdDecide({
         pair: flagOf(g.rest, "--pair") ?? "",
@@ -1006,8 +1095,11 @@ async function main(): Promise<void> {
         pat: g.pat,
       });
       return;
-    }
-    if (cmd === "oracle") {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "oracle",
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       const horizon = clampInt(numOf(g.rest, "--horizon", 12), 1, 120);
       if (!needNum(horizon, "--horizon", g.rest)) return;
@@ -1021,8 +1113,11 @@ async function main(): Promise<void> {
         pat: g.pat,
       });
       return;
-    }
-    if (cmd === "degen" && (sub === undefined || sub === "record" || sub === "paper-stats")) {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "degen" && (sub === undefined || sub === "record" || sub === "paper-stats"),
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       if (sub === "paper-stats") {
         await cmdPaperStats({ json: g.json });
@@ -1086,8 +1181,11 @@ async function main(): Promise<void> {
         { yes: tail.includes("--yes"), json: g.json, url: g.url, pat: g.pat },
       );
       return;
-    }
-    if (cmd === "ttm" && (sub === undefined || sub === "plan")) {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "ttm" && (sub === undefined || sub === "plan"),
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       const rest = g.rest.join(" ");
       const sideRaw = (
@@ -1125,8 +1223,11 @@ async function main(): Promise<void> {
         { live: tail.includes("--live"), yes: tail.includes("--yes") },
       );
       return;
-    }
-    if (cmd === "spikes") {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "spikes",
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       const cycles = clampInt(numOf(g.rest, "--cycles", 1), 1, 30);
       if (!needNum(cycles, "--cycles", g.rest)) return;
@@ -1137,20 +1238,29 @@ async function main(): Promise<void> {
         json: g.json,
       });
       return;
-    }
-    if (cmd === "connections") {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "connections",
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       await cmdConnections({ json: g.json, url: g.url, pat: g.pat });
       return;
-    }
-    if (cmd === "diary" && sub !== "note") {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "diary" && sub !== "note",
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       await cmdDiary({ day: flagOf(g.rest, "--day"), startDay: flagOf(g.rest, "--start-day") ?? flagOf(g.rest, "--start"), endDay: flagOf(g.rest, "--end-day") ?? flagOf(g.rest, "--end"), json: g.json, url: g.url, pat: g.pat });
       return;
-    }
-    // Space form: `diary note` (same handler; mirrors `cancel all`). Must sit
-    // below the guarded bare `diary` above.
-    if (cmd === "diary-note" || (cmd === "diary" && sub === "note")) {
+    },
+  },
+  // Space form: `diary note` (same handler; mirrors `cancel all`). Must sit
+  // below the guarded bare `diary` above.
+  {
+    match: (cmd, sub) => cmd === "diary-note" || (cmd === "diary" && sub === "note"),
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       await cmdDiaryNote(
         {
@@ -1161,19 +1271,28 @@ async function main(): Promise<void> {
         { json: g.json, url: g.url, pat: g.pat },
       );
       return;
-    }
-    // Space form: `daily prep`.
-    if (cmd === "daily-prep" || (cmd === "daily" && sub === "prep")) {
+    },
+  },
+  // Space form: `daily prep`.
+  {
+    match: (cmd, sub) => cmd === "daily-prep" || (cmd === "daily" && sub === "prep"),
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       await cmdDailyPrep({ dry: tail.includes("--dry"), day: flagOf(g.rest, "--day"), json: g.json, url: g.url, pat: g.pat });
       return;
-    }
-    if (cmd === "risk") {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "risk",
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       await cmdRisk({ json: g.json, state: g.rest.includes("--state"), url: g.url, pat: g.pat });
       return;
-    }
-    if (cmd === "insights") {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "insights",
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       // numOf keeps the documented default when a flag is absent and yields NaN
       // for a present-but-unparsable value, so cmdInsights rejects it (exit 2,
@@ -1187,8 +1306,11 @@ async function main(): Promise<void> {
         pat: g.pat,
       });
       return;
-    }
-    if (cmd === "news") {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "news",
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       const limitRaw = flagOf(g.rest, "--limit");
       const windowRaw = flagOf(g.rest, "--window-hrs") ?? flagOf(g.rest, "--window");
@@ -1202,11 +1324,14 @@ async function main(): Promise<void> {
         pat: g.pat,
       });
       return;
-    }
-    // Space forms (`propose idea|bracket|predict|close-all`, plus
-    // `propose close all`) are handled by the card branches below — the
-    // guard keeps them from falling into the bare propose ticket.
-    if (cmd === "propose" && sub !== "idea" && sub !== "bracket" && sub !== "predict" && sub !== "close-all" && sub !== "close") {
+    },
+  },
+  // Space forms (`propose idea|bracket|predict|close-all`, plus
+  // `propose close all`) are handled by the card branches below — the
+  // guard keeps them from falling into the bare propose ticket.
+  {
+    match: (cmd, sub) => cmd === "propose" && sub !== "idea" && sub !== "bracket" && sub !== "predict" && sub !== "close-all" && sub !== "close",
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       const entry = Number(flagOf(g.rest, "--entry"));
       const stop = Number(flagOf(g.rest, "--stop"));
@@ -1226,9 +1351,12 @@ async function main(): Promise<void> {
         { json: g.json, url: g.url, pat: g.pat },
       );
       return;
-    }
-    // Space form: `propose idea`.
-    if (cmd === "propose-idea" || (cmd === "propose" && sub === "idea")) {
+    },
+  },
+  // Space form: `propose idea`.
+  {
+    match: (cmd, sub) => cmd === "propose-idea" || (cmd === "propose" && sub === "idea"),
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       const entry = Number(flagOf(g.rest, "--entry"));
       const stop = Number(flagOf(g.rest, "--stop"));
@@ -1252,9 +1380,12 @@ async function main(): Promise<void> {
         { json: g.json, url: g.url, pat: g.pat },
       );
       return;
-    }
-    // Space form: `propose bracket`.
-    if (cmd === "propose-bracket" || (cmd === "propose" && sub === "bracket")) {
+    },
+  },
+  // Space form: `propose bracket`.
+  {
+    match: (cmd, sub) => cmd === "propose-bracket" || (cmd === "propose" && sub === "bracket"),
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       const entryRaw = flagOf(g.rest, "--entry-price");
       const feeRaw = flagOf(g.rest, "--fee-usd");
@@ -1274,9 +1405,12 @@ async function main(): Promise<void> {
         { json: g.json, url: g.url, pat: g.pat },
       );
       return;
-    }
-    // Space form: `propose predict`.
-    if (cmd === "propose-predict" || (cmd === "propose" && sub === "predict")) {
+    },
+  },
+  // Space form: `propose predict`.
+  {
+    match: (cmd, sub) => cmd === "propose-predict" || (cmd === "propose" && sub === "predict"),
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       const amountRaw = flagOf(g.rest, "--amount");
       const confRaw = flagOf(g.rest, "--confidence");
@@ -1294,9 +1428,12 @@ async function main(): Promise<void> {
         { json: g.json, url: g.url, pat: g.pat },
       );
       return;
-    }
-    // Space forms: `propose close-all` and `propose close all`.
-    if (cmd === "propose-close-all" || (cmd === "propose" && (sub === "close-all" || sub === "close"))) {
+    },
+  },
+  // Space forms: `propose close-all` and `propose close all`.
+  {
+    match: (cmd, sub) => cmd === "propose-close-all" || (cmd === "propose" && (sub === "close-all" || sub === "close")),
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       // Drop the `all` in `propose close all` — it is the sub alias, not a flag value.
       if (sub === "close" && g.rest[0] === "all") g.rest.shift();
@@ -1311,8 +1448,11 @@ async function main(): Promise<void> {
         { json: g.json, url: g.url, pat: g.pat },
       );
       return;
-    }
-    if (cmd === "market") {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "market",
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       await cmdMarket({
         exchange: flagOf(g.rest, "--exchange") ?? "",
@@ -1322,8 +1462,11 @@ async function main(): Promise<void> {
         pat: g.pat,
       });
       return;
-    }
-    if (cmd === "screener") {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "screener",
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       await cmdScreener({
         exchange: flagOf(g.rest, "--exchange") ?? "binance",
@@ -1332,8 +1475,11 @@ async function main(): Promise<void> {
         pat: g.pat,
       });
       return;
-    }
-    if (cmd === "positions") {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "positions",
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       const pair = flagOf(g.rest, "--pair");
       const watchRaw = flagOf(g.rest, "--watch");
@@ -1376,8 +1522,11 @@ async function main(): Promise<void> {
         pat: g.pat,
       });
       return;
-    }
-    if (cmd === "balances") {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "balances",
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       await cmdBalances({
         exchange: flagOf(g.rest, "--exchange"),
@@ -1387,8 +1536,11 @@ async function main(): Promise<void> {
         pat: g.pat,
       });
       return;
-    }
-    if (cmd === "orders") {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "orders",
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       await cmdOrders({
         exchange: flagOf(g.rest, "--exchange"),
@@ -1398,8 +1550,11 @@ async function main(): Promise<void> {
         pat: g.pat,
       });
       return;
-    }
-    if (cmd === "order") {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "order",
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       await cmdOrderStatus({
         exchange: flagOf(g.rest, "--exchange") ?? "",
@@ -1411,8 +1566,11 @@ async function main(): Promise<void> {
         pat: g.pat,
       });
       return;
-    }
-    if (cmd === "fills") {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "fills",
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       const daysRaw = flagOf(g.rest, "--days");
       const limitRaw = flagOf(g.rest, "--limit");
@@ -1427,10 +1585,13 @@ async function main(): Promise<void> {
         pat: g.pat,
       });
       return;
-    }
-    // `pnl reconcile` (space form) is handled by the pnl-reconcile branch
-    // below — the guard keeps it from falling into the bare pnl reader.
-    if (cmd === "pnl" && sub !== "reconcile") {
+    },
+  },
+  // `pnl reconcile` (space form) is handled by the pnl-reconcile branch
+  // below — the guard keeps it from falling into the bare pnl reader.
+  {
+    match: (cmd, sub) => cmd === "pnl" && sub !== "reconcile",
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       const daysRaw = flagOf(g.rest, "--days");
       const limitRaw = flagOf(g.rest, "--limit");
@@ -1444,10 +1605,13 @@ async function main(): Promise<void> {
         pat: g.pat,
       });
       return;
-    }
-    // Space form: `pnl reconcile` (same handler; mirrors `cancel all`).
-    // Sits below the guarded bare `pnl` above.
-    if (cmd === "pnl-reconcile" || (cmd === "pnl" && sub === "reconcile")) {
+    },
+  },
+  // Space form: `pnl reconcile` (same handler; mirrors `cancel all`).
+  // Sits below the guarded bare `pnl` above.
+  {
+    match: (cmd, sub) => cmd === "pnl-reconcile" || (cmd === "pnl" && sub === "reconcile"),
+    run: async (cmd, sub, tail) => {
       // Count the venue's realized LOSSES against the daily risk counters.
       // A trade closed by the VENUE's own stop never goes through the
       // close path, so without this the daily loss cap can never fire on
@@ -1462,13 +1626,19 @@ async function main(): Promise<void> {
         pat: g.pat,
       });
       return;
-    }
-    if (cmd === "onchain") {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "onchain",
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       await cmdOnchain({ chains: flagOf(g.rest, "--chains"), json: g.json, url: g.url, pat: g.pat });
       return;
-    }
-    if (cmd === "execute") {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "execute",
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       if (refusePaperFlag(g.rest, "jw3 execute")) return;
       const numFlag = (f: string): number | undefined => {
@@ -1535,8 +1705,11 @@ async function main(): Promise<void> {
         { yes: g.rest.includes("--yes"), json: g.json, url: g.url, pat: g.pat },
       );
       return;
-    }
-    if (cmd === "close") {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "close",
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       if (refusePaperFlag(g.rest, "jw3 close")) return;
       const sizeRaw = flagOf(g.rest, "--size");
@@ -1551,8 +1724,11 @@ async function main(): Promise<void> {
         pat: g.pat,
       });
       return;
-    }
-    if (cmd === "exits") {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "exits",
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       if (refusePaperFlag(g.rest, "jw3 exits")) return;
       await cmdExits({
@@ -1568,8 +1744,11 @@ async function main(): Promise<void> {
         pat: g.pat,
       });
       return;
-    }
-    if (cmd === "cancel-all" || (cmd === "cancel" && sub === "all")) {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "cancel-all" || (cmd === "cancel" && sub === "all"),
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       if (refusePaperFlag(g.rest, "jw3 cancel-all")) return;
       await cmdCancelAll({
@@ -1582,8 +1761,11 @@ async function main(): Promise<void> {
         pat: g.pat,
       });
       return;
-    }
-    if (cmd === "cancel") {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "cancel",
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       if (refusePaperFlag(g.rest, "jw3 cancel")) return;
       await cmdCancel({
@@ -1597,8 +1779,11 @@ async function main(): Promise<void> {
         pat: g.pat,
       });
       return;
-    }
-    if (cmd === "reconcile") {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "reconcile",
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       await cmdReconcile({
         exchange: flagOf(g.rest, "--exchange") ?? "",
@@ -1608,8 +1793,11 @@ async function main(): Promise<void> {
         pat: g.pat,
       });
       return;
-    }
-    if (cmd === "heat") {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "heat",
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       const minFreeRaw = flagOf(g.rest, "--min-free");
       const minFree = minFreeRaw === undefined ? 0 : Number(minFreeRaw);
@@ -1628,8 +1816,11 @@ async function main(): Promise<void> {
         pat: g.pat,
       });
       return;
-    }
-    if (cmd === "reserve" && (sub === "sweep" || sub === undefined)) {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "reserve" && (sub === "sweep" || sub === undefined),
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       if (refusePaperFlag(g.rest, "jw3 reserve sweep")) return;
       const keepRaw = flagOf(g.rest, "--keep");
@@ -1643,8 +1834,11 @@ async function main(): Promise<void> {
         { yes: g.rest.includes("--yes"), json: g.json, url: g.url, pat: g.pat },
       );
       return;
-    }
-    if (cmd === "supervise") {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "supervise",
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       if (refusePaperFlag(g.rest, "jw3 supervise")) return;
       // Repeatable flags: --trail SPEC (×N), --loop SPEC (×N).
@@ -1695,8 +1889,11 @@ async function main(): Promise<void> {
         process.exitCode = 2;
       }
       return;
-    }
-    if (cmd === "defi") {
+    },
+  },
+  {
+    match: (cmd, sub) => cmd === "defi",
+    run: async (cmd, sub, tail) => {
       const g = globals(tail);
       const limitRaw = flagOf(g.rest, "--limit");
       const limit = limitRaw !== undefined ? Number(limitRaw) : undefined;
@@ -1769,6 +1966,26 @@ async function main(): Promise<void> {
       console.error(DEFI_USAGE);
       process.exitCode = 2;
       return;
+    },
+  },
+];
+
+async function main(): Promise<void> {
+  const [, , cmd, subRaw, ...tailRaw] = process.argv;
+  // Flags in the sub slot (e.g. `execute --exchange …`) belong to the
+  // arg list — only a non-flag token is a real subcommand.
+  const sub = subRaw && !subRaw.startsWith("--") ? subRaw : undefined;
+  const tail = subRaw && subRaw.startsWith("--") ? [subRaw, ...tailRaw] : tailRaw;
+  if (!cmd || cmd === "-h" || cmd === "--help" || cmd === "help") {
+    console.log(HELP);
+    return;
+  }
+  try {
+    for (const route of ROUTES) {
+      if (route.match(cmd, sub)) {
+        await route.run(cmd, sub, tail);
+        return;
+      }
     }
     console.error(`Unknown command: ${[cmd, sub].filter(Boolean).join(" ")}\n\n${HELP}`);
     process.exitCode = 2;
