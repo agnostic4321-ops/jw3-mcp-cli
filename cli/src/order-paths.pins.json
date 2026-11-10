@@ -340,26 +340,6 @@
       }
     }
   ],
-  "harness:long-confluence-clean": [
-    {
-      "name": "execute_trade",
-      "args": {
-        "exchange": "kucoin",
-        "pair": "SOL/USDT",
-        "side": "buy",
-        "amount": "900",
-        "price": "1.3",
-        "type": "market",
-        "referencePrice": "1.3",
-        "market": "futures",
-        "leverage": 31,
-        "marginMode": "isolated",
-        "clientOid": "jw3-s1-t1-SOLUSDT",
-        "idempotency_key": "jw3---356fcd0b",
-        "__intentId": "SOL/USDT|long|s1"
-      }
-    }
-  ],
   "degen:fire": [
     {
       "name": "list_open_orders",

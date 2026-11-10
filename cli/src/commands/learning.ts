@@ -2,8 +2,9 @@
  * `jw3 learning` — close the loop from a CLOSED trade back to the models
  * that produced it (local ledgers only: it never touches the venue).
  *
- * `vote.ts` casts a ballot and scores a RESOLVED BALLOT (model side vs
- * model side). That is not the same measurement: a ballot can be right
+ * A retired `vote` command used to cast a ballot and score a RESOLVED
+ * BALLOT (model side vs model side), while the learning loop scores the
+ * CLOSED TRADE. That is not the same measurement: a ballot can be right
  * about direction and still lose money, and a trade can be closed by a
  * kill line that no model called. This module scores the CLOSED TRADE
  * (realized net P&L) and banks the full entry context, so oracle weights
@@ -55,7 +56,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { configDir } from "../config.js";
-import { normalizeVotePair, validateVotePair } from "./vote.js";
+import { normalizeVotePair, validateVotePair } from "./decide.js";
 import { VERDICT_TUNING } from "./rubric.js";
 import { clampWeight as clampToBand, MODELS, SKILLS, TRACK_FEED_PRIORITY, type ModelId, type SkillId } from "./weighting.js";
 import {
@@ -303,7 +304,7 @@ export function rfdetrLearningSignal(
 /* Validation + construction (pure)                                    */
 /* ------------------------------------------------------------------ */
 
-/** Normalize a pair the way vote.ts does (BASE/USDT, uppercase). */
+/** Normalize a pair the way the ballot does (BASE/USDT, uppercase). */
 export function normalizeLearningPair(pair: string): string {
   return normalizeVotePair(pair);
 }
@@ -1030,8 +1031,8 @@ export function syncVoteStore(
  * the weight the auto-tune earned, floored at the seat weight so "has the
  * seat" actually means it can vote.
  *
- * MUTATES `store.weights` — the exact field `jw3 vote` / `jw3 oracle`
- * read for live voting. Persist with `saveStore(voteStorePath(), store)`.
+ * MUTATES `store.weights` — the exact field degen's oracle reads for
+ * live direction. Persist with `saveStore(voteStorePath(), store)`.
  */
 export function applyPromotionGate(
   store: VoteStore,

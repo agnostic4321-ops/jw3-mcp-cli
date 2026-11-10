@@ -8,14 +8,16 @@
  * sanitizer, same auto-tune:
  *
  *   vote.json  — the LIVE book (`weights` + `skills` + the ballot log
- *                `votes`): written by `vote record` and `learning record`,
- *                read by `vote`, `oracle`, degen's oracle (live money) and
+ *                `votes`): written by `learning record` (the one writer),
+ *                read by degen's oracle (live money) and
  *                `learning stats`. Owned here (load/save/path/record).
- *   score.json — the scorer's book (`weights` + `tracks` beside its model
- *                scorecards): score.ts keeps the file and the scorecards,
- *                and holds its tracks/weights through this module.
  *
- * Both files keep their paths and on-disk shapes unchanged; an old file
+ * A retired `score` command used to keep a second book, score.json (its
+ * model scorecards beside a copy of the tracks/weights). Nothing reads
+ * score.json anymore; it is simply no longer read (never migrated,
+ * never deleted — an owner's old file just sits there).
+ *
+ * vote.json keeps its path and on-disk shape unchanged; an old file
  * loads exactly as before (missing/corrupt → defaults, out-of-range or
  * junk fields → the default for that field, never a crash). Window size,
  * weight band and the auto-tune rule come from the rubric via

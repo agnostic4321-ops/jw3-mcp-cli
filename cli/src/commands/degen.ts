@@ -11,8 +11,8 @@
  *      pass. `--pair X` screens that pair; no pair = auto-screen the
  *      default watchlist and take the most exhausted row.
  *   2. Oracle — Kronos + Laya fan-out combined by the vote-calibrated
- *      ballot (weighting.ts `combineBallot`, the one `jw3 oracle` runs,
- *      weights from vote.json). `flat` = NO TRADE (never a
+ *      ballot (weighting.ts `combineBallot`, weights from vote.json).
+ *      `flat` = NO TRADE (never a
  *      smaller trade). RF-DETR abstains (no chart in the loop).
  *   3. Heat governor — owner-ordered 30%-risk math: $3 risk steps,
  *      halve size after one full stop, flat for the day after two,
@@ -75,10 +75,9 @@ import {
   type ScalpPlan,
 } from "../kucoin.js";
 import { roundToTick, scalpContracts, contractsToAmountBaseUnits } from "./scalp.js";
-import { buildMarketState, fetchLayaVerdict } from "./decide.js";
+import { buildMarketState, fetchLayaVerdict, fetchSessionCtx } from "./decide.js";
 import { fetchKronosVerdict } from "./forecast.js";
-import { fetchSessionCtx, type OracleSide, type OracleSignal } from "./oracle.js";
-import { combineBallot, kronosToSignal, layaToSignal, oracleWeights, rfdetrOracleSignal } from "./weighting.js";
+import { combineBallot, kronosToSignal, layaToSignal, oracleWeights, rfdetrOracleSignal, type OracleSide, type OracleSignal } from "./weighting.js";
 import {
   BOUNCE_REQUIRED_PCT,
   bounceOffLowPct,
@@ -98,7 +97,7 @@ import {
   type DegenHeat,
   type HeatCaps,
 } from "./heat.js";
-import { normalizeVotePair, validateVotePair } from "./vote.js";
+import { normalizeVotePair, validateVotePair } from "./decide.js";
 import { loadStore, voteStorePath } from "./track-store.js";
 import { fail, needPat } from "./market.js";
 import { cmdTrail } from "./trail.js";
@@ -343,7 +342,7 @@ async function prodOracle(
   deps: Pick<DegenDeps, "kronos" | "marketState" | "laya"> = {},
 ): Promise<DegenOracle> {
   // The one track store (vote.json) and the one weighting module: the
-  // same ballot, mappings and weights `jw3 oracle` uses.
+  // same ballot, mappings and weights the oracle ballot uses.
   const store = loadStore(storePath ?? voteStorePath());
   const weights = oracleWeights(store.weights);
   const [kSettled, lSettled] = await Promise.allSettled([

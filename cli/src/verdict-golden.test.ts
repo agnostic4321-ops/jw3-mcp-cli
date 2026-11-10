@@ -61,6 +61,15 @@ describe("OQ-09 goldens: every verdict-stack command and decision producer, byte
     if (RECORD) return;
     assert.deepEqual(Object.keys(goldens).sort(), CASES.map(([n]) => n).sort());
   });
+  it("guard: degen still trades on the fixture (the retired seats did not take the live path)", async () => {
+    if (RECORD) return;
+    const entry = CASES.find(([n]) => n === "degen split models, tuned store → long fire (decisions + venue calls)");
+    assert.ok(entry, "the degen fire golden case is gone — the live path lost its pin");
+    const got = await runCase(entry[1]);
+    const sent = (got.decisions ?? []).filter((d) => d.status === "sent");
+    assert.ok(sent.some((d) => d.tool === "execute_trade"), "degen fire sent no live order");
+    assert.ok((got.calls ?? []).some((c) => c.name === "execute_trade"), "degen fire made no venue execute_trade call");
+  });
   after(() => {
     if (RECORD) writeGoldens(goldens);
   });

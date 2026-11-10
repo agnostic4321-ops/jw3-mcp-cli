@@ -50,7 +50,7 @@ import {
   type LearningRecord,
   type LearningRecordInput,
 } from "./learning.js";
-import { defaultStore, loadStore, saveStore, voteStorePath, type VoteStore } from "./vote.js";
+import { defaultStore, loadStore, saveStore, voteStorePath, type VoteStore } from "./track-store.js";
 
 /* ------------------------------------------------------------------ */
 /* Fixtures                                                            */
@@ -224,7 +224,7 @@ describe("buildLearningRecord", () => {
     assert.equal(rec.trade.netPnlUsd, 0.9);
   });
 
-  it("normalizes the pair the way vote.ts does", () => {
+  it("normalizes the pair the way the ballot does", () => {
     const rec = buildLearningRecord(input({ pair: "sol/usdt" }), { now });
     assert.equal(rec.pair, "SOL/USDT");
     assert.equal(normalizeLearningPair("eth/usdt"), "ETH/USDT");
@@ -543,7 +543,7 @@ describe("applyPromotionGate", () => {
     assert.equal(store.weights.kronos, GATE_SEAT_WEIGHT);
   });
 
-  it("never writes a weight outside the vote.js bounds", () => {
+  it("never writes a weight outside the track-store bounds", () => {
     const store = defaultStore();
     store.weights = { jev: 5, kronos: 0.5, rfdetr: 0 };
     const s = summarizeLearningLog("");
@@ -587,11 +587,11 @@ describe("syncVoteStore", () => {
     assert.equal(trackOutcome(jevOnly, "rfdetr"), null);
   });
 
-  it("the scored outcome matches vote.ts's recordOutcome auto-tune", () => {
+  it("the scored outcome matches the track-store recordOutcome auto-tune", () => {
     const store = defaultStore();
     const rec = splitTrade();
     syncVoteStore(store, rec);
-    // vote.ts's auto-tune needs MIN_SAMPLES (5) before it touches a weight,
+    // the track-store auto-tune needs MIN_SAMPLES (5) before it touches a weight,
     // so one outcome only moves the rolling window + the lifetime counters.
     assert.deepEqual(store.skills.kronos!.results, [false]);
     assert.equal(store.skills.kronos!.total, 1);
@@ -601,7 +601,7 @@ describe("syncVoteStore", () => {
     assert.equal(store.weights.jev, 1.0);
   });
 
-  it("five misses demote the slot exactly as vote.ts's auto-tune does", () => {
+  it("five misses demote the slot exactly as the track-store auto-tune does", () => {
     const store = defaultStore();
     // A WINNING long: JEV/Laya (long) are hits, Kronos (short) is a miss.
     const win = splitTrade({
@@ -612,7 +612,7 @@ describe("syncVoteStore", () => {
       signals: { jev: jevSignal("long", 0.8), laya: layaSignal("long", 0.7), kronos: kronosSignal("down", 0.4) },
     });
     for (let i = 0; i < 5; i++) syncVoteStore(store, win);
-    // vote.ts: the tune only fires once MIN_SAMPLES (5) is reached, and a
+    // the track store: the tune only fires once MIN_SAMPLES (5) is reached, and a
     // rate <= 40% demotes -0.1 (floor 0) → 0.5 - 0.1 = 0.4.
     assert.equal(store.weights.kronos, 0.4);
     assert.equal(store.skills.kronos!.hits, 0);

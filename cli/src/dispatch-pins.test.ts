@@ -86,4 +86,28 @@ describe("dispatch pins (table-driven index.ts)", () => {
     assert.match(r.stderr, /jw3 — JW3\.ai command line/);
     assert.ok(!r.stderr.includes("jw3 supervise --trail"), "help must not advertise the deleted command");
   });
+
+  it("retired OQ-09 commands fall through to the normal unknown-command help", () => {
+    const retired: [string[], string][] = [
+      [["vote", "--pair", "SOL/USDT"], "Unknown command: vote"],
+      [["vote", "stats"], "Unknown command: vote stats"],
+      [["vote", "record", "--pair", "SOL/USDT", "--outcome", "long"], "Unknown command: vote record"],
+      [["oracle", "--pair", "SOL/USDT"], "Unknown command: oracle"],
+      [["committee", "--pair", "SOL/USDT"], "Unknown command: committee"],
+      [["score", "stats"], "Unknown command: score stats"],
+      [["score", "report"], "Unknown command: score report"],
+      [["score", "record", "--pair", "SOL/USDT"], "Unknown command: score record"],
+      [["harness"], "Unknown command: harness"],
+    ];
+    for (const [args, want] of retired) {
+      const r = runCli(args);
+      assert.equal(r.exit, 2, args.join(" "));
+      assert.ok(r.stderr.includes(want), `${args.join(" ")}: want ${JSON.stringify(want)}`);
+      assert.match(r.stderr, /jw3 — JW3\.ai command line/, args.join(" "));
+    }
+    const help = runCli(["--help"]).stdout;
+    for (const line of ["jw3 vote ", "jw3 vote stats", "jw3 oracle ", "jw3 committee ", "jw3 score ", "jw3 harness"]) {
+      assert.ok(!help.includes(line), `help must not advertise the retired command: ${line}`);
+    }
+  });
 });

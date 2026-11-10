@@ -37,9 +37,6 @@ jw3 degen paper-stats [--json]
 jw3 ttm --pair SOL/USDT --side long|short --equity 10 --base 5 --entry … --atr-pct 0.8 [--lev 25] [--sleeve momentum] [--activation-pct 0.25] [--bounceback-pct 0.08] [--json]
 jw3 trail --pair SOL/USDT --side long|short --size 1 [--exchange kucoin] [--activation-pct 0.25] [--bounceback-pct|--backoff-pct 0.08] [--polls 600] [--live] [--yes] [--json]
 jw3 tick --pair SOL/USDT [--seconds 15] [--json]
-jw3 vote --pair SOL/USDT [--exchange kucoin] [--horizon 12] [--json]
-jw3 vote stats [--json]
-jw3 vote record --pair SOL/USDT --outcome long|short|flat [--json]
 jw3 grid plan|start --pair SEI/USDT [--bias long|short|neutral] [--step-pct 0.25] [--levels 25] [--size 15] [--lev 2] [--yes]
 jw3 grid backtest --pair SEI/USDT [--step-pct 0.25] [--levels 25] [--contracts 19] [--lev 2] [--days 30] [--json]
 jw3 backtest scalp --pair SOL/USDT [--days 30] [--tp 0.3] [--fee maker|taker] [--size 60] [--json]
@@ -131,13 +128,13 @@ jw3 reconcile --exchange kucoin --pair BTC/USDT [--json]
   tape + heuristic headline gauge — X search is login-gated, output says
   so) + funding/news catalysts (keyword-classified) with CoinGecko market
   context and a Fear & Greed gauge. Read-only, never trades.
-- `vote` takes one confidence-weighted ballot across three skills — JEV
-  trend (weight 1.0), Kronos oracle (0.5), RF-DETR chart-vision (0,
-  abstains until wired) — and records it locally; `vote record` scores
-  the latest open ballot against the realized outcome and auto-tunes each
-  voting skill's weight off its rolling 20-ballot hit-rate (≥60% promote,
-  ≤40% demote, min 5 samples, persisted in ~/.config/jw3/vote.json);
-  `vote stats` shows weights and hit-rates. Read-only, never trades.
+- The OQ-09 verdict seats are retired (owner decision 2026-11-10):
+  `vote` / `vote stats` / `vote record`, the read-only `oracle` command,
+  `committee`, `score stats` / `score report` / `score record`, and the
+  `harness` rig are gone (unknown-command, exit 2). What stays: the oracle
+  ballot degen trades on (Kronos + Laya combine over the vote.json tracks
+  in `weighting.ts` / `track-store.ts`) and `learning record`, the one
+  writer that tunes those tracks from closed trades.
 - `decide --pair X` builds one market-state JSON (trailing-24h tape stats
   off 60×1h futures klines, JEV 7-timeframe features, top-5 book imbalance
   + spread) and hands it to the Laya decide bridge (pure-stdlib v0 rules:
@@ -209,7 +206,7 @@ jw3 reconcile --exchange kucoin --pair BTC/USDT [--json]
 - `heat` is the one heat module: margin-heat guard (`evaluateHeat`) plus
   the degen heat-cap governor (`checkHeat`: $6 cap, max 2 concurrent,
   halve after one stop, flat after two, 1h cooldown) and the blackout
-  window matcher the committee's event-risk seat consumes. The degen
+  window matcher. The degen
   heat-cap store lives in `degen-heat.json` (shared json-store helper);
   proving (`--paper`) derives the same governor from the paper ledger
   and never touches the live file.
@@ -230,6 +227,29 @@ Backups: `~/.config/jw3` holds secrets (`credentials.json`), so exclude
 it from dotfile sync, Time Machine, and repo backups - or at minimum
 exclude `credentials.json` (and any `*.key` / `*.pat` files). On a new
 machine re-run `jw3 auth login` instead of copying the file.
+
+## State files
+
+Local ledgers under `~/.config/jw3/` (`JW3_CONFIG_HOME` override),
+all through the shared `json-store` helper (atomic write, corrupt →
+defaults, never a crash):
+
+- `vote.json` — the LIVE track store (`{version, weights, skills,
+  votes}`): per-skill rolling windows, lifetime hits/total, and the ballot
+  log. Written only by `learning record`; read by degen's oracle and
+  `learning stats`. Path and shape are unchanged — an owner's file keeps
+  working.
+- `degen-heat.json` — the degen heat-cap governor (`$6` cap, halve/flat
+  doctrine, 1h cooldown). The trail guard keeps its own per-base state
+  file in `os.tmpdir()`, cleared on success.
+- `learning.jsonl` — one JSON line per closed trade (entry context +
+  outcome); `learning record` appends, `learning stats` reads.
+- `paper-accounts.json` — the paper ledger (`--paper` only, never the
+  live file).
+
+Retired, never migrated, never deleted: `score.json` (the retired
+`score` command's book) is simply no longer read — an owner's old file
+just sits there. Never delete an owner's data files by hand.
 
 ## Verify
 

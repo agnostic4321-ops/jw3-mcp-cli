@@ -2,9 +2,9 @@
  * The ONE weighting module of the verdict stack (OQ-09).
  *
  * Every seat that weighs model reads goes through here instead of its own
- * copy: `jw3 vote` and `jw3 oracle` (their ballots), the committee's model
- * legs (momentum seat), degen's oracle confirm (live money), the scorer
- * (`score.ts`) and the learning loop (`learning.ts`). This module owns:
+ * copy: the oracle ballot degen reads for its live direction, and the
+ * learning loop (`learning.ts`) that tunes the vote.json tracks. This
+ * module owns:
  *
  *   - the ballot: model read → signed, confidence-weighted signal
  *     (`jevToSignal`, `kronosToSignal`, `layaToSignal`, `rfdetrSignal`)
@@ -41,6 +41,12 @@ export const SKILLS: SkillId[] = ["jev", "kronos", "rfdetr"];
 /** The oracle ballot's skills (Laya is the decision leg on the JEV track). */
 export type OracleSkill = "kronos" | "laya" | "rfdetr";
 export const ORACLE_SKILLS: OracleSkill[] = ["kronos", "laya", "rfdetr"];
+
+/** Degen's live direction comes from this ballot (kept when the oracle command retired). */
+export type OracleSide = BallotSide;
+export type OracleSignal = Ballot<OracleSkill>;
+export type OracleBreakdown = BallotBreakdown<OracleSkill>;
+export type OracleVerdict = BallotVerdict<OracleSkill>;
 
 /** Every model a seat hears from. */
 export type ModelId = "jev" | "laya" | "kronos" | "rfdetr";

@@ -15,10 +15,7 @@ import { cmdWatchdogCheck, cmdWatchdogResume, cmdWatchdogRun } from "./commands/
 import { cmdMonitor, DEFAULT_MONITOR_THRESHOLDS } from "./commands/monitor.js";
 import { cmdAlert } from "./commands/alert.js";
 import { cmdLearningRecord, cmdLearningStats } from "./commands/learning.js";
-import { cmdHarness } from "./commands/harness.js";
 import { cmdBacktestLive } from "./commands/backtest-live.js";
-import { HOLDOUT_DEFAULT_SIZE, cmdScoreRecord, cmdScoreReport, cmdScoreStats } from "./commands/score.js";
-import { cmdCommittee } from "./commands/committee.js";
 import { cmdDaemon, loadDaemonManifest } from "./commands/daemon.js";
 import { resolvePat } from "./config.js";
 import { cmdFarmLeaderboard, cmdFarmRun } from "./commands/farm.js";
@@ -41,7 +38,6 @@ import { cmdScanFade, cmdScalpPlan } from "./commands/scan.js";
 import { cmdForecast } from "./commands/forecast.js";
 import { cmdIntel } from "./commands/intel.js";
 import { cmdDecide } from "./commands/decide.js";
-import { cmdOracle } from "./commands/oracle.js";
 import { cmdDegen, cmdDegenRecord, cmdPaperStats } from "./commands/degen.js";
 import { cmdTtm } from "./commands/ttm.js";
 import { cmdSpikes } from "./commands/spikes.js";
@@ -67,7 +63,6 @@ import { cmdTrail } from "./commands/trail.js";
 import { cmdTick } from "./commands/tick.js";
 import { BOUNCE_DEFAULT_LOOKBACK_MIN, BOUNCE_DEFAULT_PCT, cmdBounce } from "./bounce.js";
 import { KLINES_DEFAULT_LIMIT, KLINES_DEFAULT_TF, cmdKlines } from "./commands/klines.js";
-import { cmdVote, cmdVoteRecord, cmdVoteStats } from "./commands/vote.js";
 import { cmdLoop } from "./commands/loop.js";
 import { cmdReserveSweep } from "./commands/reserve.js";
 import { cmdReconcile } from "./commands/reconcile.js";
@@ -109,7 +104,6 @@ Usage:
   jw3 forecast --pair ETH/USDT [--horizon 12] [--json]
   jw3 intel <topic> [--limit 10] [--no-cache] [--json]
   jw3 decide --pair SOL/USDT [--exchange kucoin] [--json]
-  jw3 oracle --pair SOL/USDT [--exchange kucoin] [--horizon 12] [--chart chart.png] [--json]
   jw3 degen [--pair SOL/USDT] [--exchange kucoin] [--size 15] [--lev 2] [--max-heat 6] [--max-concurrent 2] [--activation-pct 0.25] [--bounceback-pct 0.08] [--polls 600] [--horizon 12] [--trail] [--live] [--yes] [--paper] [--json]
   jw3 degen record --pair SOL/USDT --outcome win|loss|stop|scratch [--pnl …] [--paper] [--json]
   jw3 degen paper-stats [--json]
@@ -121,9 +115,6 @@ Usage:
   jw3 bounce --pair SOL/USDT --side short [--exchange kucoin] [--bounce-pct 0.4] [--lookback-min 60] [--size …] [--yes] [--json]
   jw3 tick --pair SOL/USDT [--seconds 15] [--json]
   jw3 klines --pair SOL/USDT [--tf 5m|15m|1h|1d] [--limit 50] [--rsi] [--vwap] [--json]
-  jw3 vote --pair SOL/USDT [--exchange kucoin] [--horizon 12] [--json]
-  jw3 vote stats [--json]
-  jw3 vote record --pair SOL/USDT --outcome long|short|flat [--json]
   jw3 loop --exchange kucoin --pair SOL/USDT [--long|--short] [--size 15] [--json]
   jw3 grid plan|start --pair SEI/USDT [--bias long|short|neutral] [--step-pct 0.25] [--levels 25] [--size 15] [--lev 2] [--yes]
   jw3 grid backtest --pair SEI/USDT [--step-pct 0.25] [--levels 25] [--contracts 19] [--lev 2] [--days 30] [--json]
@@ -132,7 +123,6 @@ Usage:
   jw3 farm run [--pairs SOL/USDT,BTC/USDT,ETH/USDT] [--days 30] [--fee maker|taker] [--size 60] [--json]
   jw3 farm leaderboard [--json]
   jw3 live --pair BASE/USDT [--exchange kucoin] [--side long|short|auto] [--risk 3] [--size 15] [--session live] [--turn t1] [--yes] [--json]
-  jw3 committee --pair BASE/USDT [--exchange kucoin] [--json]
   jw3 paper create --account NAME [--equity 10000] [--json]
   jw3 paper fund --account NAME --amount 500 [--json]
   jw3 paper reset --account NAME [--json]
@@ -180,10 +170,6 @@ Usage:
   jw3 alert --snapshot <path> [--prev-snapshot <path>] [--state <path>] [--policy <path>] [--transport console|file] [--out <path>] [--json]
   jw3 learning record --pair BASE/USDT --side long|short --entry <px> --exit <px> [--reason <text>] [--pnl <usd>] [--fees <usd>] [--json]
   jw3 learning stats [--log <path>] [--json]
-  jw3 harness [--json]
-  jw3 score stats [--store <path>] [--json]
-  jw3 score report [--store <path>] [--holdout 64] [--json]
-  jw3 score record --pair SOL/USDT [--side long] [--pnl …] [--store <path>] [--json]
   jw3 daemon --config <manifest.json> [--once] [--allow-live] [--flatten-on-shutdown] [--json]
 
 Aliases: diary note, daily prep, pnl reconcile, propose <idea|bracket|predict|close-all|close all>, cancel all — spaced forms of the hyphenated commands.
@@ -502,35 +488,6 @@ const ROUTES: CliRoute[] = [
     },
   },
   {
-    match: (cmd, sub) => cmd === "vote" && (sub === undefined || sub === "stats" || sub === "record"),
-    run: async (cmd, sub, tail) => {
-      const g = globals(tail);
-      if (sub === "stats") {
-        await cmdVoteStats({ json: g.json });
-        return;
-      }
-      if (sub === "record") {
-        await cmdVoteRecord({
-          pair: flagOf(g.rest, "--pair") ?? "",
-          outcome: flagOf(g.rest, "--outcome") ?? "",
-          json: g.json,
-        });
-        return;
-      }
-      const horizon = clampInt(numOf(g.rest, "--horizon", 12), 1, 120);
-      if (!needNum(horizon, "--horizon", g.rest)) return;
-      await cmdVote({
-        pair: flagOf(g.rest, "--pair") ?? "",
-        exchange: flagOf(g.rest, "--exchange") ?? "kucoin",
-        horizon,
-        json: g.json,
-        url: g.url,
-        pat: g.pat,
-      });
-      return;
-    },
-  },
-  {
     match: (cmd, sub) => cmd === "loop",
     run: async (cmd, sub, tail) => {
       const g = globals(tail);
@@ -738,56 +695,6 @@ const ROUTES: CliRoute[] = [
         exchange: flagOf(g.rest, "--exchange") ?? "kucoin",
         json: g.json,
         logPath: flagOf(g.rest, "--log"),
-      });
-      return;
-    },
-  },
-  {
-    match: (cmd, sub) => cmd === "harness" && sub === undefined,
-    run: async (cmd, sub, tail) => {
-      const g = globals(tail);
-      await cmdHarness({ json: g.json });
-      return;
-    },
-  },
-  {
-    match: (cmd, sub) => cmd === "score" && (sub === "stats" || sub === "report" || sub === "record" || sub === undefined),
-    run: async (cmd, sub, tail) => {
-      const g = globals(tail);
-      if (sub === "report") {
-        await cmdScoreReport({ json: g.json, storePath: flagOf(g.rest, "--store"), holdoutSize: numOf(g.rest, "--holdout", HOLDOUT_DEFAULT_SIZE) });
-        return;
-      }
-      if (sub === "record") {
-        await cmdScoreRecord({
-          pair: flagOf(g.rest, "--pair") ?? "",
-          side: flagOf(g.rest, "--side") ?? "long",
-          pnl: numOf(g.rest, "--pnl", 0),
-          json: g.json,
-          storePath: flagOf(g.rest, "--store"),
-        });
-        return;
-      }
-      await cmdScoreStats({ json: g.json, storePath: flagOf(g.rest, "--store") });
-      return;
-    },
-  },
-  {
-    match: (cmd, sub) => cmd === "committee" && sub === undefined,
-    run: async (cmd, sub, tail) => {
-      const g = globals(tail);
-      const pair = flagOf(g.rest, "--pair") ?? "";
-      if (!pair) {
-        console.error("Usage: jw3 committee --pair BASE/USDT [--exchange kucoin] [--json]");
-        process.exitCode = 2;
-        return;
-      }
-      await cmdCommittee({
-        pair,
-        exchange: flagOf(g.rest, "--exchange") ?? "kucoin",
-        json: g.json,
-        url: g.url,
-        pat: g.pat,
       });
       return;
     },
@@ -1096,24 +1003,6 @@ const ROUTES: CliRoute[] = [
       await cmdDecide({
         pair: flagOf(g.rest, "--pair") ?? "",
         exchange: flagOf(g.rest, "--exchange") ?? "kucoin",
-        json: g.json,
-        url: g.url,
-        pat: g.pat,
-      });
-      return;
-    },
-  },
-  {
-    match: (cmd, sub) => cmd === "oracle",
-    run: async (cmd, sub, tail) => {
-      const g = globals(tail);
-      const horizon = clampInt(numOf(g.rest, "--horizon", 12), 1, 120);
-      if (!needNum(horizon, "--horizon", g.rest)) return;
-      await cmdOracle({
-        pair: flagOf(g.rest, "--pair") ?? "",
-        exchange: flagOf(g.rest, "--exchange") ?? "kucoin",
-        horizon,
-        chartPath: flagOf(g.rest, "--chart") ?? undefined,
         json: g.json,
         url: g.url,
         pat: g.pat,

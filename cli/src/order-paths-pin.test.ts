@@ -24,8 +24,6 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { makeSandbox, ensureDir, writeJson } from "./test-fixtures.js";
 import { LiveRefusal, runLive, tapLiveDecisions, type DecisionRecord, type LiveCandidate } from "./commands/live.js";
-import { SCENARIO_TABLE, defaultHarnessConfig, runScenarioRow } from "./commands/harness.js";
-import { defaultFilterConfig } from "./filters.js";
 import { cmdDegen } from "./commands/degen.js";
 import { cmdCancel, cmdCancelAll, cmdClose, cmdExecute, cmdExits } from "./commands/trade.js";
 import { cmdExecuteChase } from "./chase.js";
@@ -227,12 +225,6 @@ export const SCENARIOS: Record<string, () => Promise<PinCall[]>> = {
   "live:exits-fail-flatten": () =>
     liveRun(liveVenue((c) => (c.name === "set_exits" ? (() => { throw new Error("rate_limited"); })() : undefined))),
 
-  // ── harness (offline rig — its recorder IS the venue boundary) ──
-  "harness:long-confluence-clean": async () => {
-    const out = await runScenarioRow(SCENARIO_TABLE[0]!, defaultHarnessConfig(defaultFilterConfig()));
-    return out.calls.map((c) => ({ name: c.tool, args: { ...c.args, __intentId: c.intentId } }));
-  },
-
   // ── degen (step-1 + resting step-2 + stop/TP arm) ──
   "degen:fire": () => degenRun(degenVenue()),
   "degen:exits-fallback-tp-only": () =>
@@ -402,8 +394,8 @@ export const SCENARIOS: Record<string, () => Promise<PinCall[]>> = {
  * are checked inside runLive for every producer): for these producers,
  * runLive reads the server's risk limits once per run, immediately before
  * the run's first OPENING order. The live candidate (its preflight already
- * read them) and the harness (its simulated account is the snapshot) add
- * nothing; risk-reducing producers are never gated, so they add nothing.
+ * read them) adds nothing; risk-reducing producers are never gated, so they
+ * add nothing.
  */
 export const GATE_READ_SCENARIOS = new Set([
   "degen:fire",
@@ -489,7 +481,7 @@ describe("OQ-12 pins: exact venue calls per entry point", () => {
 /* ------------------------------------------------------------------ */
 
 /** Producers that OPEN exposure, one representative fire each. */
-const OPENING = ["live:fire", "harness:long-confluence-clean", "degen:fire", "execute:fire", "chase:replace-then-fill", "bounce:fire", "grid:start-long"];
+const OPENING = ["live:fire", "degen:fire", "execute:fire", "chase:replace-then-fill", "bounce:fire", "grid:start-long"];
 /** Producers that only REDUCE exposure. */
 const REDUCING = ["close:fire", "exits:fire", "cancel:fire", "cancel-all:fire", "scalp-kill:fire", "trail:close"];
 
@@ -535,9 +527,8 @@ describe("OQ-12(c): the server kill switch + daily caps block every opening prod
     ["daily notional budget spent", { risk_limits: { kill_switch_enabled: false, daily_notional_usd: 501, max_daily_notional_usd: 500 } }],
     ["risk limits unreadable", () => { throw new Error("rate_limited"); }],
   ];
-  // The harness reads no server (its simulated account is the snapshot);
   // live:fire's own preflight reads the same limits first.
-  for (const name of OPENING.filter((n) => n !== "harness:long-confluence-clean")) {
+  for (const name of OPENING) {
     for (const [label, risk] of cases) {
       if (name === "live:fire" && label === "risk limits unreadable") continue; // the candidate's preflight read throws before any decision (unchanged)
       it(`${name}: ${label} → zero opening venue calls`, async () => {
@@ -688,7 +679,7 @@ describe("OQ-12(a): no module other than runLive's chain sends a venue order", (
     assert.equal(/\bfor\s*\(|\bwhile\s*\(|retry/i.test(body), false, "sendOrder must not loop or retry");
   });
   it("every order-placing module hands its orders to runLive", () => {
-    const producers = ["commands/degen.ts", "commands/harness.ts", "commands/trade.ts", "chase.ts", "bounce.ts", "commands/grid.ts", "commands/scalp.ts", "commands/trail.ts", "commands/daemon.ts", "commands/watchdog.ts"];
+    const producers = ["commands/degen.ts", "commands/trade.ts", "chase.ts", "bounce.ts", "commands/grid.ts", "commands/scalp.ts", "commands/trail.ts", "commands/daemon.ts", "commands/watchdog.ts"];
     for (const rel of producers) {
       const f = files.find((x) => x.rel === rel);
       assert.ok(f, `${rel} missing`);

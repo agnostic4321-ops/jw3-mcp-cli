@@ -20,6 +20,7 @@ import {
   fadeMetrics,
   futuresContractSpec,
   futuresDepth20,
+  futuresKlines,
   futuresKlinesRaw,
   futuresTickerFull,
   spikeImbalance,
@@ -28,7 +29,23 @@ import {
 } from "../kucoin.js";
 import { fetchJevTrend, type TrendVerdict } from "./analyze.js";
 import { forecastSymbolForPair } from "./forecast.js";
-import { normalizeVotePair, validateVotePair } from "./vote.js";
+import { klinesSymbolForPair, parseKlineRows } from "./klines.js";
+import type { PrefilterCtx } from "../blocking-rules.js";
+
+/** Pure: `SOL/USDT` usable, uppercase-normalized. Null = reject with usage. */
+export function validateVotePair(pair: string): string | null {
+  const parts = pair.split("/");
+  if (parts.length !== 2) return "pair required (e.g. SOL/USDT)";
+  const base = (parts[0] ?? "").trim().toUpperCase();
+  const quote = (parts[1] ?? "").trim().toUpperCase();
+  if (!/^[A-Z0-9]{2,12}$/.test(base) || quote !== "USDT") return "pair required (e.g. SOL/USDT)";
+  return null;
+}
+
+export function normalizeVotePair(pair: string): string {
+  const [b, q] = pair.split("/");
+  return `${(b ?? "").trim().toUpperCase()}/${(q ?? "").trim().toUpperCase()}`;
+}
 
 export type DecideChoice = "long" | "short" | "flat";
 
@@ -121,6 +138,33 @@ export function jevToFeatures(t: TrendVerdict | null): JevFeatures | null {
 export function jevSideForBridge(f: JevFeatures | null): "long" | "short" | "none" {
   if (!f || f.uncertain) return "none";
   return f.side === "long" || f.side === "short" ? f.side : "none";
+}
+
+/**
+ * One cheap data fetch (single 5m klines window, ~1s) for the
+ * data-dependent short vetoes: trailing-24h change (extended-drop) +
+ * 60-min session low and last price (bounce-required). Data only — never
+ * model inference. On fetch failure returns {} (fail-open for the advisor
+ * oracle, noted in output; the side-aware fast loop fails closed instead).
+ */
+export async function fetchSessionCtx(pair: string): Promise<PrefilterCtx> {
+  const symbol = klinesSymbolForPair(pair);
+  if (!symbol) return {};
+  try {
+    const now = Date.now();
+    const rows = await futuresKlines(symbol, 5, now - 288 * 5 * 60 * 1000, now);
+    const candles = parseKlineRows(rows);
+    if (candles.length < 13) return {};
+    const closes = candles.map((c) => c.close);
+    const last = closes[closes.length - 1]!;
+    const first = closes[0]!;
+    const dayChgPct = ((last - first) / first) * 100;
+    const session = candles.slice(-12); // last 60min mirrors bounce default lookback
+    const sessionLow = Math.min(...session.map((c) => c.low));
+    return { dayChgPct, price: last, sessionLow };
+  } catch {
+    return {};
+  }
 }
 
 export type DecideDeps = {
