@@ -24,13 +24,13 @@ import { configDir } from "../config.js";
 import {
   SCALP_TAKER_FEE_PCT,
   dipSignal,
-  fadeMetrics,
   fadeSignal,
   futuresKlines,
   type FadeRow,
   type ScalpBacktestTrade,
   type ScalpKline,
 } from "../kucoin.js";
+import { ladderStats, replayLadder, type ReplayCtx } from "../replay-core.js";
 import { scalpFeeForFlag, scalpSymbolForPair, type ReplayFetchDeps } from "./backtest-scalp.js";
 import { fail } from "./market.js";
 
@@ -54,16 +54,8 @@ export function farmCandidatesPath(): string {
 /* Signals — pure. Each answers direction at bar i (24-bar window).    */
 /* ------------------------------------------------------------------ */
 
-export type FarmSignalCtx = {
-  /** fadeMetrics over closes[i-23..i] (null when the window is thin). */
-  m: Omit<FadeRow, "fundingPct" | "last" | "symbol"> | null;
-  last: number;
-  closes: number[];
-  highs: number[];
-  lows: number[];
-  vols: number[];
-  i: number;
-};
+/** What a farm strategy sees — the replay core's plugin context (OQ-10). */
+export type FarmSignalCtx = ReplayCtx;
 
 /** Exhaustion fade: short faded rallies, long faded selloffs (== backtest scalp). */
 export function fadeFarmSignal(ctx: FarmSignalCtx): "long" | "short" | null {
@@ -122,7 +114,8 @@ export const FARM_SIGNALS: Record<FarmStrategy, (ctx: FarmSignalCtx) => "long" |
 };
 
 /* ------------------------------------------------------------------ */
-/* Shared replay — same TP/kill/timeout/fee model for every strategy.   */
+/* Replay — every strategy is a plugin of the replay core (OQ-10): the   */
+/* same walk, TP/kill/timeout ladder, fee model and stats for all four.  */
 /* ------------------------------------------------------------------ */
 
 export type FarmReplay = {
@@ -140,7 +133,7 @@ export type FarmReplay = {
   breakevenWr: number;
 };
 
-/** Pure: replay one signal fn through the TP/kill ladder. Null on thin history. */
+/** Pure: replay one signal plugin through the core's TP/kill ladder. Null on thin history. */
 export function replayFarmStrategy(
   klines: ScalpKline[],
   signal: (ctx: FarmSignalCtx) => "long" | "short" | null,
@@ -150,71 +143,11 @@ export function replayFarmStrategy(
   if (n < 25) return null;
   const fee = opts.feePerSidePct ?? SCALP_TAKER_FEE_PCT;
   const maxHold = Math.min(Math.max(Math.round(opts.maxHold ?? 24), 1), 240);
-  const closes = klines.map((k) => k.close);
-  const vols = klines.map((k) => k.volume);
-  const highs = klines.map((k) => k.high);
-  const lows = klines.map((k) => k.low);
-  const trades: ScalpBacktestTrade[] = [];
-  let signals = 0;
-  let i = 23;
-  while (i < n - 1) {
-    const m = fadeMetrics(
-      closes.slice(i - 23, i + 1),
-      vols.slice(i - 23, i + 1),
-      highs.slice(i - 23, i + 1),
-      lows.slice(i - 23, i + 1),
-    );
-    const last = closes[i]!;
-    if (!m || !(last > 0)) {
-      i++;
-      continue;
-    }
-    const direction = signal({ m, last, closes, highs, lows, vols, i });
-    if (!direction) {
-      i++;
-      continue;
-    }
-    signals++;
-    const atr = m.atrPct != null && Number.isFinite(m.atrPct) && m.atrPct > 0 ? m.atrPct : 0.8;
-    const tpPct = Math.min(0.5, Math.max(0.3, atr * 0.4));
-    const killPct = Math.min(1.5, Math.max(0.6, atr * 0.9));
-    const tpDir = direction === "long" ? 1 : -1;
-    const tpPrice = last * (1 + (tpDir * tpPct) / 100);
-    const killPrice = last * (1 - (tpDir * killPct) / 100);
-    let exit: "tp" | "kill" | "timeout" = "timeout";
-    let exitPrice = klines[Math.min(i + maxHold, n - 1)]?.close ?? last;
-    let end = Math.min(i + maxHold, n - 1);
-    for (let j = i + 1; j <= Math.min(i + maxHold, n - 1); j++) {
-      const bar = klines[j]!;
-      const tpHit = direction === "long" ? bar.high >= tpPrice : bar.low <= tpPrice;
-      const killHit = direction === "long" ? bar.low <= killPrice : bar.high >= killPrice;
-      if (tpHit || killHit) {
-        exit = tpHit ? "tp" : "kill"; // TP wins ties — live watch semantics
-        exitPrice = exit === "tp" ? tpPrice : killPrice;
-        end = j;
-        break;
-      }
-      exitPrice = bar.close;
-      end = j;
-    }
-    const grossPct = ((exitPrice - last) / last) * 100 * tpDir;
-    const netPct = grossPct - 2 * fee;
-    trades.push({ signalIndex: i, direction, entry: last, tpPrice, killPrice, exit, exitPrice, grossPct, netPct, win: netPct > 0 });
-    i = end + 1; // one position at a time — no overlapping fills
-  }
-  const wins = trades.filter((t) => t.win).length;
-  const losses = trades.length - wins;
-  const winRate = trades.length > 0 ? (wins / trades.length) * 100 : 0;
-  const totalGrossPct = trades.reduce((a, t) => a + t.grossPct, 0);
-  const totalNetPct = trades.reduce((a, t) => a + t.netPct, 0);
-  const winNets = trades.filter((t) => t.win).map((t) => t.netPct);
-  const lossNets = trades.filter((t) => !t.win).map((t) => t.netPct);
-  const avgWinPct = winNets.length > 0 ? winNets.reduce((a, b) => a + b, 0) / winNets.length : 0;
-  const avgLossPct = lossNets.length > 0 ? lossNets.reduce((a, b) => a + b, 0) / lossNets.length : 0;
-  const expectancyPct = trades.length > 0 ? totalNetPct / trades.length : 0;
-  const breakevenWr =
-    avgWinPct > 0 && avgLossPct < 0 ? (Math.abs(avgLossPct) / (avgWinPct + Math.abs(avgLossPct))) * 100 : winRate;
-  return { candles: n, signals, trades, wins, losses, winRate, totalGrossPct, totalNetPct, avgWinPct, avgLossPct, expectancyPct, breakevenWr };
+  const r = replayLadder(klines, { signal }, { feePerSidePct: fee, maxHold, fixedTpPct: null });
+  // The farm ledger carries no tie flag (its trades predate it): drop it.
+  const trades: ScalpBacktestTrade[] = r.trades.map(({ ambiguous: _ambiguous, ...t }) => t);
+  const { wins, losses, winRate, totalGrossPct, totalNetPct, avgWinPct, avgLossPct, expectancyPct, breakevenWr } = ladderStats(trades);
+  return { candles: n, signals: r.signals, trades, wins, losses, winRate, totalGrossPct, totalNetPct, avgWinPct, avgLossPct, expectancyPct, breakevenWr };
 }
 
 /* ------------------------------------------------------------------ */

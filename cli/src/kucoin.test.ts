@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { backtestGrid, backtestScalp, dipSignal, fadeMetrics, fadeSignal, gridLadder, planScalp, scanBase, type ScalpKline } from "./kucoin.js";
+import { backtestGrid, dipSignal, fadeMetrics, fadeSignal, gridLadder, planScalp, scanBase, type ScalpKline } from "./kucoin.js";
+import { backtestScalp } from "./replay-core.js";
 
 function series(n: number, fn: (i: number) => number): number[] {
   return Array.from({ length: n }, (_, i) => fn(i));

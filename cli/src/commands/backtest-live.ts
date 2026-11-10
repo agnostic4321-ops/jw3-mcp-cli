@@ -40,6 +40,7 @@
  * Every function here is PURE except `cmdBacktestLive`, the one that
  * fetches candles. Read-only: no auth, no PAT, no orders.
  */
+import { walkTape } from "../replay-core.js";
 import {
   SCALP_MAKER_FEE_PCT,
   SCALP_TAKER_FEE_PCT,
@@ -741,23 +742,24 @@ type BookResult = {
   unevaluated: Record<string, number>;
 };
 
-/** Pure: replay one book (one execution path) over the candles. */
+/**
+ * Pure: replay one book (one execution path) over the candles — on the
+ * replay core's walk (OQ-10). The entry MODE is this engine's execution
+ * plugin (`simulateLiveEntry`: maker / chase / taker), the signal is its
+ * strategy plugin (`opts.signal`).
+ */
 export function runLiveBook(candles: LiveCandle[], mode: LiveEntryMode, opts: ResolvedOpts): BookResult {
   const trades: LiveTradeRow[] = [];
   const vetoes: LiveVeto[] = [];
   const unevaluated: Record<string, number> = {};
   let signals = 0;
-  let i = 0;
-  while (i < candles.length) {
+  walkTape(0, candles.length, (i) => {
     const row = liveRowAt(candles, i);
     // The candidate edge decides whether there IS a signal. It may look at
     // the whole tape, not only at the fade row — so it is called even when
     // the 24-bar fade window is too short to read a row.
     const side = opts.signal(candles, i, row);
-    if (!side) {
-      i++;
-      continue;
-    }
+    if (!side) return null;
     signals++;
     // The plan comes from the tape: the mark is the signal bar's close and
     // the ATR% is measured over the trailing bars (the same fadeMetrics ATR
@@ -765,10 +767,7 @@ export function runLiveBook(candles: LiveCandle[], mode: LiveEntryMode, opts: Re
     const last = candles[i]?.close ?? 0;
     const atrPct = row?.atrPct ?? liveAtrPctAt(candles, i);
     const plan = planScalp(last, atrPct, side, opts.sizeUsd, 2);
-    if (!plan) {
-      i++;
-      continue;
-    }
+    if (!plan) return null;
     const bar = candles[i];
     const ctx = sessionContextAt(candles, i, opts);
     const gate = liveGate(opts.symbol, side, ctx, {
@@ -786,14 +785,12 @@ export function runLiveBook(candles: LiveCandle[], mode: LiveEntryMode, opts: Re
         rule: gate.rule ?? "cpi_blackout",
         detail: gate.detail,
       });
-      i++;
-      continue;
+      return null;
     }
     const entry = simulateLiveEntry(candles, i, plan, mode, opts);
     if (!entry.filled) {
       // The order expired unfilled — no trade, and the setup is stale now.
-      i = Math.min(candles.length, i + opts.entryBars + 1);
-      continue;
+      return Math.min(candles.length, i + opts.entryBars + 1);
     }
     const pos = simulateLivePosition(candles, entry.entryIndex, entry.entryPrice, plan, opts);
     const fills = [{ price: entry.entryPrice, sizeUsd: plan.steps[0]?.sizeUsd ?? 0 }];
@@ -833,8 +830,8 @@ export function runLiveBook(candles: LiveCandle[], mode: LiveEntryMode, opts: Re
       netPct,
       win: money.netUsd > 0,
     });
-    i = pos.exitIndex + 1; // one position at a time — no overlapping trades
-  }
+    return pos.exitIndex + 1; // one position at a time — no overlapping trades
+  });
   return { trades, signals, vetoes, unevaluated };
 }
 

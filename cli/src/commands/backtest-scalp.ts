@@ -9,10 +9,10 @@
 import {
   SCALP_MAKER_FEE_PCT,
   SCALP_TAKER_FEE_PCT,
-  backtestScalp,
   futuresKlines,
   type ScalpBacktest,
 } from "../kucoin.js";
+import { backtestScalp } from "../replay-core.js";
 import { fail } from "./market.js";
 
 /** Pair like SOL/USDT → futures symbol; BTC aliases XBT (venue symbol). */
