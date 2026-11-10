@@ -16,13 +16,14 @@
  * Re-record ONLY for an intended, owner-approved change to what reaches the
  * venue: JW3_PIN_RECORD=1 rewrites order-paths.pins.json.
  */
-import { after, describe, it } from "node:test";
+import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { makeSandbox, ensureDir, writeJson } from "./test-fixtures.js";
-import { runLive, type LiveCandidate } from "./commands/live.js";
+import { LiveRefusal, runLive, tapLiveDecisions, type DecisionRecord, type LiveCandidate } from "./commands/live.js";
 import { SCENARIO_TABLE, defaultHarnessConfig, runScenarioRow } from "./commands/harness.js";
 import { defaultFilterConfig } from "./filters.js";
 import { cmdDegen } from "./commands/degen.js";
@@ -48,6 +49,12 @@ const PIN_FILE = (() => {
   return candidates.find((p) => existsSync(p)) ?? (candidates[1] as string);
 })();
 
+/**
+ * The server's `read_risk_limits` answer for the gate tests (null = each
+ * scenario's own script answers). A function is called (e.g. to throw).
+ */
+let riskOverride: unknown = null;
+
 /** A recording venue client: every call is logged, the script answers it. */
 function recorder(script: Script): { calls: PinCall[]; call: (name: string, args: Record<string, unknown>, pat: string, url?: string) => Promise<unknown> } {
   const calls: PinCall[] = [];
@@ -56,6 +63,9 @@ function recorder(script: Script): { calls: PinCall[]; call: (name: string, args
     calls.push({ name, args: JSON.parse(JSON.stringify(args)) as Record<string, unknown> });
     const nth = (seen.get(name) ?? 0) + 1;
     seen.set(name, nth);
+    if (name === "read_risk_limits" && riskOverride !== null) {
+      return typeof riskOverride === "function" ? (riskOverride as () => unknown)() : riskOverride;
+    }
     return script({ name, args }, nth);
   };
   return { calls, call };
@@ -236,7 +246,9 @@ export const SCENARIOS: Record<string, () => Promise<PinCall[]>> = {
     return calls;
   },
   "execute:timeout": async () => {
-    const { calls, call } = recorder(() => timeout());
+    // Only the ORDER times out (the pre-OQ-12 code made no other call, so
+    // the pin is unchanged; the gate's risk read must answer).
+    const { calls, call } = recorder((c) => (c.name === "execute_trade" ? timeout() : {}));
     await quiet(() => cmdExecute({ ...EXECUTE_ARGS }, { yes: true, json: true, pat: PAT }, { call }));
     return calls;
   },
@@ -386,24 +398,71 @@ export const SCENARIOS: Record<string, () => Promise<PinCall[]>> = {
 };
 
 /**
- * Reads runLive adds in front of an OPENING decision (owner-approved
- * OQ-12(c)). Each entry inserts one call at `at` into the recorded `all`
- * sequence. Empty in the pin commit: the pins are today's behavior.
+ * The ONE read OQ-12 adds (owner-approved OQ-12(c): the kill switch + caps
+ * are checked inside runLive for every producer): for these producers,
+ * runLive reads the server's risk limits once per run, immediately before
+ * the run's first OPENING order. The live candidate (its preflight already
+ * read them) and the harness (its simulated account is the snapshot) add
+ * nothing; risk-reducing producers are never gated, so they add nothing.
  */
-export const GATE_READS: Record<string, { at: number; call: PinCall }[]> = {};
+export const GATE_READ_SCENARIOS = new Set([
+  "degen:fire",
+  "degen:exits-fallback-tp-only",
+  "degen:step1-timeout",
+  "execute:fire",
+  "execute:timeout",
+  "chase:replace-then-fill",
+  "bounce:fire",
+  "grid:start-long",
+]);
 
-function withGateReads(pinned: PinCall[], inserts: { at: number; call: PinCall }[] | undefined): PinCall[] {
-  const out = [...pinned];
-  for (const ins of [...(inserts ?? [])].sort((a, b) => a.at - b.at)) out.splice(ins.at, 0, ins.call);
-  return out;
+const isOpeningCall = (c: PinCall): boolean => c.name === "execute_trade" && c.args.reduceOnly !== true && c.args.reduce_only !== true;
+
+function withGateReads(name: string, pinned: PinCall[]): PinCall[] {
+  if (!GATE_READ_SCENARIOS.has(name)) return pinned;
+  const i = pinned.findIndex(isOpeningCall);
+  if (i < 0) return pinned;
+  return [...pinned.slice(0, i), { name: "read_risk_limits", args: {} }, ...pinned.slice(i)];
 }
+
+/** Run one scenario with the decision tap installed. */
+async function tapped(run: () => Promise<PinCall[]>): Promise<{ calls: PinCall[]; decisions: DecisionRecord[] }> {
+  const decisions: DecisionRecord[] = [];
+  tapLiveDecisions((d) => decisions.push(d));
+  try {
+    return { calls: norm(await run()), decisions };
+  } finally {
+    tapLiveDecisions(null);
+  }
+}
+
+/* Every test in this file reads the watchdog breaker from a sandboxed config home. */
+const ENV_HOME = process.env.JW3_CONFIG_HOME;
+let home = "";
+before(() => {
+  home = mkdtempSync(join(tmpdir(), "jw3-oq12-home-"));
+  process.env.JW3_CONFIG_HOME = home;
+});
+after(() => {
+  if (ENV_HOME === undefined) delete process.env.JW3_CONFIG_HOME;
+  else process.env.JW3_CONFIG_HOME = ENV_HOME;
+  rmSync(home, { recursive: true, force: true });
+});
+
+/** Write (or clear, with null) the watchdog's breaker file in the sandboxed config home. */
+function setBreaker(doc: Record<string, unknown> | string | null): void {
+  const p = join(home, "watchdog-state.json");
+  if (doc === null) rmSync(p, { force: true });
+  else writeFileSync(p, typeof doc === "string" ? doc : JSON.stringify(doc));
+}
+const TRIPPED = { version: 1, breaker: { tripped: true, trippedAt: "2026-11-10T07:59:00.000Z", reasons: ["pin: executor heartbeat stale"] }, entriesBlocked: true, blockReason: "pin" };
 
 const pins: Record<string, PinCall[]> = RECORD ? {} : (JSON.parse(readFileSync(PIN_FILE, "utf8")) as Record<string, PinCall[]>);
 
 describe("OQ-12 pins: exact venue calls per entry point", () => {
   for (const [name, run] of Object.entries(SCENARIOS)) {
     it(name, async () => {
-      const got = norm(await run());
+      const { calls: got, decisions } = await tapped(run);
       if (RECORD) {
         pins[name] = got;
         return;
@@ -412,11 +471,228 @@ describe("OQ-12 pins: exact venue calls per entry point", () => {
       assert.ok(pinned, `no pin recorded for ${name}`);
       // What the venue sees: byte-identical, in order.
       assert.deepEqual(orderCalls(got), orderCalls(pinned), `${name}: the fund-moving calls drifted`);
-      // Everything else: identical except the declared gate reads.
-      assert.deepEqual(got, withGateReads(pinned, GATE_READS[name]), `${name}: the call sequence drifted`);
+      // Everything else: identical except the declared gate read.
+      assert.deepEqual(got, withGateReads(name, pinned), `${name}: the call sequence drifted`);
+      // OQ-12(b): every venue order call is exactly one runLive decision —
+      // timeouts and retries included (a retry is a NEW decision).
+      assert.equal(decisions.filter((d) => d.status === "sent").length, orderCalls(got).length, `${name}: decisions != venue order calls`);
+      assert.equal(decisions.filter((d) => d.status !== "sent").length, 0, `${name}: a decision was refused`);
     });
   }
   after(() => {
     if (RECORD) writeFileSync(PIN_FILE, `${JSON.stringify(pins, null, 2)}\n`);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* OQ-12(c)(d): one gate, inside runLive, for every producer            */
+/* ------------------------------------------------------------------ */
+
+/** Producers that OPEN exposure, one representative fire each. */
+const OPENING = ["live:fire", "harness:long-confluence-clean", "degen:fire", "execute:fire", "chase:replace-then-fill", "bounce:fire", "grid:start-long"];
+/** Producers that only REDUCE exposure. */
+const REDUCING = ["close:fire", "exits:fire", "cancel:fire", "cancel-all:fire", "scalp-kill:fire", "trail:close"];
+
+describe("OQ-12(c): a tripped watchdog kill switch blocks EVERY opening producer — inside runLive", () => {
+  after(() => setBreaker(null));
+  for (const name of OPENING) {
+    it(`${name}: tripped breaker → zero opening venue calls`, async () => {
+      setBreaker(TRIPPED);
+      const { calls, decisions } = await tapped(SCENARIOS[name]!);
+      assert.deepEqual(calls.filter(isOpeningCall), [], `${name} reached the venue with the kill switch tripped`);
+      assert.ok(decisions.some((d) => d.status === "blocked" && /kill switch is TRIPPED/.test(d.reason ?? "")), `${name}: no blocked decision recorded`);
+      assert.equal(decisions.filter((d) => d.status === "sent" && d.tool === "execute_trade").length, 0);
+    });
+    it(`${name}: entries-blocked (breaker not tripped) → zero opening venue calls`, async () => {
+      setBreaker({ version: 1, breaker: { tripped: false, reasons: [] }, entriesBlocked: true, blockReason: "pin: unprotected position" });
+      const { calls } = await tapped(SCENARIOS[name]!);
+      assert.deepEqual(calls.filter(isOpeningCall), []);
+    });
+    it(`${name}: an unreadable breaker file fails CLOSED`, async () => {
+      setBreaker("{not json");
+      const { calls } = await tapped(SCENARIOS[name]!);
+      assert.deepEqual(calls.filter(isOpeningCall), []);
+    });
+  }
+  for (const name of REDUCING) {
+    it(`${name}: risk-REDUCING orders still reach the venue with the breaker tripped (byte-identical)`, async () => {
+      setBreaker(TRIPPED);
+      const { calls } = await tapped(SCENARIOS[name]!);
+      assert.deepEqual(orderCalls(calls), orderCalls(pins[name] ?? []));
+      assert.ok(orderCalls(calls).length > 0);
+    });
+  }
+});
+
+describe("OQ-12(c): the server kill switch + daily caps block every opening producer — inside runLive", () => {
+  after(() => {
+    riskOverride = null;
+  });
+  const cases: [string, unknown][] = [
+    ["server kill switch on", { risk_limits: { kill_switch_enabled: true } }],
+    ["daily loss cap reached", { risk_limits: { kill_switch_enabled: false, daily_realized_loss_usd: 50, max_daily_loss_usd: 50 } }],
+    ["daily trade cap reached", { risk_limits: { kill_switch_enabled: false, daily_trade_count: 10, max_trades_per_day: 10 } }],
+    ["daily notional budget spent", { risk_limits: { kill_switch_enabled: false, daily_notional_usd: 501, max_daily_notional_usd: 500 } }],
+    ["risk limits unreadable", () => { throw new Error("rate_limited"); }],
+  ];
+  // The harness reads no server (its simulated account is the snapshot);
+  // live:fire's own preflight reads the same limits first.
+  for (const name of OPENING.filter((n) => n !== "harness:long-confluence-clean")) {
+    for (const [label, risk] of cases) {
+      if (name === "live:fire" && label === "risk limits unreadable") continue; // the candidate's preflight read throws before any decision (unchanged)
+      it(`${name}: ${label} → zero opening venue calls`, async () => {
+        riskOverride = risk;
+        try {
+          const { calls } = await tapped(SCENARIOS[name]!);
+          assert.deepEqual(calls.filter(isOpeningCall), [], `${name} fired with ${label}`);
+        } finally {
+          riskOverride = null;
+        }
+      });
+    }
+  }
+});
+
+describe("OQ-12(c): --yes is checked inside runLive for every decision", () => {
+  const tools = ["execute_trade", "set_exits", "close_position", "cancel_order"] as const;
+  for (const tool of tools) {
+    it(`${tool} without --yes: a preview, zero venue calls (not even the gate read)`, async () => {
+      const { calls, call } = recorder(() => ({ orderId: "x" }));
+      await assert.rejects(
+        runLive({ kind: "order", producer: "execute", tool, args: { exchange: "kucoin", pair: "SOL/USDT" }, yes: false }, { pat: PAT, call }),
+        (e: unknown) => e instanceof LiveRefusal && e.status === "preview",
+      );
+      assert.deepEqual(calls, []);
+    });
+  }
+  it("degen without --yes previews: zero order calls", async () => {
+    const sb = makeSandbox("pin-degen-preview-");
+    try {
+      const { calls, call } = recorder(degenVenue());
+      await quiet(() =>
+        cmdDegen(
+          { pair: "SOL/USDT", exchange: "kucoin", sizeUsd: 15, leverage: 2, maxHeatUsd: 6, maxConcurrent: 2, activationPct: 0.25, bouncebackPct: 0.08, polls: 600, horizon: 12, trail: false, live: false, paper: false },
+          { yes: false, json: true, pat: PAT },
+          { fade: async () => DEGEN_ROW, oracle: async () => ({ side: "long", score: 0.7, detail: "pin" }), spec: async () => ({ multiplier: 1, tick: 0.01 }), call, heatPath: join(sb.dir, "h.json"), logPath: join(sb.dir, "l.jsonl"), runDir: join(sb.dir, "runs"), storePath: join(sb.dir, "v.json"), now: () => NOW },
+        ),
+      );
+      assert.deepEqual(orderCalls(calls), []);
+    } finally {
+      sb.cleanup();
+    }
+  });
+});
+
+describe("OQ-12(d): paper never reaches the live venue client", () => {
+  it("a paper decision is refused before ANY venue contact", async () => {
+    const { calls, call } = recorder(() => ({ orderId: "x" }));
+    await assert.rejects(
+      runLive({ kind: "order", producer: "degen", tool: "execute_trade", args: { pair: "SOL/USDT" }, yes: true, paper: true }, { pat: PAT, call }),
+      (e: unknown) => e instanceof LiveRefusal && e.status === "paper",
+    );
+    assert.deepEqual(calls, []);
+  });
+  it("degen --paper: zero venue order calls — the only call is its [PAPER] Diary card", async () => {
+    const sb = makeSandbox("pin-degen-paper-");
+    try {
+      const { calls, call } = recorder(degenVenue());
+      await quiet(() =>
+        cmdDegen(
+          { pair: "SOL/USDT", exchange: "kucoin", sizeUsd: 15, leverage: 2, maxHeatUsd: 6, maxConcurrent: 2, activationPct: 0.25, bouncebackPct: 0.08, polls: 600, horizon: 12, trail: false, live: false, paper: true },
+          { yes: false, json: true, pat: PAT },
+          { fade: async () => DEGEN_ROW, oracle: async () => ({ side: "long", score: 0.7, detail: "pin" }), spec: async () => ({ multiplier: 1, tick: 0.01 }), call, heatPath: join(sb.dir, "h.json"), logPath: join(sb.dir, "l.jsonl"), runDir: join(sb.dir, "runs"), storePath: join(sb.dir, "v.json"), paperPath: join(sb.dir, "paper-accounts.json"), now: () => NOW },
+        ),
+      );
+      assert.deepEqual(orderCalls(calls), [], "degen --paper sent a venue order");
+      // Today's paper design (PAPER_MODE.md): one JW3 Diary card, never an
+      // exchange order and never through runLive.
+      assert.deepEqual(calls.map((c) => c.name), ["propose_trade"]);
+      assert.equal(calls[0]?.args.timeframe, "paper");
+    } finally {
+      sb.cleanup();
+    }
+  });
+});
+
+describe("OQ-12(b): one venue call per decision — never retried inside runLive", () => {
+  it("a timed-out order is sent ONCE and the ambiguity surfaces to the producer", async () => {
+    const { calls, call } = recorder((c) => (c.name === "execute_trade" ? timeout() : {}));
+    await assert.rejects(
+      runLive({ kind: "order", producer: "execute", tool: "execute_trade", args: { pair: "SOL/USDT", side: "buy", amount: 1 }, yes: true }, { pat: PAT, call }),
+      /timeout/,
+    );
+    assert.equal(calls.filter((c) => c.name === "execute_trade").length, 1);
+  });
+  it("a rejected cancel is sent ONCE", async () => {
+    const { calls, call } = recorder(() => { throw new Error("order not found"); });
+    await assert.rejects(
+      runLive({ kind: "order", producer: "cancel", tool: "cancel_order", args: { orderId: "o-1" }, yes: true }, { pat: PAT, call }),
+      /order not found/,
+    );
+    assert.equal(calls.length, 1);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* OQ-12(a): the source guard — runLive's chain is the only order path  */
+/* ------------------------------------------------------------------ */
+
+function srcRoot(): string {
+  for (const d of [join(here, "..", "src"), here]) if (existsSync(join(d, "commands", "live.ts"))) return d;
+  throw new Error("order-path guard: cannot locate cli/src");
+}
+
+function sourceFiles(dir: string, out: string[] = []): string[] {
+  for (const e of readdirSync(dir)) {
+    const p = join(dir, e);
+    if (statSync(p).isDirectory()) sourceFiles(p, out);
+    else if (p.endsWith(".ts") && !p.endsWith(".test.ts") && !p.endsWith(".d.ts")) out.push(p);
+  }
+  return out;
+}
+
+describe("OQ-12(a): no module other than runLive's chain sends a venue order", () => {
+  const root = srcRoot();
+  const files = sourceFiles(root).map((p) => ({ rel: p.slice(root.length + 1), src: readFileSync(p, "utf8") }));
+  // An order-tool NAME as the first argument of any call — except
+  // `decide(...)`, live.ts/degen.ts's OrderDecision constructor.
+  const ORDER_LITERAL_CALL = /(?<!\bdecide)\(\s*["'](execute_trade|set_exits|close_position|cancel_order)["']/;
+
+  it("finds the source tree", () => {
+    assert.ok(files.length > 50, `only ${files.length} source files found under ${root}`);
+  });
+  it("no source file passes an order tool NAME straight to a call — anywhere (live.ts included)", () => {
+    const hits = files.filter((f) => ORDER_LITERAL_CALL.test(f.src)).map((f) => f.rel);
+    assert.deepEqual(hits, [], `direct order-tool calls outside runLive: ${hits.join(", ")}`);
+  });
+  it("the order transport (callOrderTool) is imported by commands/live.ts ONLY", () => {
+    const users = files.filter((f) => f.rel !== "mcp.ts" && /\bcallOrderTool\b/.test(f.src)).map((f) => f.rel);
+    assert.deepEqual(users, ["commands/live.ts"]);
+  });
+  it("nothing but mcp.ts speaks tools/call (no side door to the transport)", () => {
+    const users = files.filter((f) => f.rel !== "mcp.ts" && /["']tools\/call["']/.test(f.src)).map((f) => f.rel);
+    assert.deepEqual(users, []);
+  });
+  it("the generic transport REFUSES every order tool at runtime (nothing is sent)", async () => {
+    const { callTool } = await import("./mcp.js");
+    for (const tool of ["execute_trade", "set_exits", "close_position", "cancel_order"]) {
+      await assert.rejects(callTool(tool, {}, "pat-never-used", "http://127.0.0.1:9/never"), /only runLive/);
+    }
+  });
+  it("sendOrder makes exactly one venue call and has no loop or retry", () => {
+    const live = files.find((f) => f.rel === "commands/live.ts")!.src;
+    const start = live.indexOf("async function sendOrder(");
+    assert.ok(start > 0, "sendOrder not found");
+    const body = live.slice(start, live.indexOf("\n}\n", start));
+    assert.equal((body.match(/\bsend\(/g) ?? []).length, 1, "sendOrder must call the venue exactly once");
+    assert.equal(/\bfor\s*\(|\bwhile\s*\(|retry/i.test(body), false, "sendOrder must not loop or retry");
+  });
+  it("every order-placing module hands its orders to runLive", () => {
+    const producers = ["commands/degen.ts", "commands/harness.ts", "commands/trade.ts", "chase.ts", "bounce.ts", "commands/grid.ts", "commands/scalp.ts", "commands/trail.ts", "commands/daemon.ts", "commands/watchdog.ts"];
+    for (const rel of producers) {
+      const f = files.find((x) => x.rel === rel);
+      assert.ok(f, `${rel} missing`);
+      assert.ok(/\brunLive\(/.test(f.src) && /kind: "order"/.test(f.src), `${rel} does not hand decisions to runLive`);
+    }
   });
 });

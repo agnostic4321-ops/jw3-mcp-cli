@@ -16,7 +16,7 @@
  * entry (PAT with trade:execute, server re-checks gates). --yes without
  * --size stays ticket-only: there is nothing to size the order with.
  */
-import { callTool } from "./mcp.js";
+import { runLive } from "./commands/live.js";
 import { futuresCenter } from "./kucoin.js";
 import { needPat } from "./commands/market.js";
 import { makeIntentKey, ACTOR_MACHINE } from "./commands/trade.js";
@@ -273,8 +273,11 @@ export async function cmdBounce(
       size,
     });
     try {
-      const call = deps?.call ?? callTool;
-      const out = await call("execute_trade", toolArgs, pat, opts.url);
+      // OQ-12: the fire is a decision; runLive gates and sends it.
+      const out = await runLive(
+        { kind: "order", producer: "bounce", tool: "execute_trade", args: toolArgs, yes: opts.yes },
+        { pat, url: opts.url, call: deps?.call },
+      );
       if (opts.json) {
         console.log(
           JSON.stringify({

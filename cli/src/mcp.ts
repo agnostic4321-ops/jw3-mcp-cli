@@ -114,6 +114,16 @@ const NO_RETRY_TOOLS = new Set([
 ]);
 
 /**
+ * The venue ORDER tools — place, modify (exits) and cancel/close a live
+ * order. OQ-12: the single live order path is `runLive`
+ * (commands/live.ts), which sends them through `callOrderTool` after its
+ * confirmation, paper, kill-switch and cap gates. The generic `callTool`
+ * REFUSES them, so a stray path fails loudly with nothing sent instead of
+ * reaching the venue around those gates (pinned by order-paths-guard.test.ts).
+ */
+export const ORDER_TOOLS: ReadonlySet<string> = new Set(["execute_trade", "set_exits", "close_position", "cancel_order"]);
+
+/**
  * tools/call result. Tool-level failures arrive as HTTP 200 + isError:true
  * per the MCP spec — surfaced here as McpError so the CLI never prints a
  * failure as if it were data.
@@ -125,6 +135,35 @@ export async function callTool(
   urlOverride?: string,
   // daily_prep fans out to ~13 sources + sequential JEV — needs minutes.
   timeoutMs = name === "daily_prep" ? 600000 : 25000,
+): Promise<unknown> {
+  if (ORDER_TOOLS.has(name)) {
+    throw new McpError(-32000, `${name} is a venue order tool — only runLive (commands/live.ts) may send it; nothing was sent`);
+  }
+  return sendTool(name, args, pat, urlOverride, timeoutMs);
+}
+
+/**
+ * The ORDER transport — imported by commands/live.ts and nothing else
+ * (order-paths-guard.test.ts). One attempt, never auto-retried
+ * (NO_RETRY_TOOLS): a timeout is ambiguous and re-firing blind risks a
+ * double fill.
+ */
+export async function callOrderTool(
+  name: string,
+  args: Record<string, unknown>,
+  pat: string,
+  urlOverride?: string,
+): Promise<unknown> {
+  if (!ORDER_TOOLS.has(name)) throw new McpError(-32000, `${name} is not a venue order tool — use callTool`);
+  return sendTool(name, args, pat, urlOverride, 25000);
+}
+
+async function sendTool(
+  name: string,
+  args: Record<string, unknown>,
+  pat: string,
+  urlOverride: string | undefined,
+  timeoutMs: number,
 ): Promise<unknown> {
   const attempts = NO_RETRY_TOOLS.has(name) ? 1 : 3;
   const result = (await rpc("tools/call", { name, arguments: args }, pat, urlOverride, 1, timeoutMs, attempts)) as {

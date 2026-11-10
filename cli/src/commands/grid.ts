@@ -20,6 +20,7 @@ import {
 import { fail, listConnections, needPat, pickConnection } from "./market.js";
 import { startupGate } from "../reconcile.js";
 import { makeIntentKey, ACTOR_MACHINE, type TradeCall } from "./trade.js";
+import { liveSession, runLive, type DecisionOpts } from "./live.js";
 
 export type GridArgs = {
   exchange: string;
@@ -268,18 +269,27 @@ export async function cmdGrid(
     console.log("Dry run — nothing sent. Re-run with --yes to fire seed + all levels (real money).");
     return;
   }
+  // OQ-12: the seed and every level are decisions runLive gates and sends
+  // (one session: the risk limits are read once for the whole ladder; the
+  // watchdog breaker is re-read before every level).
+  const orders: DecisionOpts = { pat, url: opts.url, call: deps?.call, session: liveSession() };
   let seedOrderId: string | null = null;
   if (bias !== "neutral" && ladder.seedContracts > 0) {
     try {
-      const seed = (await (deps?.call ?? callTool)(
-        "execute_trade",
-        gridOrderArgs({
-          exchange: a.exchange, pair: a.pair,
-          side: bias === "long" ? "buy" : "sell",
-          contracts: ladder.seedContracts,
-          leverage: a.leverage,
-        }),
-        pat, opts.url,
+      const seed = (await runLive(
+        {
+          kind: "order",
+          producer: "grid",
+          tool: "execute_trade",
+          args: gridOrderArgs({
+            exchange: a.exchange, pair: a.pair,
+            side: bias === "long" ? "buy" : "sell",
+            contracts: ladder.seedContracts,
+            leverage: a.leverage,
+          }),
+          yes: opts.yes,
+        },
+        orders,
       )) as { orderId?: string };
       seedOrderId = String(seed.orderId ?? "?");
       if (!opts.json) console.log(`SEED ${bias.toUpperCase()} ${ladder.seedContracts} @ market → ${seedOrderId}`);
@@ -294,16 +304,21 @@ export async function cmdGrid(
   for (const l of ladder.levels) {
     const px = roundToTick(l.price, spec.tick);
     try {
-      const out = (await (deps?.call ?? callTool)(
-        "execute_trade",
-        gridOrderArgs({
-          exchange: a.exchange, pair: a.pair,
-          side: l.side === "buy" ? "buy" : "sell",
-          contracts,
-          price: px,
-          leverage: a.leverage,
-        }),
-        pat, opts.url,
+      const out = (await runLive(
+        {
+          kind: "order",
+          producer: "grid",
+          tool: "execute_trade",
+          args: gridOrderArgs({
+            exchange: a.exchange, pair: a.pair,
+            side: l.side === "buy" ? "buy" : "sell",
+            contracts,
+            price: px,
+            leverage: a.leverage,
+          }),
+          yes: opts.yes,
+        },
+        orders,
       )) as { orderId?: string };
       placed.push({ side: l.side, price: px, orderId: String(out.orderId ?? "?") });
     } catch (e) {

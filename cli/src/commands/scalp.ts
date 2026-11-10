@@ -15,7 +15,7 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readFileSync, unlinkSync } from "node:fs";
-import { callTool } from "../mcp.js";
+import { runLive } from "./live.js";
 
 import {
   futuresCenter,
@@ -379,10 +379,16 @@ export async function cmdScalpKill(opts: {
   let errors = 0;
   for (const p of state.placed) {
     try {
-      await (deps?.call ?? callTool)(
-        "cancel_order",
-        { exchange, orderId: p.orderId, pair: state.pair, market: "futures" },
-        pat, opts.url,
+      // OQ-12: every cancel + the close are decisions runLive sends.
+      await runLive(
+        {
+          kind: "order",
+          producer: "scalp-kill",
+          tool: "cancel_order",
+          args: { exchange, orderId: p.orderId, pair: state.pair, market: "futures" },
+          yes: opts.yes,
+        },
+        { pat, url: opts.url, call: deps?.call },
       );
       console.log(`CANCELLED ${p.orderId}`);
     } catch (e) {
@@ -391,10 +397,15 @@ export async function cmdScalpKill(opts: {
     }
   }
   try {
-    const out = await (deps?.call ?? callTool)(
-      "close_position",
-      { exchange, pair: state.pair, side: state.direction },
-      pat, opts.url,
+    const out = await runLive(
+      {
+        kind: "order",
+        producer: "scalp-kill",
+        tool: "close_position",
+        args: { exchange, pair: state.pair, side: state.direction },
+        yes: opts.yes,
+      },
+      { pat, url: opts.url, call: deps?.call },
     );
     console.log(`CLOSED ${state.direction} ${state.pair}: ${JSON.stringify(out)}`);
   } catch (e) {

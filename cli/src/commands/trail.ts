@@ -18,7 +18,7 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { callTool } from "../mcp.js";
+import { runLive } from "./live.js";
 import { futuresCenter } from "../kucoin.js";
 import {
   FUTURES_TICK_STALE_MS,
@@ -364,7 +364,9 @@ export async function cmdTrail(
     try {
       const closeFn =
         deps?.closeFn ??
-        ((args: Record<string, unknown>) => (deps?.call ?? callTool)("close_position", args, pat, opts.url));
+        // OQ-12: the close is a decision runLive sends.
+        ((args: Record<string, unknown>) =>
+          runLive({ kind: "order", producer: "trail", tool: "close_position", args, yes: opts.yes }, { pat, url: opts.url, call: deps?.call }));
       const out = await closeFn(closeArgs);
       persist(true, true, price);
       try {

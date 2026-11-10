@@ -140,9 +140,10 @@ describe("live fire matches the preview ticket", () => {
     const s = spy(calls, () => ({ orderId: "x" }));
     const inTicket = { exchange: "kucoin", pair: "BTC/USDT", side: "buy", amount: 1, market: "futures" };
     await cmdExecute(inTicket, { yes: true, json: true, pat: "p" }, { call: s });
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0]?.name, "execute_trade");
-    assert.deepEqual(calls[0]?.args, executeToolArgs(inTicket));
+    // OQ-12: runLive's kill-switch + caps gate reads the risk limits once,
+    // then the ONE order goes out with the builder ticket byte-for-byte.
+    assert.deepEqual(calls.map((c) => c.name), ["read_risk_limits", "execute_trade"]);
+    assert.deepEqual(calls[1]?.args, executeToolArgs(inTicket));
     assert.equal(process.exitCode, 0);
   });
   it("close/exits/cancel --yes send exactly their builder tickets", async () => {

@@ -17,6 +17,7 @@ import { flagOf } from "./args.js";
 import { futuresContract } from "./kucoin-ws.js";
 import { futuresTickerFull } from "./kucoin.js";
 import { callTool } from "./mcp.js";
+import { liveSession, runLive, type DecisionOpts } from "./commands/live.js";
 import { fail, needPat } from "./commands/market.js";
 import {
   cancelAllListArgs,
@@ -389,12 +390,13 @@ export async function cmdExecuteChase(
       const t = await futuresTickerFull(contract);
       return { bestBid: t.bestBid, bestAsk: t.bestAsk };
     });
+  // OQ-12: every place / replace / cancel is a decision runLive gates and
+  // sends (one session: the risk limits are read once for the chase).
+  const orders: DecisionOpts = { pat, url: opts.url, call: deps?.call, session: liveSession() };
   const placeFn = async (price: number | undefined): Promise<string> => {
-    const out = (await call(
-      "execute_trade",
-      placeTicket(price),
-      pat,
-      opts.url,
+    const out = (await runLive(
+      { kind: "order", producer: "chase", tool: "execute_trade", args: placeTicket(price), yes: opts.yes },
+      orders,
     )) as { orderId?: string; id?: string };
     const idOut = String(out?.orderId ?? out?.id ?? "").trim();
     if (!idOut) throw new Error("execute_trade returned no order id — reconcile before doing anything");
@@ -404,9 +406,16 @@ export async function cmdExecuteChase(
     touchFn,
     placeFn,
     cancelFn: (orderId: string) =>
-      call("cancel_order", cancelToolArgs({ exchange: args.exchange, orderId, pair: args.pair, market: args.market }), pat, opts.url).then(
-        () => {},
-      ),
+      runLive(
+        {
+          kind: "order",
+          producer: "chase",
+          tool: "cancel_order",
+          args: cancelToolArgs({ exchange: args.exchange, orderId, pair: args.pair, market: args.market }),
+          yes: opts.yes,
+        },
+        orders,
+      ).then(() => {}),
     workingFn: async (orderId: string) => {
       const listed = await call("list_open_orders", cancelAllListArgs({ exchange: args.exchange, pair: args.pair }), pat, opts.url);
       return isChaseWorking(listed, orderId);

@@ -37,11 +37,12 @@
  * the start: a plan can sit for minutes while the operator changes their
  * mind server-side.
  */
-import { callTool } from "../mcp.js";
+import { callOrderTool, callTool, ORDER_TOOLS } from "../mcp.js";
 import { resolvePat } from "../config.js";
 import { futuresContractSpec } from "../kucoin.js";
 import { sizeTrade, type SizingDecision, type SizingProposal, liquidationPriceFor } from "./sizing.js";
 import { extractOpenOrders, type TradeCall } from "./trade.js";
+import { loadWatchdogState, watchdogEntryBlock, watchdogStatePath } from "./watchdog-state.js";
 
 export type LiveSide = "long" | "short";
 
@@ -455,14 +456,33 @@ export async function readLiveAccountState(
   const o = orders as unknown;
   const openOrderCount = extractOpenOrders(o).length;
 
-  const r = (risk as { risk_limits?: Record<string, unknown> })?.risk_limits ?? {};
-  const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
-
   return {
     freeMarginUsd,
     equityUsd,
     hasOpenPosition,
     openOrderCount,
+    ...riskSnapshotFrom(risk),
+  };
+}
+
+/** The server's risk counters + caps, as every live gate reads them. */
+export type RiskSnapshot = Pick<
+  LiveAccountState,
+  | "killSwitchEnabled"
+  | "dailyLossUsd"
+  | "maxDailyLossUsd"
+  | "dailyTradeCount"
+  | "maxTradesPerDay"
+  | "dailyNotionalUsd"
+  | "maxDailyNotionalUsd"
+  | "maxPositionUsd"
+>;
+
+/** Pure: a `read_risk_limits` payload → the snapshot the gates read. */
+export function riskSnapshotFrom(risk: unknown): RiskSnapshot {
+  const r = (risk as { risk_limits?: Record<string, unknown> })?.risk_limits ?? {};
+  const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
+  return {
     killSwitchEnabled: r.kill_switch_enabled === true,
     dailyLossUsd: num(r.daily_realized_loss_usd) ?? 0,
     maxDailyLossUsd: num(r.max_daily_loss_usd),
@@ -479,6 +499,210 @@ export async function readLiveAccountState(
 function candidateBase(pair: string): string {
   return (pair.split("/")[0] ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 }
+
+/* ------------------------------------------------------------------ */
+/* THE ORDER GATEWAY (OQ-12)                                           */
+/* ------------------------------------------------------------------ */
+//
+// `runLive` is the ONLY code path that places, modifies or cancels a live
+// order. Every producer — the live candidate path below, degen, the
+// harness, the trade commands, chase, bounce, grid, scalp kill, trail, the
+// daemon drain and the watchdog unwind — hands an `OrderDecision` to
+// `runLive`, and `sendOrder` is the one function that sends a venue order
+// tool. It applies, in this order, for EVERY producer:
+//
+//   1. paper      — a paper decision never reaches the venue client.
+//   2. --yes      — an unconfirmed decision is a preview: nothing is sent.
+//   3. kill switch + caps — OPENING orders only (a non-reduce-only
+//                   execute_trade): the watchdog's local breaker file, then
+//                   the server's kill switch and daily caps through the SAME
+//                   `preflightGates` rules the candidate path uses. Risk-
+//                   reducing orders (exits, close, cancel) are never
+//                   blocked — the unwind must always reach the venue.
+//   4. ONE venue call — never retried here. A timeout is ambiguous (the
+//                   order may be live), so it surfaces to the producer; any
+//                   follow-up is a NEW decision the producer makes
+//                   explicitly. The transport never retries order tools
+//                   either (mcp.ts NO_RETRY_TOOLS).
+//
+// Idempotency is the producer's ticket: clientOid / idempotency_key / the
+// harness intent ledger travel in `args` byte-for-byte (pinned by
+// order-paths-pin.test.ts), so the venue and the server's arbiter see
+// exactly what they saw before OQ-12.
+
+/** The venue order tools. */
+export type OrderTool = "execute_trade" | "set_exits" | "close_position" | "cancel_order";
+
+/** Who made the decision. */
+export type OrderProducer =
+  | "live"
+  | "degen"
+  | "harness"
+  | "execute"
+  | "close"
+  | "exits"
+  | "cancel"
+  | "cancel-all"
+  | "chase"
+  | "bounce"
+  | "grid"
+  | "scalp-kill"
+  | "trail"
+  | "daemon-drain"
+  | "watchdog";
+
+/** One decision = exactly one venue order call (or none, if refused). */
+export type OrderDecision = {
+  kind: "order";
+  producer: OrderProducer;
+  tool: OrderTool;
+  args: Record<string, unknown>;
+  /**
+   * The producer's confirmation: `--yes`, or for the autonomous unwinds
+   * (watchdog, daemon drain) the arming the operator already gave. False →
+   * a preview; nothing is sent.
+   */
+  yes: boolean;
+  /** Paper decisions never reach the venue client. */
+  paper?: boolean;
+  /**
+   * The order's USD notional when the producer SIZED it (the live
+   * candidate). Feeds the per-order position + daily-notional caps; absent,
+   * those two stay with the server (the only party that computes the venue
+   * notional the way it counts it), and the gate checks only that the day's
+   * notional budget is not already spent.
+   */
+  notionalUsd?: number;
+};
+
+/**
+ * One producer run's gate memo. A producer that sends several opening
+ * orders in one run (grid levels, degen's two steps, chase replaces)
+ * shares one session, so the server's risk limits are read ONCE per run,
+ * not once per order. The watchdog breaker file is re-read on EVERY
+ * opening decision, so a trip mid-run blocks the rest of the run.
+ */
+export type LiveSession = { risk?: RiskSnapshot };
+
+export function liveSession(risk?: RiskSnapshot): LiveSession {
+  return risk ? { risk } : {};
+}
+
+export type DecisionOpts = {
+  pat: string;
+  url?: string;
+  /** Injected venue client (tests, the offline harness). Default: the order transport. */
+  call?: TradeCall;
+  session?: LiveSession;
+  /** Dir holding watchdog-state.json. Default: the config dir — where the watchdog writes it. */
+  watchdogDir?: string;
+};
+
+/** Why a decision was not sent. Thrown, so producers treat it as a failed send. */
+export class LiveRefusal extends Error {
+  readonly status: "paper" | "preview" | "blocked";
+  readonly producer: OrderProducer;
+  constructor(status: "paper" | "preview" | "blocked", producer: OrderProducer, reason: string) {
+    super(reason);
+    this.name = "LiveRefusal";
+    this.status = status;
+    this.producer = producer;
+  }
+}
+
+/** Observability tap: one record per decision runLive handles. */
+export type DecisionRecord = {
+  producer: OrderProducer;
+  tool: OrderTool;
+  status: "sent" | "paper" | "preview" | "blocked";
+  reason?: string;
+};
+let decisionTap: ((d: DecisionRecord) => void) | null = null;
+
+/** Install (or clear, with null) the decision tap. Used by the pin tests. */
+export function tapLiveDecisions(fn: ((d: DecisionRecord) => void) | null): void {
+  decisionTap = fn;
+}
+
+/** Pure: an OPENING order — one that can add exposure. */
+export function isOpeningDecision(d: Pick<OrderDecision, "tool" | "args">): boolean {
+  return d.tool === "execute_trade" && d.args.reduceOnly !== true && d.args.reduce_only !== true;
+}
+
+/** The preflight gates that are account-wide risk caps (not ticket shape). */
+const CAP_GATE_IDS = new Set(["kill_switch", "daily_loss", "daily_trade_count", "daily_notional", "position_notional"]);
+
+/**
+ * Pure: the kill-switch + caps verdict for one opening order — the SAME
+ * `preflightGates` rules the candidate path folds, restricted to the
+ * account-wide caps. Null = clear.
+ */
+export function capsBlock(risk: RiskSnapshot, notionalUsd?: number): string | null {
+  const n = notionalUsd != null && Number.isFinite(notionalUsd) && notionalUsd > 0 ? notionalUsd : 0;
+  const gates = preflightGates({
+    pair: "",
+    hasOpenPosition: false,
+    openOrderCount: 0,
+    freeMarginUsd: 0,
+    requiredMarginUsd: 0,
+    killSwitchEnabled: risk.killSwitchEnabled,
+    dailyLossUsd: risk.dailyLossUsd,
+    maxDailyLossUsd: risk.maxDailyLossUsd,
+    dailyTradeCount: risk.dailyTradeCount,
+    maxTradesPerDay: risk.maxTradesPerDay,
+    dailyNotionalUsd: risk.dailyNotionalUsd,
+    maxDailyNotionalUsd: risk.maxDailyNotionalUsd,
+    maxPositionUsd: risk.maxPositionUsd,
+    ticketNotionalUsd: n,
+    positionNotionalUsd: n,
+    hasTarget: true,
+    hasStop: true,
+  }).filter((g) => CAP_GATE_IDS.has(g.id));
+  const folded = foldPreflight(gates);
+  return folded.ok ? null : `risk gate: ${folded.failed}`;
+}
+
+/** The kill switch + caps for an opening decision. Null = clear. */
+async function entryGate(d: OrderDecision, opts: DecisionOpts, send: TradeCall): Promise<string | null> {
+  const breaker = watchdogEntryBlock(loadWatchdogState(watchdogStatePath(opts.watchdogDir)));
+  if (breaker) return breaker;
+  let risk = opts.session?.risk;
+  if (!risk) {
+    try {
+      risk = riskSnapshotFrom(await send("read_risk_limits", {}, opts.pat, opts.url));
+    } catch (e) {
+      // A check that cannot run is not a pass: the server refuses to trade
+      // on unreadable limits, and so does this gate.
+      return `risk limits unreadable (${e instanceof Error ? e.message : String(e)}) — refusing to open blind`;
+    }
+    if (opts.session) opts.session.risk = risk;
+  }
+  return capsBlock(risk, d.notionalUsd);
+}
+
+/** THE sender: the only function that sends a venue order tool. */
+async function sendOrder(d: OrderDecision, opts: DecisionOpts): Promise<unknown> {
+  const refuse = (status: "paper" | "preview" | "blocked", reason: string): never => {
+    decisionTap?.({ producer: d.producer, tool: d.tool, status, reason });
+    throw new LiveRefusal(status, d.producer, reason);
+  };
+  if (!ORDER_TOOLS.has(d.tool)) refuse("blocked", `${String(d.tool)} is not a venue order tool`);
+  if (d.paper === true) refuse("paper", "paper decision — never sent to the venue");
+  if (d.yes !== true) refuse("preview", "not confirmed (--yes) — nothing sent");
+  // Reads for the gate go through the injected client when there is one
+  // (tests, the harness), else the generic (read) transport.
+  const read: TradeCall = opts.call ?? (callTool as unknown as TradeCall);
+  if (isOpeningDecision(d)) {
+    const block = await entryGate(d, opts, read);
+    if (block) refuse("blocked", block);
+  }
+  decisionTap?.({ producer: d.producer, tool: d.tool, status: "sent" });
+  const send: TradeCall = opts.call ?? (callOrderTool as unknown as TradeCall);
+  return send(d.tool, d.args, opts.pat, opts.url);
+}
+
+const isOrderDecision = (x: LiveArgs | OrderDecision): x is OrderDecision =>
+  (x as { kind?: unknown }).kind === "order";
 
 /* ------------------------------------------------------------------ */
 /* The live path                                                       */
@@ -616,23 +840,40 @@ async function reconcileRealizedPnl(
   }
 }
 
-export async function runLive(
-  a: LiveArgs,
-  opts: {
-    yes: boolean;
-    json: boolean;
-    pat?: string;
-    url?: string;
-    call?: TradeCall;
-    /**
-     * The contract spec reader. Injected so the live path is testable
-     * offline and DETERMINISTIC — a live fetch in a test makes the suite
-     * flaky and, worse, a flaky test on a fund-moving path is a test
-     * nobody trusts.
-     */
-    contractSpec?: (base: string) => Promise<{ multiplier: number; tick: number }>;
-  },
-): Promise<LiveResult> {
+export type LiveOpts = {
+  yes: boolean;
+  json: boolean;
+  pat?: string;
+  url?: string;
+  call?: TradeCall;
+  /**
+   * The contract spec reader. Injected so the live path is testable
+   * offline and DETERMINISTIC — a live fetch in a test makes the suite
+   * flaky and, worse, a flaky test on a fund-moving path is a test
+   * nobody trusts.
+   */
+  contractSpec?: (base: string) => Promise<{ multiplier: number; tick: number }>;
+  /** Dir holding watchdog-state.json (default: the config dir). */
+  watchdogDir?: string;
+};
+
+/**
+ * THE live order path (OQ-12). Two kinds of input:
+ *   - a scalp CANDIDATE (`LiveArgs`): size → preflight → fire → protect →
+ *     verify, every venue order of it a decision through `sendOrder`;
+ *   - an `OrderDecision` from any other producer: gated and sent as exactly
+ *     one venue call. Resolves to the venue's answer; a refusal (paper,
+ *     preview, kill switch, caps) throws `LiveRefusal` with nothing sent,
+ *     and a venue error propagates untouched (never retried here).
+ */
+export async function runLive(a: LiveArgs, opts: LiveOpts): Promise<LiveResult>;
+export async function runLive(d: OrderDecision, opts: DecisionOpts): Promise<unknown>;
+export async function runLive(a: LiveArgs | OrderDecision, opts: LiveOpts | DecisionOpts): Promise<unknown> {
+  if (isOrderDecision(a)) return sendOrder(a, opts as DecisionOpts);
+  return runCandidate(a, opts as LiveOpts);
+}
+
+async function runCandidate(a: LiveArgs, opts: LiveOpts): Promise<LiveResult> {
   const call = opts.call ?? (callTool as unknown as TradeCall);
   const pat = resolvePat(opts.pat);
   if (!pat) return { status: "no-trade", reason: "not authenticated — no PAT", ticket: null, preflight: null };
@@ -799,6 +1040,20 @@ export async function runLive(
   }
 
   // ── 6. FIRE ──
+  //
+  // Every venue order below is a decision through `sendOrder` — the same
+  // gate every producer passes. The session carries the risk snapshot the
+  // preflight just read, so the gate re-checks the same caps without a
+  // second read, and adds the watchdog's breaker.
+  const orders: DecisionOpts = { pat, url: opts.url, call: opts.call, session: liveSession(state), watchdogDir: opts.watchdogDir };
+  const decide = (tool: OrderTool, args: Record<string, unknown>, notionalUsd?: number): OrderDecision => ({
+    kind: "order",
+    producer: "live",
+    tool,
+    args,
+    yes: opts.yes,
+    ...(notionalUsd != null ? { notionalUsd } : {}),
+  });
   let orderId = "";
   let deduped = false;
   const placeOrder = async (): Promise<void> => {
@@ -807,7 +1062,10 @@ export async function runLive(
     // account through the app — and without the actor the reconciler
     // cannot tell the machine's trades from the owner's, so the owner's
     // losses are booked against the machine's daily loss cap.
-    const out = (await call("execute_trade", { ...(ticket.order as unknown as Record<string, unknown>), actor: "machine" }, pat, opts.url)) as {
+    const out = (await sendOrder(
+      decide("execute_trade", { ...(ticket.order as unknown as Record<string, unknown>), actor: "machine" }, ticket.sizing.notionalUsd),
+      orders,
+    )) as {
       orderId?: string;
       status?: string;
       deduped?: boolean;
@@ -836,6 +1094,8 @@ export async function runLive(
       };
     }
   } catch (e) {
+    // Refused by the gate (watchdog breaker): nothing was sent.
+    if (e instanceof LiveRefusal) return { status: "no-trade", reason: e.message, ticket, preflight: pre };
     const why = e instanceof Error ? e.message : String(e);
     // The venue's leverage limit is PER POSITION TIER, not a property of
     // the contract: a $56 position on KuCoin can carry at most x20 even
@@ -955,11 +1215,9 @@ export async function runLive(
     // 9.7895 filled at 9.754, so the take-profit (0.32% below the
     // reference) sat 0.04% ABOVE the fill and the st-order filled
     // instantly, closing the position 7 seconds after opening.
-    await call(
-      "set_exits",
-      { ...(ticket.exits as unknown as Record<string, unknown>), referencePrice: ticket.sizing.entryPrice },
-      pat,
-      opts.url,
+    await sendOrder(
+      decide("set_exits", { ...(ticket.exits as unknown as Record<string, unknown>), referencePrice: ticket.sizing.entryPrice }),
+      orders,
     );
     tpArmed = true;
     stopArmed = true;
@@ -972,11 +1230,9 @@ export async function runLive(
     let retried = false;
     let retryWhy = "";
     try {
-      await call(
-        "set_exits",
-        { ...(ticket.exits as unknown as Record<string, unknown>), referencePrice: ticket.sizing.entryPrice },
-        pat,
-        opts.url,
+      await sendOrder(
+        decide("set_exits", { ...(ticket.exits as unknown as Record<string, unknown>), referencePrice: ticket.sizing.entryPrice }),
+        orders,
       );
       tpArmed = true;
       stopArmed = true;
@@ -992,11 +1248,10 @@ export async function runLive(
       let flattened = false;
       let flatWhy = "";
       try {
-        await call("close_position", {
-          exchange: a.exchange,
-          pair: a.candidate.pair,
-          side: a.candidate.side,
-        } as unknown as Record<string, unknown>, pat, opts.url);
+        await sendOrder(
+          decide("close_position", { exchange: a.exchange, pair: a.candidate.pair, side: a.candidate.side }),
+          orders,
+        );
         flattened = true;
       } catch (e3) {
         flatWhy = e3 instanceof Error ? e3.message : String(e3);

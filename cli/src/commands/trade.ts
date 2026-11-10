@@ -18,6 +18,7 @@ import {
 } from "./trade-ticket.js";
 import type { ExecuteArgs, TradeDeps } from "./trade-ticket.js";
 import { checkLoopKill, selectCancelTargets } from "./trade-orders.js";
+import { runLive } from "./live.js";
 
 export * from "./trade-ticket.js";
 export * from "./trade-orders.js";
@@ -64,7 +65,6 @@ export async function cmdExecute(
     process.exitCode = 2;
     return;
   }
-  const call = deps?.call ?? callTool;
   const toolArgs = executeToolArgs(args);
   const lines = previewLines("LIVE ORDER (real money)", [
     ["exchange", args.exchange],
@@ -81,7 +81,11 @@ export async function cmdExecute(
   ]);
   if (!gate(opts.yes, lines, { json: opts.json, preview: { mode: "preview", ticket: toolArgs } })) return;
   try {
-    const out = await call("execute_trade", toolArgs, pat, opts.url);
+    // OQ-12: the order is a decision; runLive gates and sends it.
+    const out = await runLive(
+      { kind: "order", producer: "execute", tool: "execute_trade", args: toolArgs, yes: opts.yes },
+      { pat, url: opts.url, call: deps?.call },
+    );
     console.log(JSON.stringify(out, null, opts.json ? 0 : 2));
   } catch (e) {
     if (!scopeHint(e)) fail(e);
@@ -126,12 +130,15 @@ export async function cmdClose(opts: {
     return;
   }
   try {
-    const call = deps?.call ?? callTool;
-    const out = await call(
-      "close_position",
-      closeToolArgs({ exchange: opts.exchange, pair: opts.pair, side, size: opts.size }),
-      pat,
-      opts.url,
+    const out = await runLive(
+      {
+        kind: "order",
+        producer: "close",
+        tool: "close_position",
+        args: closeToolArgs({ exchange: opts.exchange, pair: opts.pair, side, size: opts.size }),
+        yes: opts.yes,
+      },
+      { pat, url: opts.url, call: deps?.call },
     );
     console.log(JSON.stringify(out, null, opts.json ? 0 : 2));
   } catch (e) {
@@ -179,12 +186,15 @@ export async function cmdExits(opts: {
     return;
   }
   try {
-    const call = deps?.call ?? callTool;
-    const out = await call(
-      "set_exits",
-      exitsToolArgs({ exchange: opts.exchange, pair: opts.pair, sl: opts.sl, tp: opts.tp, market: opts.market, quantity: opts.quantity }),
-      pat,
-      opts.url,
+    const out = await runLive(
+      {
+        kind: "order",
+        producer: "exits",
+        tool: "set_exits",
+        args: exitsToolArgs({ exchange: opts.exchange, pair: opts.pair, sl: opts.sl, tp: opts.tp, market: opts.market, quantity: opts.quantity }),
+        yes: opts.yes,
+      },
+      { pat, url: opts.url, call: deps?.call },
     );
     console.log(JSON.stringify(out, null, opts.json ? 0 : 2));
   } catch (e) {
@@ -222,12 +232,15 @@ export async function cmdCancel(opts: {
     return;
   }
   try {
-    const call = deps?.call ?? callTool;
-    const out = await call(
-      "cancel_order",
-      cancelToolArgs({ exchange: opts.exchange, orderId: opts.orderId, pair: opts.pair, market: opts.market }),
-      pat,
-      opts.url,
+    const out = await runLive(
+      {
+        kind: "order",
+        producer: "cancel",
+        tool: "cancel_order",
+        args: cancelToolArgs({ exchange: opts.exchange, orderId: opts.orderId, pair: opts.pair, market: opts.market }),
+        yes: opts.yes,
+      },
+      { pat, url: opts.url, call: deps?.call },
     );
     console.log(JSON.stringify(out, null, opts.json ? 0 : 2));
   } catch (e) {
@@ -346,16 +359,20 @@ export async function cmdCancelAll(opts: {
   let scopeRefused = false;
   for (const t of targets) {
     try {
-      await call(
-        "cancel_order",
+      await runLive(
         {
-          exchange: opts.exchange,
-          orderId: t.orderId,
-          pair: opts.pair,
-          ...(market ? { market } : {}),
+          kind: "order",
+          producer: "cancel-all",
+          tool: "cancel_order",
+          args: {
+            exchange: opts.exchange,
+            orderId: t.orderId,
+            pair: opts.pair,
+            ...(market ? { market } : {}),
+          },
+          yes: opts.yes,
         },
-        pat,
-        opts.url,
+        { pat, url: opts.url, call: deps?.call },
       );
       cancelled.push(t.orderId);
       if (!opts.json) console.log(`CANCELLED ${t.orderId}`);

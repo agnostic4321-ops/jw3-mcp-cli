@@ -40,11 +40,33 @@ import { dirname, join } from "node:path";
 import { configDir } from "../config.js";
 import { fetchJson } from "../http.js";
 import { callTool } from "../mcp.js";
+import { runLive } from "./live.js";
 import { isOpenPosition, readLocalStates, rowMatchesPair, rowPairOf } from "../reconcile.js";
 import { accountFromBalances, positionNotional } from "./heat.js";
 import { collectRows, listConnections, needPat, pickConnection } from "./market.js";
 import { extractOpenOrders, normalizeRiskLimits, type TradeCall } from "./trade.js";
 import { isTransientReadFailure } from "./daemon.js";
+import {
+  WATCHDOG_STATE_VERSION,
+  defaultWatchdogState,
+  loadWatchdogState,
+  saveWatchdogState,
+  watchdogStatePath,
+  type WatchdogBreakerState,
+  type WatchdogState,
+} from "./watchdog-state.js";
+
+// The breaker state FILE lives in watchdog-state.ts (OQ-12): runLive reads
+// it on every opening order without importing the watchdog. Re-exported so
+// every existing consumer keeps its import path.
+export {
+  WATCHDOG_STATE_VERSION,
+  defaultWatchdogState,
+  loadWatchdogState,
+  saveWatchdogState,
+  watchdogStatePath,
+};
+export type { WatchdogBreakerState, WatchdogState };
 
 /* ------------------------------------------------------------------ */
 /* doctrine + defaults (owner vocabulary)                               */
@@ -93,8 +115,6 @@ export const WATCHDOG_DEFAULT_SELF_STALE_MS = 90_000;
 export const WATCHDOG_DEFAULT_FUNDING_BLOWOUT_PCT = 1;
 /** Watchdog poll cadence (seconds) — same order as the supervisor heartbeat. */
 export const WATCHDOG_DEFAULT_POLL_SEC = 15;
-/** State file schema version. */
-export const WATCHDOG_STATE_VERSION = 1;
 
 /* ------------------------------------------------------------------ */
 /* types                                                               */
@@ -316,33 +336,6 @@ export type WatchdogDecisionInput = {
    * executor's dead-man still applies.
    */
   ignoreSelfHeartbeat?: boolean;
-};
-
-/** The local breaker. */
-export type WatchdogBreakerState = {
-  tripped: boolean;
-  trippedAt: string | null;
-  /** Reason strings of the trips that set it. */
-  reasons: string[];
-  clearedAt: string | null;
-  /** Always a human actor — never an automatic path. */
-  clearedBy: string | null;
-};
-
-/** The watchdog's persisted state. */
-export type WatchdogState = {
-  version: number;
-  breaker: WatchdogBreakerState;
-  /** New entries are blocked while true. */
-  entriesBlocked: boolean;
-  blockReason: string | null;
-  policy: { flattenArmed: boolean };
-  consecutiveVenueErrors: number;
-  lastHeartbeatAt: string | null;
-  lastDecisionAt: string | null;
-  lastTrips: WatchdogTrip[];
-  /** clientOid prefixes this machine owns (the session + turn id tags). */
-  ownedClientOidPrefixes: string[];
 };
 
 /* ------------------------------------------------------------------ */
@@ -897,10 +890,6 @@ export function applyResume(
 /* state + heartbeat files                                             */
 /* ------------------------------------------------------------------ */
 
-export function watchdogStatePath(dir?: string): string {
-  return join(dir ?? configDir(), "watchdog-state.json");
-}
-
 export function watchdogHeartbeatPath(dir?: string): string {
   return join(dir ?? configDir(), "watchdog-heartbeat.json");
 }
@@ -913,83 +902,6 @@ export function watchdogHeartbeatPath(dir?: string): string {
  */
 export function executorHeartbeatPath(dir?: string): string {
   return join(dir ?? configDir(), "daemon-heartbeat.json");
-}
-
-export function defaultWatchdogState(): WatchdogState {
-  return {
-    version: WATCHDOG_STATE_VERSION,
-    breaker: { tripped: false, trippedAt: null, reasons: [], clearedAt: null, clearedBy: null },
-    entriesBlocked: false,
-    blockReason: null,
-    policy: { flattenArmed: false },
-    consecutiveVenueErrors: 0,
-    lastHeartbeatAt: null,
-    lastDecisionAt: null,
-    lastTrips: [],
-    ownedClientOidPrefixes: [],
-  };
-}
-
-export function loadWatchdogState(path: string): WatchdogState {
-  const base = defaultWatchdogState();
-  let raw: string;
-  try {
-    raw = readFileSync(path, "utf8");
-  } catch {
-    return base;
-  }
-  try {
-    const doc = JSON.parse(raw) as Record<string, unknown>;
-    if (!doc || typeof doc !== "object") return base;
-    const breakerRaw = (doc.breaker ?? {}) as Record<string, unknown>;
-    return {
-      version: typeof doc.version === "number" ? doc.version : WATCHDOG_STATE_VERSION,
-      breaker: {
-        tripped: breakerRaw.tripped === true,
-        trippedAt: typeof breakerRaw.trippedAt === "string" ? breakerRaw.trippedAt : null,
-        reasons: Array.isArray(breakerRaw.reasons) ? (breakerRaw.reasons as string[]).map(String) : [],
-        clearedAt: typeof breakerRaw.clearedAt === "string" ? breakerRaw.clearedAt : null,
-        clearedBy: typeof breakerRaw.clearedBy === "string" ? breakerRaw.clearedBy : null,
-      },
-      entriesBlocked: doc.entriesBlocked === true,
-      blockReason: typeof doc.blockReason === "string" ? doc.blockReason : null,
-      policy: {
-        flattenArmed: (doc.policy as Record<string, unknown> | undefined)?.flattenArmed === true,
-      },
-      consecutiveVenueErrors:
-        typeof doc.consecutiveVenueErrors === "number" && Number.isFinite(doc.consecutiveVenueErrors)
-          ? Math.max(0, Math.floor(doc.consecutiveVenueErrors))
-          : 0,
-      lastHeartbeatAt: typeof doc.lastHeartbeatAt === "string" ? doc.lastHeartbeatAt : null,
-      lastDecisionAt: typeof doc.lastDecisionAt === "string" ? doc.lastDecisionAt : null,
-      lastTrips: Array.isArray(doc.lastTrips) ? (doc.lastTrips as WatchdogTrip[]) : [],
-      ownedClientOidPrefixes: Array.isArray(doc.ownedClientOidPrefixes)
-        ? (doc.ownedClientOidPrefixes as string[]).map(String)
-        : [],
-    };
-  } catch {
-    // Unreadable state must never read as "nothing running" — fail closed
-    // with the breaker tripped (same rule as the reconcile module).
-    return {
-      ...base,
-      breaker: {
-        tripped: true,
-        trippedAt: new Date(0).toISOString(),
-        reasons: [`watchdog state at ${path} is unreadable — refusing to assume "nothing running"`],
-        clearedAt: null,
-        clearedBy: null,
-      },
-    };
-  }
-}
-
-export function saveWatchdogState(path: string, state: WatchdogState): void {
-  try {
-    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    writeFileSync(path, JSON.stringify(state, null, 2), { mode: 0o600 });
-  } catch {
-    // Persisting the breaker is best-effort; the venue action still runs.
-  }
 }
 
 /** Parse a heartbeat payload (ISO `at`, or epoch ms fields). */
@@ -1465,11 +1377,18 @@ export async function runWatchdogCycle(
         const failed: { orderId: string; error: string }[] = [];
         for (const t of targets) {
           try {
-            await call(
-              "cancel_order",
-              { exchange: opts.exchange ?? "", orderId: t.orderId, pair: t.pair, market: t.market },
-              opts.pat ?? "",
-              opts.url,
+            // OQ-12: the unwind is decisions runLive sends. Confirmed by the
+            // trip itself (cancel-on-trip is the watchdog's policy); risk-
+            // REDUCING, so the breaker it just set never blocks it.
+            await runLive(
+              {
+                kind: "order",
+                producer: "watchdog",
+                tool: "cancel_order",
+                args: { exchange: opts.exchange ?? "", orderId: t.orderId, pair: t.pair, market: t.market },
+                yes: true,
+              },
+              { pat: opts.pat ?? "", url: opts.url, call: deps?.call },
             );
             ok.push(t.orderId);
           } catch (e) {
@@ -1530,16 +1449,22 @@ export async function runWatchdogCycle(
           }
           try {
             // Reduce-only close. The watchdog NEVER sends an opposing order.
-            await call(
-              "close_position",
+            // Confirmed by the armed flatten policy + --flatten (checked by
+            // the decision that produced this action).
+            await runLive(
               {
-                exchange: opts.exchange ?? "",
-                pair: p.pair,
-                side: p.side,
-                ...(p.size !== null && p.size > 0 ? { size: String(p.size) } : {}),
+                kind: "order",
+                producer: "watchdog",
+                tool: "close_position",
+                args: {
+                  exchange: opts.exchange ?? "",
+                  pair: p.pair,
+                  side: p.side,
+                  ...(p.size !== null && p.size > 0 ? { size: String(p.size) } : {}),
+                },
+                yes: true,
               },
-              opts.pat ?? "",
-              opts.url,
+              { pat: opts.pat ?? "", url: opts.url, call: deps?.call },
             );
             closed.push(p.pair);
           } catch (e) {

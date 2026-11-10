@@ -48,6 +48,7 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renam
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { callTool } from "../mcp.js";
+import { liveSession, runLive, type DecisionOpts, type OrderDecision, type OrderTool } from "./live.js";
 import { configDir, resolvePat } from "../config.js";
 import {
   closePaperPosition,
@@ -599,11 +600,22 @@ export async function cmdDegen(
   }
 
   const execSide = side === "long" ? "buy" : "sell";
+  // OQ-12: degen PRODUCES decisions; runLive gates and sends each one
+  // (one session: the server's risk limits are read once for the run).
+  const orders: DecisionOpts = { pat, url: opts.url, call: deps?.call, session: liveSession() };
+  const decide = (tool: OrderTool, args: Record<string, unknown>): OrderDecision => ({
+    kind: "order",
+    producer: "degen",
+    tool,
+    args,
+    yes: opts.yes,
+    paper: a.paper,
+  });
   let failed = 0;
   let step1Id: string | null = null;
   let step2Id: string | null = null;
   try {
-    const out1 = (await call("execute_trade", degenExecuteArgs({ exchange: a.exchange, pair, side, contracts: step1.contracts, price: step1.price, leverage: a.leverage, multiplier: spec.multiplier }), pat, opts.url)) as { orderId?: string };
+    const out1 = (await runLive(decide("execute_trade", degenExecuteArgs({ exchange: a.exchange, pair, side, contracts: step1.contracts, price: step1.price, leverage: a.leverage, multiplier: spec.multiplier })), orders)) as { orderId?: string };
     step1Id = String(out1.orderId ?? "?");
     if (!opts.json) console.log(`PLACED step-1: ${execSide.toUpperCase()} ${step1.contracts} @ ${px(step1.price)} → ${step1Id}`);
   } catch (e) {
@@ -612,7 +624,7 @@ export async function cmdDegen(
   }
   if (step1Id) {
     try {
-      const out2 = (await call("execute_trade", degenExecuteArgs({ exchange: a.exchange, pair, side, contracts: step2.contracts, price: step2.price, leverage: a.leverage, multiplier: spec.multiplier }), pat, opts.url)) as { orderId?: string };
+      const out2 = (await runLive(decide("execute_trade", degenExecuteArgs({ exchange: a.exchange, pair, side, contracts: step2.contracts, price: step2.price, leverage: a.leverage, multiplier: spec.multiplier })), orders)) as { orderId?: string };
       step2Id = String(out2.orderId ?? "?");
       if (!opts.json) console.log(`STAGED step-2 (resting average level): ${execSide.toUpperCase()} ${step2.contracts} @ ${px(step2.price)} → ${step2Id}`);
     } catch (e) {
@@ -630,7 +642,7 @@ export async function cmdDegen(
   try {
     // Venue-native stop + TP in one arm: the stop is the plan kill line,
     // so a filled entry is protected even when nobody watches the tape.
-    await call("set_exits", degenExitsArgs({ exchange: a.exchange, pair, tpPrice: tp1Price, slPrice: plan.killPrice }), pat, opts.url);
+    await runLive(decide("set_exits", degenExitsArgs({ exchange: a.exchange, pair, tpPrice: tp1Price, slPrice: plan.killPrice })), orders);
     tpArmed = true;
     stopArmed = true;
     if (!opts.json) console.log(`TP ARMED @ ${px(tp1Price)} (step-1 TP; move to averaged ${px(tp2Price)} via exits once step-2 fills) + STOP ARMED @ kill ${px(plan.killPrice)}`);
@@ -640,7 +652,7 @@ export async function cmdDegen(
     // arm is NOT a success on its own (see the gate below).
     console.error(`Stop+TP arm failed, falling back to TP-only: ${e instanceof Error ? e.message : String(e)}`);
     try {
-      await call("set_exits", degenExitsArgs({ exchange: a.exchange, pair, tpPrice: tp1Price }), pat, opts.url);
+      await runLive(decide("set_exits", degenExitsArgs({ exchange: a.exchange, pair, tpPrice: tp1Price })), orders);
       tpArmed = true;
       if (!opts.json) console.log(`TP ARMED @ ${px(tp1Price)} (step-1 TP; move to averaged ${px(tp2Price)} via exits once step-2 fills)`);
     } catch (e2) {

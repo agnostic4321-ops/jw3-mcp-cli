@@ -32,6 +32,11 @@
  *   2. `deps.placeOrder` is the ONLY exit. The test injects a recorder, so
  *      a decision-path bug can never reach a venue from here. Every
  *      outbound payload is captured and asserted on.
+ *
+ * OQ-12: the harness is a decision PRODUCER. Its order is handed to
+ * `runLive` (the single live order path), which runs the same confirmation
+ * + kill-switch + caps gate every producer passes, then sends exactly one
+ * call — through `deps.placeOrder`, the harness's venue double.
  */
 import { defaultFilterConfig, runFilters, type FilterCandidate, type FilterChainResult, type FilterConfig } from "../filters.js";
 import {
@@ -52,7 +57,7 @@ import {
 } from "./committee.js";
 import { applyRubric, seatsFromSignedBallots, type RubricDecision } from "./rubric.js";
 import { sizeTrade, type SizingDecision, type SizingProposal } from "./sizing.js";
-import { buildTicket, makeClientOid } from "./live.js";
+import { buildTicket, liveSession, makeClientOid, runLive } from "./live.js";
 import type { KlineCandle } from "./klines.js";
 
 /* ------------------------------------------------------------------ */
@@ -827,7 +832,26 @@ export async function runDecisionCycle(
   ledger.entries.set(intentId, { ticket: live.order as unknown as Record<string, unknown>, call, status: "reserved" });
   let error: string | undefined;
   try {
-    await deps.placeOrder(call);
+    await runLive(
+      { kind: "order", producer: "harness", tool: HARNESS_ORDER_TOOL, args: call.args, yes: true },
+      {
+        pat: "harness-offline",
+        // The harness's venue double is the client: one ExchangeCall per decision.
+        call: async (tool, args) => deps.placeOrder({ tool, args, intentId }),
+        // The simulated account is the risk snapshot (the harness never reads
+        // a server): clear caps, so only the kill switch can block it here.
+        session: liveSession({
+          killSwitchEnabled: false,
+          dailyLossUsd: 0,
+          maxDailyLossUsd: null,
+          dailyTradeCount: 0,
+          maxTradesPerDay: null,
+          dailyNotionalUsd: 0,
+          maxDailyNotionalUsd: null,
+          maxPositionUsd: null,
+        }),
+      },
+    );
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
   }

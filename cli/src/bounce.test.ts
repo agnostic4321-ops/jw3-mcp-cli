@@ -261,12 +261,13 @@ describe("cmdBounce", () => {
         },
       ),
     );
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0]?.name, "execute_trade");
-    assert.equal(calls[0]?.args.side, "sell");
-    assert.equal(calls[0]?.args.market, "futures");
-    assert.equal(calls[0]?.args.actor, "machine");
-    assert.match(String(calls[0]?.args.idempotency_key), /^jw3-bounce-[0-9a-f]{8}$/);
+    // OQ-12: runLive's kill-switch + caps gate reads the risk limits once,
+    // then the ONE order goes out.
+    assert.deepEqual(calls.map((c) => c.name), ["read_risk_limits", "execute_trade"]);
+    assert.equal(calls[1]?.args.side, "sell");
+    assert.equal(calls[1]?.args.market, "futures");
+    assert.equal(calls[1]?.args.actor, "machine");
+    assert.match(String(calls[1]?.args.idempotency_key), /^jw3-bounce-[0-9a-f]{8}$/);
     assert.ok(lines.some((l) => l.includes("FIRED SHORT")), lines.join("\n"));
   });
   it("rejects a bad ticket with exit 2 and never polls", async () => {

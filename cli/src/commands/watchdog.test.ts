@@ -44,17 +44,24 @@ import {
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-/** Read the watchdog source (works from src/ and dist/ layouts). */
+/**
+ * Read the watchdog source (works from src/ and dist/ layouts) — the
+ * watchdog module PLUS its breaker-state file module (watchdog-state.ts,
+ * split out for OQ-12), so every guard below covers both.
+ */
 function readWatchdogSource(): string {
-  const candidates = [join(here, "watchdog.js"), join(here, "watchdog.ts"), join(here, "..", "src", "commands", "watchdog.ts")];
-  for (const p of candidates) {
-    try {
-      if (existsSync(p)) return readFileSync(p, "utf8");
-    } catch {
-      // try next
+  const read = (stem: string): string => {
+    const candidates = [join(here, `${stem}.js`), join(here, `${stem}.ts`), join(here, "..", "src", "commands", `${stem}.ts`)];
+    for (const p of candidates) {
+      try {
+        if (existsSync(p)) return readFileSync(p, "utf8");
+      } catch {
+        // try next
+      }
     }
-  }
-  throw new Error("watchdog guard: cannot locate the watchdog source");
+    throw new Error(`watchdog guard: cannot locate the ${stem} source`);
+  };
+  return `${read("watchdog")}\n${read("watchdog-state")}`;
 }
 
 /**

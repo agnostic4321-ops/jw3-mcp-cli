@@ -66,6 +66,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { configDir, resolvePat } from "../config.js";
 import { callTool } from "../mcp.js";
+import { runLive } from "./live.js";
 import {
   classifyStrays,
   isOpenPosition,
@@ -1620,11 +1621,18 @@ export async function cmdDaemon(opts: DaemonOpts, deps: DaemonDeps = {}): Promis
         const id = cancelOrderIdOf(row);
         if (!id || !owned.has(id)) continue;
         try {
-          await call(
-            "cancel_order",
-            cancelToolArgs({ exchange: cfg.exchange, orderId: id, pair: rowPairOf(row) || undefined }),
-            pat,
-            opts.url,
+          // OQ-12: a decision runLive sends. Confirmed by construction:
+          // the drain is the daemon's own risk-REDUCING unwind of orders
+          // its children placed (never gated by the kill switch).
+          await runLive(
+            {
+              kind: "order",
+              producer: "daemon-drain",
+              tool: "cancel_order",
+              args: cancelToolArgs({ exchange: cfg.exchange, orderId: id, pair: rowPairOf(row) || undefined }),
+              yes: true,
+            },
+            { pat, url: opts.url, call: deps.call },
           );
           cancelled++;
         } catch (e) {
@@ -1656,11 +1664,17 @@ export async function cmdDaemon(opts: DaemonOpts, deps: DaemonDeps = {}): Promis
         continue;
       }
       try {
-        await call(
-          "close_position",
-          closeToolArgs({ exchange: cfg.exchange, pair, side, size }),
-          pat,
-          opts.url,
+        // Confirmed by the explicit --flatten-on-shutdown flag (checked by
+        // the drain plan before this runs).
+        await runLive(
+          {
+            kind: "order",
+            producer: "daemon-drain",
+            tool: "close_position",
+            args: closeToolArgs({ exchange: cfg.exchange, pair, side, size }),
+            yes: true,
+          },
+          { pat, url: opts.url, call: deps.call },
         );
         log(`FLATTEN closed ${side} ${size} ${pair} (explicit --flatten-on-shutdown)`);
       } catch (e) {
