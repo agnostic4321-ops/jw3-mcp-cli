@@ -6,7 +6,7 @@
  * account. These are pure functions so every refusal is testable.
  */
 import { planScalp } from "../kucoin.js";
-import { describe, it } from "node:test";
+import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { bounceGate, confluenceGate, cmdLive } from "./live-cmd.js";
 import { fadeSignal, dipSignal, type FadeRow } from "../kucoin.js";
@@ -189,6 +189,20 @@ describe("the CPI blackout veto is on the LIVE path, and it is first", () => {
   // The clock is INJECTED, so the test does not depend on the wall
   // clock, and the veto is FIRST so it costs NOTHING: no tape read, no
   // model call, no venue call.
+  //
+  // Hermetic: cmdLive resolves a PAT before the veto, so these rows used
+  // to pass only on a machine with real credentials in ~/.config/jw3. A
+  // dummy PAT scoped to this block makes them independent of the host —
+  // and the veto still returns before any network call could use it.
+  let savedPat: string | undefined;
+  before(() => {
+    savedPat = process.env.JW3_MCP_PAT;
+    process.env.JW3_MCP_PAT = "test-pat-hermetic";
+  });
+  after(() => {
+    if (savedPat === undefined) delete process.env.JW3_MCP_PAT;
+    else process.env.JW3_MCP_PAT = savedPat;
+  });
   const at = (h: number, m = 0) => Date.UTC(2026, 9, 21, h, m, 0);
 
   const spy = () => {

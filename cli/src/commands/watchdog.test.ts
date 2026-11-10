@@ -921,6 +921,30 @@ describe("runWatchdogCycle", () => {
     assert.equal(result.executed.some((e) => e.type === "flatten"), true);
   });
 
+  it("PIN (OQ-12): the unwind's exact venue calls — one cancel per owned order, one reduce-only close", async () => {
+    // Recorded from the pre-OQ-12 code. The unwind must reach the venue with
+    // exactly these payloads, in this order, whichever module sends them.
+    const { calls, deps } = makeDeps();
+    writeFileSync(join(dir, "scalp_sol.json"), JSON.stringify({ pair: "SOL/USDT", placed: [{ orderId: "o1" }] }));
+    {
+      const statePath = watchdogStatePath(dir);
+      const armed = loadWatchdogState(statePath);
+      armed.policy.flattenArmed = true;
+      saveWatchdogState(statePath, armed);
+    }
+    await runWatchdogCycle({ exchange: "kucoin", pat: "p", flatten: true }, deps);
+    assert.deepEqual(
+      calls.filter((c) => ["execute_trade", "set_exits", "close_position", "cancel_order"].includes(c.name)),
+      [
+        { name: "cancel_order", args: { exchange: "kucoin", orderId: "o1", pair: "SOL/USDT", market: "futures" } },
+        { name: "close_position", args: { exchange: "kucoin", pair: "SOL/USDT", side: "long", size: "10" } },
+      ],
+    );
+    assert.deepEqual(calls.map((c) => c.name), [
+      "read_risk_limits", "read_live_datum", "read_live_datum", "list_open_orders", "cancel_order", "close_position",
+    ]);
+  });
+
   it("does not flatten when the invocation omits the opt-in", async () => {
     const { calls, deps } = makeDeps();
     writeFileSync(join(dir, "scalp_sol.json"), JSON.stringify({ pair: "SOL/USDT", placed: [{ orderId: "o1" }] }));

@@ -19,7 +19,7 @@ import {
 } from "../kucoin.js";
 import { fail, listConnections, needPat, pickConnection } from "./market.js";
 import { startupGate } from "../reconcile.js";
-import { makeIntentKey, ACTOR_MACHINE } from "./trade.js";
+import { makeIntentKey, ACTOR_MACHINE, type TradeCall } from "./trade.js";
 
 export type GridArgs = {
   exchange: string;
@@ -38,6 +38,14 @@ function roundToTick(px: number, tick: number): number {
   return Number(px.toPrecision(5));
 }
 
+/** Injection seams for `grid backtest` (fixtures + golden tests; defaults are the venue). */
+export type GridBacktestDeps = {
+  /** 15m closes fetch (default: the venue's public klines). */
+  closes?: (symbol: string, granularityMin: number, fromMs: number, toMs: number) => Promise<number[]>;
+  spec?: (base: string) => Promise<ContractSpec>;
+  now?: () => number;
+};
+
 /**
  * `grid backtest` — read-only. Replays 15m klines through all three
  * biases and prints the comparison. Model limits are stated on
@@ -51,7 +59,7 @@ export async function cmdGridBacktest(opts: {
   leverage: number;
   days: number;
   json: boolean;
-}): Promise<void> {
+}, deps?: GridBacktestDeps): Promise<void> {
   const base = (opts.pair.split("/")[0] ?? "").toUpperCase();
   if (!base || !(opts.days > 0) || !(opts.stepPct > 0) || !(opts.levelsPerSide >= 1) || !(opts.leverage > 0)) {
     console.error("Usage: jw3 grid backtest --pair SEI/USDT [--step-pct 0.25] [--levels 25] [--contracts 19] [--lev 2] [--days 30] [--json]");
@@ -59,11 +67,11 @@ export async function cmdGridBacktest(opts: {
     return;
   }
   const sym = `${base}USDTM`;
-  const now = Date.now();
+  const now = deps?.now?.() ?? Date.now();
   const from = now - Math.min(opts.days, 90) * 86400 * 1000;
   let closes: number[];
   try {
-    closes = await futuresCloses(sym, 15, from, now);
+    closes = await (deps?.closes ?? futuresCloses)(sym, 15, from, now);
   } catch (e) {
     fail(e);
     return;
@@ -74,7 +82,7 @@ export async function cmdGridBacktest(opts: {
     return;
   }
   const center = closes[closes.length - 1] as number;
-  const spec = await futuresContractSpec(base).catch(() => ({ multiplier: 1, tick: 0 }));
+  const spec = await (deps?.spec ?? futuresContractSpec)(base).catch(() => ({ multiplier: 1, tick: 0 }));
   const rows = (["long", "short", "neutral"] as GridBias[]).map((bias) => ({
     bias,
     ...(backtestGrid(
@@ -163,10 +171,24 @@ async function freeFuturesUsd(exchange: string, pat: string, url?: string): Prom
   return f as number;
 }
 
+/** Injection seams for `grid plan|start` (offline pins; defaults are the venue). */
+export type GridDeps = {
+  center?: (base: string) => Promise<number>;
+  spec?: (base: string) => Promise<ContractSpec>;
+  /** Free futures balance read (default: list_connections + read_live_datum). */
+  freeUsd?: (exchange: string, pat: string, url?: string) => Promise<number>;
+  /** Venue client for the seed + level orders (default: the MCP transport). */
+  call?: TradeCall;
+  startupGate?: (kind: "grid", base: string) => { ok: boolean; reason?: string };
+  /** Grid state file (default: $TMPDIR/grid_<base>.json). */
+  statePath?: string;
+};
+
 export async function cmdGrid(
   mode: "plan" | "start",
   a: GridArgs,
   opts: { yes: boolean; json: boolean; url?: string; pat?: string },
+  deps?: GridDeps,
 ): Promise<void> {
   const pat = needPat(opts.pat);
   if (!pat) return;
@@ -180,7 +202,7 @@ export async function cmdGrid(
   let center: number;
   let spec: ContractSpec;
   try {
-    [center, spec] = await Promise.all([futuresCenter(base), futuresContractSpec(base)]);
+    [center, spec] = await Promise.all([(deps?.center ?? futuresCenter)(base), (deps?.spec ?? futuresContractSpec)(base)]);
   } catch (e) {
     fail(e);
     return;
@@ -197,7 +219,7 @@ export async function cmdGrid(
   const marginReq = ((ladder.seedContracts + ladder.levelsPerSide * contracts) * spec.multiplier * center) / a.leverage;
   let free: number;
   try {
-    free = await freeFuturesUsd(a.exchange, pat, opts.url);
+    free = await (deps?.freeUsd ?? freeFuturesUsd)(a.exchange, pat, opts.url);
   } catch (e) {
     fail(e);
     return;
@@ -236,7 +258,7 @@ export async function cmdGrid(
   }
   // No-strays gate (start only — plan is read-only): a leftover grid
   // state means a previous run may still own this pair's ladder.
-  const gate0 = startupGate("grid", base);
+  const gate0 = (deps?.startupGate ?? startupGate)("grid", base);
   if (!gate0.ok) {
     console.error(gate0.reason);
     process.exitCode = 1;
@@ -249,7 +271,7 @@ export async function cmdGrid(
   let seedOrderId: string | null = null;
   if (bias !== "neutral" && ladder.seedContracts > 0) {
     try {
-      const seed = (await callTool(
+      const seed = (await (deps?.call ?? callTool)(
         "execute_trade",
         gridOrderArgs({
           exchange: a.exchange, pair: a.pair,
@@ -272,7 +294,7 @@ export async function cmdGrid(
   for (const l of ladder.levels) {
     const px = roundToTick(l.price, spec.tick);
     try {
-      const out = (await callTool(
+      const out = (await (deps?.call ?? callTool)(
         "execute_trade",
         gridOrderArgs({
           exchange: a.exchange, pair: a.pair,
@@ -289,7 +311,7 @@ export async function cmdGrid(
     }
   }
   const state = { ...summary, center, tick: spec.tick, multiplier: spec.multiplier, seedOrderId, placed, failed: failed.length };
-  const statePath = join(tmpdir(), `grid_${base.toLowerCase()}.json`);
+  const statePath = deps?.statePath ?? join(tmpdir(), `grid_${base.toLowerCase()}.json`);
   writeFileSync(statePath, JSON.stringify(state, null, 2));
   if (opts.json) {
     console.log(JSON.stringify({ mode: "started", ...summary, center, seedOrderId, placed, failed, statePath }));

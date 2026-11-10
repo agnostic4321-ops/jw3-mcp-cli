@@ -1,7 +1,7 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ChildProcess } from "node:child_process";
 import { makeSandbox } from "../test-fixtures.js";
@@ -1026,6 +1026,53 @@ describe("cmdDaemon end-to-end (mocked venue, no network, no real children)", ()
     const cancelled = calls.filter((c) => c.name === "cancel_order").map((c) => c.args.orderId);
     assert.ok(cancelled.includes("MINE-1"), "the drain must cancel the daemon's own working order");
     assert.equal(calls.filter((c) => c.name === "close_position").length, 0, "the drain must never flatten");
+  });
+
+  it("PIN (OQ-12): the drain's exact venue calls — own cancel only; flatten only with the explicit flag", async () => {
+    // Recorded from the pre-OQ-12 code: the venue sees exactly these
+    // payloads, whichever module sends them.
+    const orderCalls = (cs: { name: string; args: Record<string, unknown> }[]) =>
+      cs.filter((c) => ["execute_trade", "set_exits", "close_position", "cancel_order"].includes(c.name));
+    const runOnce = async (flattenOnShutdown: boolean) => {
+      // A fresh state dir per run: the first run's owner lock + daemon
+      // state would (correctly) refuse a second start in the same dir.
+      const d = join(dir, flattenOnShutdown ? "flatten" : "drain");
+      mkdirSync(d, { recursive: true });
+      writeFileSync(
+        join(d, "scalp_sol.json"),
+        JSON.stringify({ kind: "scalp", pair: "SOL/USDT", placed: [{ orderId: "MINE-1" }] }),
+      );
+      const { calls, deps } = daemonDeps({
+        orders: [{ orderId: "MINE-1", symbol: "SOLUSDT" }],
+        positions: [{ symbol: "SOLUSDT", side: "long", size: 10 }],
+      });
+      const running = cmdDaemon(
+        {
+          manifest: e2eManifest(),
+          json: false,
+          allowLive: true,
+          flattenOnShutdown,
+          once: false,
+          logDir: d,
+          heartbeatPath: join(d, "hb.json"),
+          daemonStateDir: d,
+          localStateDir: d,
+          pat: "fake-pat",
+        },
+        deps,
+      );
+      await new Promise((r) => setTimeout(r, 60));
+      process.emit("SIGINT");
+      await running;
+      return orderCalls(calls);
+    };
+    assert.deepEqual(await runOnce(false), [
+      { name: "cancel_order", args: { exchange: "kucoin", orderId: "MINE-1", pair: "SOLUSDT" } },
+    ]);
+    assert.deepEqual(await runOnce(true), [
+      { name: "cancel_order", args: { exchange: "kucoin", orderId: "MINE-1", pair: "SOLUSDT" } },
+      { name: "close_position", args: { exchange: "kucoin", pair: "SOLUSDT", side: "long", size: "10" } },
+    ]);
   });
 
   it("drains when the server kill switch flips — without waiting for a child cycle (I4)", async () => {

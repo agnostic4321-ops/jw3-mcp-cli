@@ -202,6 +202,8 @@ export type TrailDeps = {
   markFn?: (base: string) => Promise<number>;
   sleepMs?: (ms: number) => Promise<void>;
   closeFn?: (args: Record<string, unknown>) => Promise<unknown>;
+  /** Venue client behind the default close (default: the MCP transport). */
+  call?: (name: string, args: Record<string, unknown>, pat: string, url?: string) => Promise<unknown>;
   stateDir?: string;
   /**
    * Live-feed opener for `--live` (default: the real tickerV2 push).
@@ -362,7 +364,7 @@ export async function cmdTrail(
     try {
       const closeFn =
         deps?.closeFn ??
-        ((args: Record<string, unknown>) => callTool("close_position", args, pat, opts.url));
+        ((args: Record<string, unknown>) => (deps?.call ?? callTool)("close_position", args, pat, opts.url));
       const out = await closeFn(closeArgs);
       persist(true, true, price);
       try {

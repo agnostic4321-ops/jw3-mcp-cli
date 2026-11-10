@@ -324,6 +324,13 @@ export async function cmdScalpWatch(opts: {
  * `scalp kill` — cancel the working step orders, close the position,
  * remove the state file. Preview without --yes, act with it.
  */
+/** Injection seams for `scalp kill` (offline pins; defaults are the venue + $TMPDIR state). */
+export type ScalpKillDeps = {
+  /** Venue client for the cancels + the close (default: the MCP transport). */
+  call?: (name: string, args: Record<string, unknown>, pat: string, url?: string) => Promise<unknown>;
+  statePath?: string;
+};
+
 export async function cmdScalpKill(opts: {
   pair: string;
   exchange?: string;
@@ -331,14 +338,14 @@ export async function cmdScalpKill(opts: {
   json: boolean;
   url?: string;
   pat?: string;
-}): Promise<void> {
+}, deps?: ScalpKillDeps): Promise<void> {
   const base = (opts.pair.split("/")[0] ?? "").toUpperCase();
   if (!base) {
     console.error("Usage: jw3 scalp kill --pair SOL/USDT [--exchange kucoin] --yes [--json]");
     process.exitCode = 2;
     return;
   }
-  const statePath = scalpStatePath(base);
+  const statePath = deps?.statePath ?? scalpStatePath(base);
   let state: ScalpState;
   try {
     state = readScalpState(statePath);
@@ -372,7 +379,7 @@ export async function cmdScalpKill(opts: {
   let errors = 0;
   for (const p of state.placed) {
     try {
-      await callTool(
+      await (deps?.call ?? callTool)(
         "cancel_order",
         { exchange, orderId: p.orderId, pair: state.pair, market: "futures" },
         pat, opts.url,
@@ -384,7 +391,7 @@ export async function cmdScalpKill(opts: {
     }
   }
   try {
-    const out = await callTool(
+    const out = await (deps?.call ?? callTool)(
       "close_position",
       { exchange, pair: state.pair, side: state.direction },
       pat, opts.url,

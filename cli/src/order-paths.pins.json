@@ -1,0 +1,786 @@
+{
+  "live:fire": [
+    {
+      "name": "read_live_datum",
+      "args": {
+        "exchange": "kucoin",
+        "kind": "balances"
+      }
+    },
+    {
+      "name": "read_live_datum",
+      "args": {
+        "exchange": "kucoin",
+        "kind": "positions"
+      }
+    },
+    {
+      "name": "list_open_orders",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT"
+      }
+    },
+    {
+      "name": "read_risk_limits",
+      "args": {}
+    },
+    {
+      "name": "execute_trade",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT",
+        "side": "buy",
+        "amount": "6.6000000000000005",
+        "price": "150",
+        "type": "market",
+        "referencePrice": "150",
+        "market": "futures",
+        "leverage": 47,
+        "marginMode": "isolated",
+        "clientOid": "jw3-pin-t1-SOLUSDT",
+        "idempotency_key": "jw3-pin-t1-65135226",
+        "actor": "machine"
+      }
+    },
+    {
+      "name": "set_exits",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT",
+        "slPrice": 148.8,
+        "tpPrice": 150.6,
+        "market": "futures",
+        "referencePrice": 150
+      }
+    },
+    {
+      "name": "read_live_datum",
+      "args": {
+        "exchange": "kucoin",
+        "kind": "balances"
+      }
+    },
+    {
+      "name": "read_live_datum",
+      "args": {
+        "exchange": "kucoin",
+        "kind": "positions"
+      }
+    },
+    {
+      "name": "list_open_orders",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT"
+      }
+    },
+    {
+      "name": "read_risk_limits",
+      "args": {}
+    },
+    {
+      "name": "reconcile_realized_pnl",
+      "args": {
+        "exchange": "kucoin",
+        "days": 2
+      }
+    }
+  ],
+  "live:preview": [
+    {
+      "name": "read_live_datum",
+      "args": {
+        "exchange": "kucoin",
+        "kind": "balances"
+      }
+    },
+    {
+      "name": "read_live_datum",
+      "args": {
+        "exchange": "kucoin",
+        "kind": "positions"
+      }
+    },
+    {
+      "name": "list_open_orders",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT"
+      }
+    },
+    {
+      "name": "read_risk_limits",
+      "args": {}
+    }
+  ],
+  "live:entry-timeout": [
+    {
+      "name": "read_live_datum",
+      "args": {
+        "exchange": "kucoin",
+        "kind": "balances"
+      }
+    },
+    {
+      "name": "read_live_datum",
+      "args": {
+        "exchange": "kucoin",
+        "kind": "positions"
+      }
+    },
+    {
+      "name": "list_open_orders",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT"
+      }
+    },
+    {
+      "name": "read_risk_limits",
+      "args": {}
+    },
+    {
+      "name": "execute_trade",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT",
+        "side": "buy",
+        "amount": "6.6000000000000005",
+        "price": "150",
+        "type": "market",
+        "referencePrice": "150",
+        "market": "futures",
+        "leverage": 47,
+        "marginMode": "isolated",
+        "clientOid": "jw3-pin-t1-SOLUSDT",
+        "idempotency_key": "jw3-pin-t1-65135226",
+        "actor": "machine"
+      }
+    }
+  ],
+  "live:leverage-cap-retry": [
+    {
+      "name": "read_live_datum",
+      "args": {
+        "exchange": "kucoin",
+        "kind": "balances"
+      }
+    },
+    {
+      "name": "read_live_datum",
+      "args": {
+        "exchange": "kucoin",
+        "kind": "positions"
+      }
+    },
+    {
+      "name": "list_open_orders",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT"
+      }
+    },
+    {
+      "name": "read_risk_limits",
+      "args": {}
+    },
+    {
+      "name": "execute_trade",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT",
+        "side": "buy",
+        "amount": "6.6000000000000005",
+        "price": "150",
+        "type": "market",
+        "referencePrice": "150",
+        "market": "futures",
+        "leverage": 47,
+        "marginMode": "isolated",
+        "clientOid": "jw3-pin-t1-SOLUSDT",
+        "idempotency_key": "jw3-pin-t1-65135226",
+        "actor": "machine"
+      }
+    },
+    {
+      "name": "execute_trade",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT",
+        "side": "buy",
+        "amount": "6.6000000000000005",
+        "price": "150",
+        "type": "market",
+        "referencePrice": "150",
+        "market": "futures",
+        "leverage": 5,
+        "marginMode": "isolated",
+        "clientOid": "jw3-pin-t1-SOLUSDT",
+        "idempotency_key": "jw3-pin-t1-40acd3a2",
+        "actor": "machine"
+      }
+    },
+    {
+      "name": "set_exits",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT",
+        "slPrice": 148.8,
+        "tpPrice": 150.6,
+        "market": "futures",
+        "referencePrice": 150
+      }
+    },
+    {
+      "name": "read_live_datum",
+      "args": {
+        "exchange": "kucoin",
+        "kind": "balances"
+      }
+    },
+    {
+      "name": "read_live_datum",
+      "args": {
+        "exchange": "kucoin",
+        "kind": "positions"
+      }
+    },
+    {
+      "name": "list_open_orders",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT"
+      }
+    },
+    {
+      "name": "read_risk_limits",
+      "args": {}
+    },
+    {
+      "name": "reconcile_realized_pnl",
+      "args": {
+        "exchange": "kucoin",
+        "days": 2
+      }
+    }
+  ],
+  "live:exits-fail-flatten": [
+    {
+      "name": "read_live_datum",
+      "args": {
+        "exchange": "kucoin",
+        "kind": "balances"
+      }
+    },
+    {
+      "name": "read_live_datum",
+      "args": {
+        "exchange": "kucoin",
+        "kind": "positions"
+      }
+    },
+    {
+      "name": "list_open_orders",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT"
+      }
+    },
+    {
+      "name": "read_risk_limits",
+      "args": {}
+    },
+    {
+      "name": "execute_trade",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT",
+        "side": "buy",
+        "amount": "6.6000000000000005",
+        "price": "150",
+        "type": "market",
+        "referencePrice": "150",
+        "market": "futures",
+        "leverage": 47,
+        "marginMode": "isolated",
+        "clientOid": "jw3-pin-t1-SOLUSDT",
+        "idempotency_key": "jw3-pin-t1-65135226",
+        "actor": "machine"
+      }
+    },
+    {
+      "name": "set_exits",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT",
+        "slPrice": 148.8,
+        "tpPrice": 150.6,
+        "market": "futures",
+        "referencePrice": 150
+      }
+    },
+    {
+      "name": "set_exits",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT",
+        "slPrice": 148.8,
+        "tpPrice": 150.6,
+        "market": "futures",
+        "referencePrice": 150
+      }
+    },
+    {
+      "name": "close_position",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT",
+        "side": "long"
+      }
+    }
+  ],
+  "harness:long-confluence-clean": [
+    {
+      "name": "execute_trade",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT",
+        "side": "buy",
+        "amount": "900",
+        "price": "1.3",
+        "type": "market",
+        "referencePrice": "1.3",
+        "market": "futures",
+        "leverage": 31,
+        "marginMode": "isolated",
+        "clientOid": "jw3-s1-t1-SOLUSDT",
+        "idempotency_key": "jw3---356fcd0b",
+        "__intentId": "SOL/USDT|long|s1"
+      }
+    }
+  ],
+  "degen:fire": [
+    {
+      "name": "list_open_orders",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT"
+      }
+    },
+    {
+      "name": "execute_trade",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT",
+        "side": "buy",
+        "amount": "1",
+        "price": "100",
+        "market": "futures",
+        "leverage": 2,
+        "marginMode": "isolated",
+        "idempotency_key": "jw3-degen-75a4e4a1",
+        "actor": "machine"
+      }
+    },
+    {
+      "name": "execute_trade",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT",
+        "side": "buy",
+        "amount": "1",
+        "price": "99.28",
+        "market": "futures",
+        "leverage": 2,
+        "marginMode": "isolated",
+        "idempotency_key": "jw3-degen-8faeeadc",
+        "actor": "machine"
+      }
+    },
+    {
+      "name": "set_exits",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT",
+        "tpPrice": 100.32000000000001,
+        "slPrice": 98.56,
+        "market": "futures"
+      }
+    }
+  ],
+  "degen:exits-fallback-tp-only": [
+    {
+      "name": "list_open_orders",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT"
+      }
+    },
+    {
+      "name": "execute_trade",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT",
+        "side": "buy",
+        "amount": "1",
+        "price": "100",
+        "market": "futures",
+        "leverage": 2,
+        "marginMode": "isolated",
+        "idempotency_key": "jw3-degen-75a4e4a1",
+        "actor": "machine"
+      }
+    },
+    {
+      "name": "execute_trade",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT",
+        "side": "buy",
+        "amount": "1",
+        "price": "99.28",
+        "market": "futures",
+        "leverage": 2,
+        "marginMode": "isolated",
+        "idempotency_key": "jw3-degen-8faeeadc",
+        "actor": "machine"
+      }
+    },
+    {
+      "name": "set_exits",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT",
+        "tpPrice": 100.32000000000001,
+        "slPrice": 98.56,
+        "market": "futures"
+      }
+    },
+    {
+      "name": "set_exits",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT",
+        "tpPrice": 100.32000000000001,
+        "market": "futures"
+      }
+    }
+  ],
+  "degen:step1-timeout": [
+    {
+      "name": "list_open_orders",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT"
+      }
+    },
+    {
+      "name": "execute_trade",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT",
+        "side": "buy",
+        "amount": "1",
+        "price": "100",
+        "market": "futures",
+        "leverage": 2,
+        "marginMode": "isolated",
+        "idempotency_key": "jw3-degen-75a4e4a1",
+        "actor": "machine"
+      }
+    }
+  ],
+  "execute:fire": [
+    {
+      "name": "execute_trade",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT",
+        "side": "buy",
+        "amount": "0.5",
+        "price": "150",
+        "market": "futures",
+        "leverage": 5,
+        "stop": 148,
+        "idempotency_key": "jw3-ex-4d51b8fa"
+      }
+    }
+  ],
+  "execute:timeout": [
+    {
+      "name": "execute_trade",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT",
+        "side": "buy",
+        "amount": "0.5",
+        "price": "150",
+        "market": "futures",
+        "leverage": 5,
+        "stop": 148,
+        "idempotency_key": "jw3-ex-4d51b8fa"
+      }
+    }
+  ],
+  "execute:preview": [],
+  "close:fire": [
+    {
+      "name": "close_position",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT",
+        "side": "long",
+        "size": "0.5"
+      }
+    }
+  ],
+  "exits:fire": [
+    {
+      "name": "set_exits",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT",
+        "slPrice": 148,
+        "tpPrice": 152,
+        "market": "futures"
+      }
+    }
+  ],
+  "cancel:fire": [
+    {
+      "name": "cancel_order",
+      "args": {
+        "exchange": "kucoin",
+        "orderId": "o-1",
+        "pair": "SOL/USDT",
+        "market": "futures"
+      }
+    }
+  ],
+  "cancel-all:fire": [
+    {
+      "name": "read_risk_limits",
+      "args": {}
+    },
+    {
+      "name": "list_open_orders",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT"
+      }
+    },
+    {
+      "name": "cancel_order",
+      "args": {
+        "exchange": "kucoin",
+        "orderId": "a-1",
+        "pair": "SOL/USDT",
+        "market": "futures"
+      }
+    },
+    {
+      "name": "cancel_order",
+      "args": {
+        "exchange": "kucoin",
+        "orderId": "a-2",
+        "pair": "SOL/USDT",
+        "market": "futures"
+      }
+    },
+    {
+      "name": "list_open_orders",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT"
+      }
+    }
+  ],
+  "chase:replace-then-fill": [
+    {
+      "name": "execute_trade",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT",
+        "side": "buy",
+        "amount": "0.5",
+        "price": "150",
+        "market": "futures",
+        "leverage": 5,
+        "idempotency_key": "jw3-chase-366ccb0f"
+      }
+    },
+    {
+      "name": "list_open_orders",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT"
+      }
+    },
+    {
+      "name": "list_open_orders",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT"
+      }
+    },
+    {
+      "name": "cancel_order",
+      "args": {
+        "exchange": "kucoin",
+        "orderId": "c-1",
+        "pair": "SOL/USDT",
+        "market": "futures"
+      }
+    },
+    {
+      "name": "execute_trade",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT",
+        "side": "buy",
+        "amount": "0.5",
+        "price": "150.2",
+        "market": "futures",
+        "leverage": 5,
+        "idempotency_key": "jw3-chase-31fa5880"
+      }
+    },
+    {
+      "name": "list_open_orders",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT"
+      }
+    }
+  ],
+  "bounce:fire": [
+    {
+      "name": "execute_trade",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT",
+        "side": "sell",
+        "amount": "0.5",
+        "market": "futures",
+        "idempotency_key": "jw3-bounce-2629e06c",
+        "actor": "machine"
+      }
+    }
+  ],
+  "grid:start-long": [
+    {
+      "name": "execute_trade",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SEI/USDT",
+        "side": "buy",
+        "amount": "60",
+        "market": "futures",
+        "leverage": 2,
+        "marginMode": "isolated",
+        "idempotency_key": "jw3-grid-46eddee8",
+        "actor": "machine"
+      }
+    },
+    {
+      "name": "execute_trade",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SEI/USDT",
+        "side": "buy",
+        "amount": "30",
+        "price": "0.49500000000000005",
+        "market": "futures",
+        "leverage": 2,
+        "marginMode": "isolated",
+        "idempotency_key": "jw3-grid-7125b012",
+        "actor": "machine"
+      }
+    },
+    {
+      "name": "execute_trade",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SEI/USDT",
+        "side": "buy",
+        "amount": "30",
+        "price": "0.4975",
+        "market": "futures",
+        "leverage": 2,
+        "marginMode": "isolated",
+        "idempotency_key": "jw3-grid-8d59a5ba",
+        "actor": "machine"
+      }
+    },
+    {
+      "name": "execute_trade",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SEI/USDT",
+        "side": "sell",
+        "amount": "30",
+        "price": "0.5025000000000001",
+        "market": "futures",
+        "leverage": 2,
+        "marginMode": "isolated",
+        "idempotency_key": "jw3-grid-0b27c9aa",
+        "actor": "machine"
+      }
+    },
+    {
+      "name": "execute_trade",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SEI/USDT",
+        "side": "sell",
+        "amount": "30",
+        "price": "0.505",
+        "market": "futures",
+        "leverage": 2,
+        "marginMode": "isolated",
+        "idempotency_key": "jw3-grid-89605227",
+        "actor": "machine"
+      }
+    }
+  ],
+  "scalp-kill:fire": [
+    {
+      "name": "cancel_order",
+      "args": {
+        "exchange": "kucoin",
+        "orderId": "sk-1",
+        "pair": "SOL/USDT",
+        "market": "futures"
+      }
+    },
+    {
+      "name": "cancel_order",
+      "args": {
+        "exchange": "kucoin",
+        "orderId": "sk-2",
+        "pair": "SOL/USDT",
+        "market": "futures"
+      }
+    },
+    {
+      "name": "close_position",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT",
+        "side": "long"
+      }
+    }
+  ],
+  "trail:close": [
+    {
+      "name": "close_position",
+      "args": {
+        "exchange": "kucoin",
+        "pair": "SOL/USDT",
+        "side": "long",
+        "size": "0.5"
+      }
+    }
+  ]
+}
