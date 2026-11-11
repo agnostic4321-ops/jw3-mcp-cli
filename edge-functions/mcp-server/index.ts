@@ -34,6 +34,7 @@ import { resolveOrderTarget } from "../_shared/order-resolve.ts";
 // generic check (TS2589); see agent-chat for the full note.
 import type { ConnectionAdmin } from "../_shared/order-resolve.ts";
 import { buildCexTimeframes } from "../_shared/snapshot.ts";
+import { invokeJevAnalyze } from "../_shared/jev-analyze.ts";
 import { cacheGet, cacheSet } from "../_shared/cache.ts";
 import { JEV_TTL_MS, jevCacheKey } from "../_shared/jev-cache.ts";
 import { requireYoloEligible } from "../_shared/execute-guard.ts";
@@ -517,10 +518,17 @@ Deno.serve(withHandler("mcp-server", async (req) => {
           if (snapLen > 40000) return toolError(body.id, "validation: snapshot too large (>40KB serialized); send compact feature vectors");
           let out: unknown;
           try {
-            out = await callEdge(supaUrl, authHeader, "jev-analyze", {
+            // In-process (C07-09 pattern, same as agent-chat consult_jev):
+            // the served handleJevAnalyze with a Request built exactly as
+            // callEdge sent it — same auth, limiter, budget and envelopes.
+            // The throw adapts invokeJevAnalyze's {ok:false} into callEdge's
+            // throw contract so the catch below maps identically.
+            const r = await invokeJevAnalyze(authHeader, {
               family: args.family, venue: args.venue ?? args.exchange, symbol: args.symbol ?? args.pair,
               snapshot, snapshotAt: new Date().toISOString(),
-            });
+            }, 25000);
+            if (!r.ok) throw new Error(`jev-analyze ${r.status}: ${JSON.stringify(r.json).slice(0, 300)}`);
+            out = r.json;
           } catch (e) {
             logServer(corr, "jev-analyze failed:", e instanceof Error ? e.message : e);
             return toolError(body.id, upstreamErrorText(corr));

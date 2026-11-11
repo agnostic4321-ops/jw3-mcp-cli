@@ -20,7 +20,6 @@ import {
   DEFI_SLIPPAGE_MAX_BPS,
   DEFAULT_TOOL_RATE_LIMIT,
   IDEMPOTENCY_KEY_MAX_LEN,
-  JEV_MARKET_PARAM_PROPERTIES,
   MCP_PROTOCOL_VERSION,
   MCP_SERVER_INFO,
   MAX_PROPOSAL_JEV_CHARS,
@@ -57,13 +56,20 @@ import {
   validateWalletsCsv,
 } from "./tools.ts";
 import { validateExecuteTradeFields } from "./execute.ts";
+import { JEV_MARKET_PARAM_PROPERTIES } from "../_shared/jev-market-params.ts";
 import {
   LIST_CONNECTIONS_DESCRIPTION,
+  LIST_FILLS_DESCRIPTION,
+  LIST_FILLS_PARAMETERS,
+  READ_CLOSED_PNL_DESCRIPTION,
+  READ_CLOSED_PNL_PARAMETERS,
   READ_DIARY_DAY_DESCRIPTION,
   READ_DIARY_DAY_PARAMETERS,
   READ_LIVE_DATUM_PARAMETERS,
   READ_RISK_LIMITS_DESCRIPTION,
   READ_RISK_LIMITS_PARAMETERS,
+  RECONCILE_REALIZED_PNL_DESCRIPTION,
+  RECONCILE_REALIZED_PNL_PARAMETERS,
 } from "../agent-chat/read-tools.ts";
 import {
   READ_VENUE_BALANCES_DESCRIPTION,
@@ -253,8 +259,9 @@ Deno.test("mcp tools: analyze_market shares the JEV contract + consult_jev shape
   const analyze = byName("analyze_market");
   assert.equal(analyze.description, JEV_CONSULT_CONTRACT);
   assert.equal(analyze.inputSchema, ANALYZE_MARKET_PARAMETERS);
-  // Derived from the shared base (C10-10), not a hand copy: the schema's
-  // properties ARE the shared properties object.
+  // C10-10 canonical (_shared/jev-market-params.ts), not a hand copy: the
+  // schema's properties ARE the canonical properties object (imported by
+  // both this test and ./tools.ts — reference identity, not deep-equal).
   assert.equal(ANALYZE_MARKET_PARAMETERS.properties, JEV_MARKET_PARAM_PROPERTIES);
   const props = Object.keys(ANALYZE_MARKET_PARAMETERS.properties);
   for (const field of ["family", "venue", "symbol", "snapshot"]) {
@@ -270,6 +277,40 @@ Deno.test("mcp tools: analyze_market shares the JEV contract + consult_jev shape
     throw new Error("analyze_market must not take token_id (chat consult_jev only)");
   }
   assert.deepEqual(ANALYZE_MARKET_PARAMETERS.required, ["family"]);
+});
+
+Deno.test("mcp tools: jev reads run in-process (no jev-analyze hop)", async () => {
+  // C07-09 pattern, same as agent-chat consult_jev: the served
+  // handleJevAnalyze via invokeJevAnalyze, with the callEdge timeout
+  // each site used (25 s analyze_market, 60 s daily_prep) and the
+  // throw-adapter that keeps callEdge's throw contract.
+  for (const rel of ["./index.ts", "./daily-prep.ts"]) {
+    const src = await handlerSource(rel);
+    if (!src.includes('invokeJevAnalyze')) {
+      throw new Error(`${rel} bypasses the in-process JEV handler`);
+    }
+    if (src.includes('"jev-analyze"') || src.includes("'jev-analyze'")) {
+      throw new Error(`${rel} still hops to jev-analyze over HTTP`);
+    }
+  }
+  const index = await handlerSource("./index.ts");
+  if (!index.includes("}, 25000);")) {
+    throw new Error("analyze_market lost its 25 s JEV budget");
+  }
+  const dp = await handlerSource("./daily-prep.ts");
+  if (!dp.includes("}, 60000);")) {
+    throw new Error("daily_prep lost its 60 s JEV budget");
+  }
+});
+
+Deno.test("mcp tools: fills/pnl tools reuse the shared chat copies (no forks)", () => {
+  // C10-10 canonicals: the MCP surface must BE these objects, not copies.
+  assert.equal(byName("list_fills").description, LIST_FILLS_DESCRIPTION);
+  assert.equal(byName("list_fills").inputSchema, LIST_FILLS_PARAMETERS);
+  assert.equal(byName("read_closed_pnl").description, READ_CLOSED_PNL_DESCRIPTION);
+  assert.equal(byName("read_closed_pnl").inputSchema, READ_CLOSED_PNL_PARAMETERS);
+  assert.equal(byName("reconcile_realized_pnl").description, RECONCILE_REALIZED_PNL_DESCRIPTION);
+  assert.equal(byName("reconcile_realized_pnl").inputSchema, RECONCILE_REALIZED_PNL_PARAMETERS);
 });
 
 Deno.test("mcp tools: every tool has a handler branch (no dead tools)", async () => {

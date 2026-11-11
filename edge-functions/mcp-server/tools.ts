@@ -36,6 +36,10 @@ import { fetchWithTimeout } from "../_shared/http.ts";
 import type { AnyClient } from "../_shared/clients.ts";
 import { GRANTABLE_SCOPES } from "../_shared/mcp-auth.ts";
 import { JEV_CONSULT_CONTRACT } from "../agent-chat/jev-gate.ts";
+// Canonical JEV market-param properties (C10-10): the field set MCP
+// analyze_market shares with chat consult_jev. Imported — never redefined
+// here, so the MCP schema moves only when the app canonical moves.
+import { JEV_MARKET_PARAM_PROPERTIES } from "../_shared/jev-market-params.ts";
 import {
   NEWS_BRIEF_DESCRIPTION,
   NEWS_BRIEF_PARAMETERS,
@@ -43,12 +47,18 @@ import {
 import {
   LIST_CONNECTIONS_DESCRIPTION,
   LIST_CONNECTIONS_PARAMETERS,
+  LIST_FILLS_DESCRIPTION,
+  LIST_FILLS_PARAMETERS,
+  READ_CLOSED_PNL_DESCRIPTION,
+  READ_CLOSED_PNL_PARAMETERS,
   READ_DIARY_DAY_DESCRIPTION,
   READ_DIARY_DAY_PARAMETERS,
   READ_LIVE_DATUM_DESCRIPTION,
   READ_LIVE_DATUM_PARAMETERS,
   READ_RISK_LIMITS_DESCRIPTION,
   READ_RISK_LIMITS_PARAMETERS,
+  RECONCILE_REALIZED_PNL_DESCRIPTION,
+  RECONCILE_REALIZED_PNL_PARAMETERS,
   TOOL_MESSAGE_BUDGET_CHARS,
   TOOL_MESSAGE_HARD_CAP,
 } from "../agent-chat/read-tools.ts";
@@ -58,89 +68,15 @@ import {
   READ_VENUE_BALANCES_PARAMETERS,
 } from "../_shared/venue-balances.ts";
 
-/**
- * Shared JEV market-param properties: the field set MCP analyze_market
- * shares with chat consult_jev (agent-chat/tools.ts). The chat schema is
- * this base PLUS token_id (Opinion market grounding) with required
- * [family,venue,symbol]; the MCP schema below reuses the base WITHOUT
- * token_id and requires only [family]. The divergence is deliberate and
- * pinned by tools_test.ts:
- * - token_id: the mcp-server analyze_market handler (index.ts) forwards
- *   only family/venue/symbol (+snapshot) to jev-analyze, so an MCP caller
- *   cannot ground by token. Opinion prediction calls must either ride
- *   chat consult_jev or embed the market in snapshot.market+brief.
- * - required [family]: CEX calls ride server-built candles from
- *   venue+symbol (or a caller snapshot that already carries timeframes);
- *   prediction needs snapshot.market+brief. venue/symbol also accept the
- *   chat aliases exchange/pair at the handler.
- */
-export const JEV_MARKET_PARAM_PROPERTIES = {
-  family: { type: "string", enum: ["cex", "dex_perps", "prediction"], description: "Market family matching the planned trade." },
-  venue: { type: "string", description: "Venue slug (e.g. binance, kucoin, polymarket). Required for cex unless the snapshot already carries timeframes; prediction defaults to polymarket." },
-  symbol: { type: "string", description: "Pair, ticker, or condition id (e.g. BTC/USDT). Required for cex unless the snapshot already carries timeframes; prediction takes the Polymarket conditionId/slug or Opinion market id." },
-  exchange: { type: "string", description: "Alias of venue (chat compat)." },
-  pair: { type: "string", description: "Alias of symbol (chat compat)." },
-  snapshot: { type: "object", description: "Optional override: { timeframes: [{tf, candles: [{o,h,l,c,v?}]}] } for cex/dex_perps, { market, brief: [{title, snippet, url, at}] } for prediction. Omit for CEX — the server builds candles itself; dex_perps/prediction need the snapshot shapes above." },
-};
-
 /** Shared analyze_market parameters — the same JEV verdict as chat
  *  consult_jev (see agent-chat/jev-gate.ts + agent-chat/tools.ts),
- *  minus token_id (see above). required stays ["family"]. */
+ *  minus the chat-only token_id (see _shared/jev-market-params.ts).
+ *  properties IS the canonical object (identity, not a copy);
+ *  required stays ["family"]. */
 export const ANALYZE_MARKET_PARAMETERS = {
   type: "object",
   properties: JEV_MARKET_PARAM_PROPERTIES,
   required: ["family"], additionalProperties: false,
-};
-
-/** Shared list_fills copy — execution fills (spot + futures) via cex-proxy.
- *  Activity history, NOT Diary rows: one closed position already yields one
- *  NET-pnl row via read_closed_pnl, so fills must never be written as trades.
- *  HARNESS-CANONICAL (C10-10): no agent-chat/read-tools.ts export exists for
- *  this copy yet (only the payload builders live there), so it is defined
- *  here until the app side promotes it — then swap to the import. Same for
- *  READ_CLOSED_PNL_* and RECONCILE_REALIZED_PNL_* below. */
-export const LIST_FILLS_DESCRIPTION =
-  "READ-ONLY: list recent execution fills on a CEX connection (individual order executions with price/qty/fee, spot + futures). Never moves funds, never writes Diary rows — fills are Activity history (see read_closed_pnl for realized PnL). Unimplemented venues return an empty list; a venue walk that exceeds its time budget fails loud, never truncated-as-empty.";
-export const LIST_FILLS_PARAMETERS = {
-  type: "object",
-  properties: {
-    exchange: { type: "string", description: "CEX slug, e.g. kucoin (resolved to an active connection; connectionId wins when both are given)" },
-    connectionId: { type: "string", description: "CEX connection id (see list_connections). Takes precedence over exchange." },
-    pair: { type: "string", description: "Optional filter, e.g. BTC/USDT" },
-    market: { type: "string", enum: ["spot", "futures", "all"], description: "Which fills to read (default all)" },
-    days: { type: "number", description: "Lookback in days, 1..90 (default 30)" },
-    limit: { type: "number", description: "Max rows, newest-first, 1..500 (default 100)" },
-  },
-  additionalProperties: false,
-};
-
-/** Shared read_closed_pnl copy — realized/closed-PnL rows via cex-proxy. */
-export const READ_CLOSED_PNL_DESCRIPTION =
-  "READ-ONLY: realized/closed-PnL history on a CEX connection (one row per closed position carrying net pnl + fees, for diary sync). Never moves funds. Rows whose venue reports no side stay null — side is never inferred from the PnL sign; Binance rows carry entryPrice 0 = unknown (the income feed has no entry price) and exitPrice is the paired closing fill when one was found.";
-export const READ_CLOSED_PNL_PARAMETERS = {
-  type: "object",
-  properties: {
-    exchange: { type: "string", description: "CEX slug, e.g. kucoin (resolved to an active connection; connectionId wins when both are given)" },
-    connectionId: { type: "string", description: "CEX connection id (see list_connections). Takes precedence over exchange." },
-    pair: { type: "string", description: "Optional filter, e.g. BTC/USDT" },
-    days: { type: "number", description: "Lookback in days, 1..90 (default 30)" },
-    limit: { type: "number", description: "Max rows, newest-first, 1..500 (default 100)" },
-  },
-  additionalProperties: false,
-};
-
-/** Shared reconcile_realized_pnl copy — count the venue's realized LOSSES
- *  against the daily risk counters. */
-export const RECONCILE_REALIZED_PNL_DESCRIPTION =
-  "Counts the venue's realized LOSSES against the daily risk counters. A trade closed by the VENUE's own stop never goes through the close path, so without this the daily loss cap can never fire on it. Idempotent: each venue trade is counted exactly once, tracked in the realized-PnL ledger. Never moves funds, never places an order. Returns how many trades were counted, the loss recorded, and what was skipped and why.";
-export const RECONCILE_REALIZED_PNL_PARAMETERS = {
-  type: "object",
-  properties: {
-    exchange: { type: "string", description: "CEX slug, e.g. kucoin (resolved to an active connection; connectionId wins when both are given)" },
-    connectionId: { type: "string", description: "CEX connection id (see list_connections). Takes precedence over exchange." },
-    days: { type: "number", description: "How far back to reconcile, in days, 1..30 (default 2)" },
-  },
-  additionalProperties: false,
 };
 
 export const TOOLS = [

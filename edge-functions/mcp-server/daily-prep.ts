@@ -6,6 +6,7 @@
 // ride mcp:read; the diary write needs trade:propose (PAT) — JWT callers
 // keep legacy behavior. Behavior identical to the inline block.
 import { buildCexTimeframes } from "../_shared/snapshot.ts";
+import { invokeJevAnalyze } from "../_shared/jev-analyze.ts";
 import { toolError, toolOk, type ToolCtx } from "./tools.ts";
 import {
   MAX_DAILY_PREP_CONNECTIONS,
@@ -132,10 +133,18 @@ export async function handleDailyPrep(
       base.pdh = hl?.h ?? null; base.pdl = hl?.l ?? null; base.atrPct = atrPct(candles);
       const last = candles[candles.length - 1];
       base.price = last?.c ?? null;
-      const runJev = () => callEdge(supaUrl, authHeader, "jev-analyze", {
-        family: "cex", venue: "binance", symbol: spec.pair,
-        snapshot: { timeframes: tfs }, snapshotAt: atIso,
-      }, 60000) as Promise<{ error?: unknown; verdict?: { trend?: { verdict?: string; agreement?: number } } }>;
+      // In-process (C07-09 pattern): the same jev-analyze handler agent-chat
+      // consult_jev runs, with the callEdge 60 s budget. The throw adapts
+      // {ok:false} into callEdge's throw contract (incl. the 429 message
+      // the bounded retry below parses).
+      const runJev = async () => {
+        const r = await invokeJevAnalyze(authHeader, {
+          family: "cex", venue: "binance", symbol: spec.pair,
+          snapshot: { timeframes: tfs }, snapshotAt: atIso,
+        }, 60000);
+        if (!r.ok) throw new Error(`jev-analyze ${r.status}: ${JSON.stringify(r.json).slice(0, 300)}`);
+        return r.json as { error?: unknown; verdict?: { trend?: { verdict?: string; agreement?: number } } };
+      };
       if (tfs.length === 0) {
         base.jevError = "no candles from venue";
       } else {
