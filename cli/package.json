@@ -19,7 +19,13 @@
   "files": [
     "dist",
     "!dist/**/*.test.js",
-    "!dist/**/*.test.d.ts"
+    "!dist/**/*.test.d.ts",
+    "!dist/test-env.js",
+    "!dist/test-env.d.ts",
+    "!dist/test-fixtures.js",
+    "!dist/test-fixtures.d.ts",
+    "!dist/verdict-golden.cases.js",
+    "!dist/verdict-golden.cases.d.ts"
   ],
   "publishConfig": {
     "access": "public",
