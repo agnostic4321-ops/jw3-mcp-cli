@@ -5,6 +5,8 @@
  * approve-and-sign. Never executes, never touches keys.
  */
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { cmdAuth } from "./commands/auth.js";
 import { cmdMarketsEnding } from "./commands/markets.js";
 import { cmdAnalyze, cmdAnalyzeTrend } from "./commands/analyze.js";
@@ -75,6 +77,7 @@ import {
   cmdDefiProtocols,
 } from "./commands/defi.js";
 import { clampInt, flagAny, flagOf, needNum, needNumAny, numAny, numOf, posAny, posOf, refusePaperFlag } from "./args.js";
+import { helpFor, renderHelp } from "./help.js";
 
 /**
  * CLI version, single-sourced from cli/package.json (never hardcoded, so
@@ -93,96 +96,7 @@ function cliVersion(): string {
 /** Current CLI version (exported for the dispatch pins). */
 export const CLI_VERSION = cliVersion();
 
-const HELP = `jw3 — JW3.ai command line (v${CLI_VERSION})
-
-Usage:
-  jw3 auth login|logout|status [--pat …] [--url …] [--browser] [--scope "mcp:read trade:propose"] [--timeout 300]
-  jw3 markets ending [--days 14] [--min-liq 10000] [--limit 25] [--json]
-  jw3 analyze prediction <slug|conditionId|id> [--json]
-  jw3 analyze trend --exchange kucoin --pair BTC/USDT [--json]
-  jw3 scan fade [--exchange kucoin] [--min-chg 3] [--limit 12] [--json]
-  jw3 forecast --pair ETH/USDT [--horizon 12] [--json]
-  jw3 intel <topic> [--limit 10] [--no-cache] [--json]
-  jw3 decide --pair SOL/USDT [--exchange kucoin] [--json]
-  jw3 degen [--pair SOL/USDT] [--exchange kucoin] [--size 15] [--lev 2] [--max-heat 6] [--max-concurrent 2] [--activation-pct 0.25] [--bounceback-pct 0.08] [--polls 600] [--horizon 12] [--trail] [--live] [--yes] [--paper] [--json]
-  jw3 degen record --pair SOL/USDT --outcome win|loss|stop|scratch [--pnl …] [--paper] [--json]
-  jw3 degen paper-stats [--json]
-  jw3 ttm --pair SOL/USDT --side long|short --equity 10 --base 5 --entry … --atr-pct 0.8 [--lev 25] [--sleeve momentum] [--activation-pct 0.25] [--bounceback-pct 0.08] [--json]
-  jw3 spikes --exchange kucoin [--pairs GRAM,SOL,ETH,XBT,SUI,DOT,DOGE,PEPE,UNI] [--cycles 1] [--json]
-  jw3 scalp plan --pair SOL/USDT --long|--short [--size 15] [--steps 3] [--json]
-  jw3 scalp start|watch|kill --pair SOL/USDT --long|--short [--exchange kucoin] [--size 15] [--steps 3] [--lev 2] [--yes]
-  jw3 trail --pair SOL/USDT --side long|short --size 1 [--exchange kucoin] [--activation-pct 0.25] [--bounceback-pct|--backoff-pct 0.08] [--polls 600] [--live] [--yes] [--json]
-  jw3 bounce --pair SOL/USDT --side short [--exchange kucoin] [--bounce-pct 0.4] [--lookback-min 60] [--size …] [--yes] [--json]
-  jw3 tick --pair SOL/USDT [--seconds 15] [--json]
-  jw3 klines --pair SOL/USDT [--tf 5m|15m|1h|1d] [--limit 50] [--rsi] [--vwap] [--json]
-  jw3 loop --exchange kucoin --pair SOL/USDT [--long|--short] [--size 15] [--json]
-  jw3 grid plan|start --pair SEI/USDT [--bias long|short|neutral] [--step-pct 0.25] [--levels 25] [--size 15] [--lev 2] [--yes]
-  jw3 grid backtest --pair SEI/USDT [--step-pct 0.25] [--levels 25] [--contracts 19] [--lev 2] [--days 30] [--json]
-  jw3 backtest live --pair SOL/USDT [--days 30] [--tf 15m] [--size 15] [--leverage 20] [--mode maker|chase|taker|all] [--json]
-  jw3 backtest scalp --pair SOL/USDT [--days 30] [--tp 0.3] [--fee maker|taker] [--size 60] [--json]
-  jw3 farm run [--pairs SOL/USDT,BTC/USDT,ETH/USDT] [--days 30] [--fee maker|taker] [--size 60] [--json]
-  jw3 farm leaderboard [--json]
-  jw3 live --pair BASE/USDT [--exchange kucoin] [--side long|short|auto] [--risk 3] [--size 15] [--session live] [--turn t1] [--yes] [--json]
-  jw3 paper create --account NAME [--equity 10000] [--json]
-  jw3 paper fund --account NAME --amount 500 [--json]
-  jw3 paper reset --account NAME [--json]
-  jw3 paper list [--json]
-  jw3 paper execute --account NAME --pair SOL/USDT --side buy|sell (--qty … | --size-usd …) --price … [--lev 1] [--tp …] [--sl …] [--fee maker|taker] [--strategy TAG] [--json]
-  jw3 paper positions [--account NAME] [--pair …] [--strategy TAG] [--mark …] [--json]
-  jw3 paper fills [--account NAME] [--pair …] [--strategy TAG] [--limit 50] [--json]
-  jw3 paper pnl [--account NAME] [--json]
-  jw3 paper tick --pair SOL/USDT --price … [--account NAME] [--fee maker|taker] [--json]
-  jw3 paper promote --account NAME [--position-id …] [--pair …] [--exchange kucoin] [--json]
-  jw3 poly scan [--json]
-  jw3 connections [--json]
-  jw3 diary [--day YYYY-MM-DD | --start-day YYYY-MM-DD --end-day YYYY-MM-DD] [--json]
-  jw3 diary-note --body "..." [--day YYYY-MM-DD] [--mode append|replace] [--json]
-  jw3 daily-prep [--dry] [--day YYYY-MM-DD] [--json]
-  jw3 risk [--state] [--json]
-  jw3 insights [--days 30] [--notional-usd 10000] [--fee-bps 5] [--json]
-  jw3 news [--pair BTC] [--source CoinDesk] [--limit 6] [--window-hrs 48] [--json]
-  jw3 propose --pair BTC/USDT --side long --entry … --stop … [--asset BTC] [--venue kucoin] [--size-usd …] [--thesis …] [--timeframe 4h] [--json]
-  jw3 propose-idea --pair BTC/USDT --side buy --entry … --stop … --target 70000[:0.5],75000 --thesis "…" [--rationale "…"] [--json]
-  jw3 propose-bracket --exchange kucoin --pair BTC/USDT --side buy --entry-type market --amount … --stop … --tp 70000:50,75000:50 --rationale "…" [--json]
-  jw3 propose-predict --market-id <id> --side yes --jev-verdict "…" --rationale "…" [--json]
-  jw3 propose-close-all --rationale "…" [--exchange kucoin] [--pair BTC/USDT] [--json]
-  jw3 market --exchange binance --pair BTC/USDT [--json]
-  jw3 screener [--exchange binance] [--json]
-  jw3 positions [--exchange kucoin] [--pair BTC/USDT] [--watch SEC] [--polls N] [--json] [--json-lines]
-  jw3 balances [--exchange kucoin] [--venue hyperliquid|aster|dydx|pacifica|polymarket|all] [--json]
-  jw3 orders [--exchange kucoin] [--pair BTC/USDT] [--json]
-  jw3 order --exchange kucoin --order-id … [--pair …] [--market spot|futures] [--json]
-  jw3 fills --exchange kucoin [--pair BTC/USDT] [--market spot|futures|all] [--days 30] [--limit 50] [--json]
-  jw3 pnl --exchange kucoin [--pair BTC/USDT] [--days 30] [--limit 100] [--json]
-  jw3 pnl-reconcile --exchange kucoin [--days 2] [--json]
-  jw3 onchain [--chains ethereum,solana] [--json]
-  jw3 execute --exchange kucoin --pair BTC/USDT --side buy (--amount … | --risk-usd …) [--price …] [--market futures] [--leverage …] [--margin-mode cross|isolated] [--stop …] [--tp … | --tp-legs P1:S1,P2:S2] [--chase SECS [--chase-poll S] [--chase-max N] [--chase-take]] [--idempotency-key …] [--actor …] --yes [--json]
-  jw3 close --exchange kucoin --pair BTC/USDT --side long|short [--size …] --yes [--json]
-  jw3 exits --exchange kucoin --pair BTC/USDT [--sl …] [--tp …] [--market spot|futures] [--quantity …] --yes [--json]
-  jw3 cancel --exchange kucoin --order-id … [--pair …] [--market spot|futures] --yes [--json]
-  jw3 cancel-all --exchange kucoin --pair BTC/USDT [--market spot|futures] --yes [--json]
-  jw3 reconcile --exchange kucoin --pair BTC/USDT [--json]
-  jw3 heat [--exchange kucoin] [--min-free 50] [--json]
-  jw3 reserve sweep [--exchange kucoin] [--keep 10] [--currency USDT] [--yes] [--json]
-  jw3 defi protocols|markets|investments|positions|quote-lp|build [--chain …] [--protocol …] [--token …] [--investment-id …] [--wallet …] [--amount …] [--json]
-  jw3 watchdog check|run|resume [--exchange kucoin] [--poll-sec 15] [--flatten] [--actor NAME] [--once] [--json]
-  jw3 monitor [--exchange kucoin] [--json]
-  jw3 alert --snapshot <path> [--prev-snapshot <path>] [--state <path>] [--policy <path>] [--transport console|file] [--out <path>] [--json]
-  jw3 learning record --pair BASE/USDT --side long|short --entry <px> --exit <px> [--reason <text>] [--pnl <usd>] [--fees <usd>] [--json]
-  jw3 learning stats [--log <path>] [--json]
-  jw3 daemon --config <manifest.json> [--once] [--allow-live] [--flatten-on-shutdown] [--json]
-
-Aliases: diary note, daily prep, pnl reconcile, propose <idea|bracket|predict|close-all|close all>, cancel all — spaced forms of the hyphenated commands.
-Flag aliases (same meaning everywhere the option exists): --lev|--leverage, --tf|--timeframe, --bounceback-pct|--backoff-pct.
-
-Global:
-  --url <supabase-url>   override JW3_SUPABASE_URL
-  --pat <pat>            one-shot PAT (prefers JW3_MCP_PAT env)
-  --json                 machine output where supported
-
-Auth: PAT jw3_mcp_… (Settings → Harness Access) or SIWX JWT as bearer.
-Stored 0600 in ~/.config/jw3/credentials.json (JW3_CONFIG_HOME override).
-Secrets never print, never enter the repo.`;
+const HELP = renderHelp(CLI_VERSION);
 
 type Global = { url?: string; pat?: string; json: boolean; rest: string[] };
 
@@ -219,7 +133,7 @@ type CliRoute = {
 // Table-driven dispatch. Order matters exactly as before: guarded
 // bare commands (diary, propose, cancel, pnl) sit above their space
 // forms (diary note, propose idea, cancel all, pnl reconcile).
-const ROUTES: CliRoute[] = [
+export const ROUTES: CliRoute[] = [
   {
     match: (cmd, sub) => cmd === "auth",
     run: async (cmd, sub, tail) => {
@@ -1816,9 +1730,24 @@ async function main(): Promise<void> {
   // arg list — only a non-flag token is a real subcommand.
   const sub = subRaw && !subRaw.startsWith("--") ? subRaw : undefined;
   const tail = subRaw && subRaw.startsWith("--") ? [subRaw, ...tailRaw] : tailRaw;
-  if (!cmd || cmd === "-h" || cmd === "--help" || cmd === "help") {
+  // Help is intercepted HERE, before any route runs: `jw3`, `jw3 --help`,
+  // `jw3 help`, `jw3 <cmd> --help|-h`, `jw3 <cmd> <sub> --help`. A help
+  // request must never reach command code — no MCP call, no venue call, no
+  // file or state write, no migration. See help.ts for the registry and
+  // help.test.ts for the registry-wide zero-side-effect matrix.
+  const wantsHelp = process.argv.slice(2).some((a) => a === "--help" || a === "-h");
+  if (!cmd || cmd === "help" || cmd === "-h" || cmd === "--help") {
     console.log(HELP);
     return;
+  }
+  if (wantsHelp) {
+    const usage = helpFor([cmd, sub, ...tail]);
+    if (usage) {
+      console.log(usage);
+      return;
+    }
+    // Unknown command with --help: fall through to the unknown-command answer
+    // (exit 2) instead of advertising a command the dispatcher does not route.
   }
   try {
     for (const route of ROUTES) {
@@ -1835,4 +1764,8 @@ async function main(): Promise<void> {
   }
 }
 
-void main();
+// Run only when this module IS the entry point. Tests import ROUTES from
+// here to pin the command registry against the dispatch table; importing
+// must never execute a command.
+const entry = process.argv[1];
+if (entry !== undefined && resolve(entry) === fileURLToPath(import.meta.url)) void main();
