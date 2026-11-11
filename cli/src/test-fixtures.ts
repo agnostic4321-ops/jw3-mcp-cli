@@ -8,7 +8,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 /** Fresh tmpdir sandbox; cleanup() removes it (force, recursive). */
 export function makeSandbox(prefix = "jw3-test-"): { dir: string; cleanup: () => void } {
@@ -41,14 +41,17 @@ export type CliRun = { exit: number; stdout: string; stderr: string };
  * NEVER on the network: callers must only use invocations that fail
  * before any network call (auth guard, pure validation) or print static
  * text (--help, unknown command). The PAT env is blanked and the config
- * home is a fresh sandbox, so no stored credential can leak in.
+ * home is a fresh sandbox, so no stored credential can leak in. The child
+ * also loads the test-env preload, so a call that did reach for the network
+ * is refused by the same guard as the test process.
  */
 export function runCli(args: string[], opts?: { timeoutMs?: number }): CliRun {
   const here = dirname(fileURLToPath(import.meta.url));
   const bin = join(here, "index.js");
+  const preload = pathToFileURL(join(here, "test-env.js")).href;
   const sandbox = makeSandbox("jw3-cli-run-");
   try {
-    const stdout = execFileSync(process.execPath, [bin, ...args], {
+    const stdout = execFileSync(process.execPath, ["--import", preload, bin, ...args], {
       encoding: "utf8",
       timeout: opts?.timeoutMs ?? 15000,
       env: { ...process.env, JW3_CONFIG_HOME: sandbox.dir, JW3_MCP_PAT: "" },

@@ -6,7 +6,7 @@
  * account. These are pure functions so every refusal is testable.
  */
 import { planScalp } from "../kucoin.js";
-import { after, before, describe, it } from "node:test";
+import { after, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { bounceGate, confluenceGate, cmdLive } from "./live-cmd.js";
 import { fadeSignal, dipSignal, type FadeRow } from "../kucoin.js";
@@ -194,16 +194,71 @@ describe("the CPI blackout veto is on the LIVE path, and it is first", () => {
   // to pass only on a machine with real credentials in ~/.config/jw3. A
   // dummy PAT scoped to this block makes them independent of the host —
   // and the veto still returns before any network call could use it.
+  //
+  // Past the veto the command goes on to the network: it reads the KuCoin
+  // tape (`futuresFade`), and on a setup the live path reads the account
+  // over the mcp-server. The two rows outside the window once did both for
+  // real — the deployed server answered the dummy PAT with "unauthorized",
+  // so they were red whenever the network was reachable. The transport is
+  // a stub for the whole block: it serves a flat, quiet SOL tape (no
+  // exhaustion signal, so the command stops at the tape, the step right
+  // after the veto) and refuses everything else. Nothing leaves the
+  // process, and every row reads the same with or without a network.
   let savedPat: string | undefined;
+  let realFetch: typeof fetch;
+  const net = { urls: [] as string[], refused: [] as string[] };
   before(() => {
     savedPat = process.env.JW3_MCP_PAT;
     process.env.JW3_MCP_PAT = "test-pat-hermetic";
+    realFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = input instanceof Request ? input.url : String(input);
+      net.urls.push(url);
+      const body = quietSolTape(url);
+      if (body === null) {
+        net.refused.push(url);
+        throw new Error(`stub transport: no route for ${url}`);
+      }
+      return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
   });
   after(() => {
+    globalThis.fetch = realFetch;
     if (savedPat === undefined) delete process.env.JW3_MCP_PAT;
     else process.env.JW3_MCP_PAT = savedPat;
   });
+  beforeEach(() => {
+    net.urls.length = 0;
+    net.refused.length = 0;
+  });
   const at = (h: number, m = 0) => Date.UTC(2026, 9, 21, h, m, 0);
+
+  /** KuCoin futures answers for a flat SOL tape: 30 identical 1h bars. */
+  const quietSolTape = (url: string): unknown => {
+    const api = "https://api-futures.kucoin.com/api/v1";
+    if (url.startsWith(`${api}/ticker?symbol=SOLUSDTM`)) return { code: "200000", data: { price: "100" } };
+    if (url.startsWith(`${api}/kline/query?symbol=SOLUSDTM&`)) {
+      const t0 = Date.UTC(2026, 9, 20, 0, 0, 0);
+      return { code: "200000", data: Array.from({ length: 30 }, (_, i) => [t0 + i * 3_600_000, 100, 100.5, 99.5, 100, 1000]) };
+    }
+    if (url.startsWith(`${api}/funding-rate/SOLUSDTM/current`)) return { code: "200000", data: { value: 0.0001 } };
+    return null;
+  };
+
+  /**
+   * The command got PAST the veto: the step after it ran — the tape was
+   * read and decided (a quiet tape is no setup) — and nothing else was
+   * asked of the network.
+   */
+  const assertPastTheVeto = (out: Awaited<ReturnType<typeof cmdLive>>) => {
+    assert.ok(
+      net.urls.some((u) => u.includes("/api/v1/kline/query?symbol=SOLUSDTM")),
+      `the tape was never read, so the command stopped before the tape (requests: ${JSON.stringify(net.urls)})`,
+    );
+    assert.equal(out?.status, "no-trade");
+    assert.equal(out?.reason, "no trade: the tape shows no exhaustion signal (neutral/neutral)");
+    assert.deepEqual(net.refused, [], "nothing but the stubbed tape may be requested");
+  };
 
   const spy = () => {
     const calls: string[] = [];
@@ -289,6 +344,7 @@ describe("the CPI blackout veto is on the LIVE path, and it is first", () => {
     );
     // it gets PAST the veto (and may refuse later for another reason)
     assert.doesNotMatch(String(out?.reason), /CPI blackout/);
+    assertPastTheVeto(out);
   });
 
   it("does NOT refuse outside the window", async () => {
@@ -308,5 +364,6 @@ describe("the CPI blackout veto is on the LIVE path, and it is first", () => {
       { ...s2.deps, now: () => at(9, 0) },
     );
     assert.doesNotMatch(String(out?.reason), /CPI blackout/);
+    assertPastTheVeto(out);
   });
 });
